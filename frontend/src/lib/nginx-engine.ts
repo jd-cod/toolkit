@@ -33,20 +33,19 @@ export async function loadNginxEngine() {
   await loadScript('https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js');
   if (!await loadGeoIP()) throw new Error('The GeoIP engine could not load.');
   for (const src of [
-    '/js/stream-line-splitter.js?v=6.52',
-    '/js/columnar-storage.js?v=6.52',
-    '/js/log-parser.js?v=6.52',
-    '/js/bot-detector.js?v=6.52',
-    '/js/analyzer.js?v=6.52',
-    '/js/dashboard.js?v=6.52',
-    '/js/share.js?v=6.52',
-    '/js/report.js?v=6.52',
+    '/js/stream-line-splitter.js?v=6.53',
+    '/js/columnar-storage.js?v=6.53',
+    '/js/log-parser.js?v=6.53',
+    '/js/bot-detector.js?v=6.53',
+    '/js/analyzer.js?v=6.53',
+    '/js/dashboard.js?v=6.53',
+    '/js/report.js?v=6.53',
   ]) await loadScript(src);
 }
 
 export async function loadNginxInput() {
   await loadNginxEngine();
-  await loadScript('/js/nginx-init.js?v=6.52');
+  await loadScript('/js/nginx-init.js?v=6.53');
 }
 
 export function disposeNginxDashboard() {

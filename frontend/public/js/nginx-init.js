@@ -13,7 +13,7 @@
  *  - Web Worker off-thread parsing with fallback
  *  - Parse → Analyze → Render pipeline
  *
- * Depends on: GeoIP, LogParser, Analyzer, Dashboard, ShareModal, Report
+ * Depends on: GeoIP, LogParser, Analyzer, Dashboard, Report
  */
 
 window.initNginxPage = function () {
@@ -539,7 +539,7 @@ window.initNginxPage = function () {
                 ? await peekAndDecompressStream(stream)
                 : stream;
 
-            const worker = typeof Worker !== 'undefined' ? new Worker('/js/log-parser.worker.js?v=6.52') : null;
+            const worker = typeof Worker !== 'undefined' ? new Worker('/js/log-parser.worker.js?v=6.53') : null;
 
             let result = null;
             if (worker && typeof streamChunksToWorker === 'function') {

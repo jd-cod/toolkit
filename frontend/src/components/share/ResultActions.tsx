@@ -22,7 +22,7 @@ export type CsvAction = { filename: string; rows: () => unknown } | { onClick: (
 export interface ResultActionsProps {
   /** Omit on read-only views (a shared link) and for tools whose results must not leave the browser. */
   share?: ShareAction;
-  /** Keeps the Share button visible but unavailable; clicking it shows this explanation. */
+  /** Sharing is not possible here: the Share button stays visible and, when clicked, shows this explanation instead of the dialog. */
   shareDisabledReason?: string;
   html?: HtmlAction;
   csv?: CsvAction;
@@ -61,10 +61,11 @@ export default function ResultActions({ share, shareDisabledReason, html, csv, c
       {shareDisabledReason && (
         <ResultActionButton
           icon="shield-lock"
+          className="signal-action-unavailable"
           data-action="share"
-          aria-disabled="true"
+          aria-expanded={reasonShown}
           title={shareDisabledReason}
-          onClick={() => setReasonShown(true)}
+          onClick={() => setReasonShown((shown) => !shown)}
         >
           Share
         </ResultActionButton>

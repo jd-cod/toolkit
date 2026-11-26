@@ -981,12 +981,8 @@ const Dashboard = (() => {
                         <i class="bi bi-hdd-network-fill"></i> Add More Logs
                         <span id="dash-queue-badge" style="display:none;background:var(--accent-primary);color:var(--signal-on-primary);font-size:0.7rem;font-weight:700;padding:1px 6px;border-radius:10px;margin-left:4px;">0</span>
                     </button>
-                    <button id="dash-download-btn" class="btn" style="background:none;border:1px solid var(--border-color);color:var(--text-secondary);padding:6px 14px;border-radius:8px;cursor:pointer;font-size:0.8rem;font-weight:600;">
-                        <i class="bi bi-download" style="margin-right:4px;"></i> Download Report
-                    </button>
-                    <button id="dash-share-btn" class="btn" style="${currentInputSource === 'terminal_ingest' ? 'background:rgba(255,255,255,0.03);border:1px dashed var(--border-color);color:var(--text-muted);opacity:0.85;' : 'background:none;border:1px solid var(--border-color);color:var(--accent-primary);'}padding:6px 14px;border-radius:8px;cursor:pointer;font-size:0.8rem;font-weight:600;">
-                        <i class="bi ${currentInputSource === 'terminal_ingest' ? 'bi-shield-lock' : 'bi-share-fill'}" style="margin-right:4px;"></i> ${currentInputSource === 'terminal_ingest' ? 'Share (Zero-Retention)' : 'Share Snapshot'}
-                    </button>
+                    <!-- Share / Download HTML / Download CSV: the same React action bar every tool uses is mounted here. -->
+                    <div id="dash-result-actions"></div>
                 </div>
                 <div style="font-size:0.78rem;color:var(--text-muted);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
                     <span><strong style="color:var(--text-primary);">Parsed:</strong> ${numberWithCommas(parseResult ? parseResult.parsedLines.length : totalRequests)} lines</span>
@@ -1135,7 +1131,8 @@ const Dashboard = (() => {
 
         [countryChart, asnChart, rpsChart].forEach(chart => chart?.destroy());
         countryChart = asnChart = rpsChart = null;
-        if (currentReadOnly) ['dash-back-btn', 'dash-share-btn', 'dash-download-btn'].forEach(id => { container.querySelector(`#${id}`).hidden = true; });
+        if (currentReadOnly) container.querySelector('#dash-back-btn').hidden = true;
+        announceResultActions();
         ensureAddLogsModal();
         bindEvents(data, parseResult);
         // All result sections share one view; initialize every visualization immediately.
@@ -1376,22 +1373,6 @@ const Dashboard = (() => {
             setNginxStandaloneView('input');
             document.getElementById('nginx-tab-upload')?.focus();
             window.scrollTo({ top: 0, behavior: 'instant' });
-        });
-
-        // Download report
-        document.getElementById('dash-download-btn')?.addEventListener('click', () => {
-            if (currentData) Report.openModal(currentData, { ...originalParseResult, nodeCount: currentNodeCount }, { nodeCount: currentNodeCount });
-        });
-
-        // Share button
-        document.getElementById('dash-share-btn')?.addEventListener('click', () => {
-            if (currentData && typeof ShareModal !== 'undefined') {
-                ShareModal.open(currentData, parseResult, {
-                    logText: currentLogText,
-                    gistUrl: currentGistUrl,
-                    inputSource: currentInputSource,
-                });
-            }
         });
 
         // Parsed / Skipped toggles
@@ -3127,6 +3108,31 @@ const Dashboard = (() => {
         </div>
         `;
     }
+    // The result action bar is a React component. It asks for the current
+    // dashboard's context here and re-reads it whenever the revision changes,
+    // because every render replaces the toolbar node it is mounted in.
+    let resultActionsRevision = 0;
+    function announceResultActions() {
+        resultActionsRevision++;
+        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('signal:dashboard-actions'));
+    }
+    function getResultActionsRevision() {
+        return resultActionsRevision;
+    }
+    function getResultActions() {
+        if (!currentData) return null;
+        const data = currentData;
+        const reportParseResult = { ...originalParseResult, nodeCount: currentNodeCount };
+        const nodeCount = currentNodeCount;
+        return {
+            readOnly: currentReadOnly,
+            inputSource: currentInputSource,
+            logText: currentLogText,
+            downloadHtml: () => Report.openModal(data, reportParseResult, { nodeCount }),
+            downloadCsv: () => Report.downloadCsv(data),
+        };
+    }
+
     function dispose() {
         stopAdaptiveQueuePoller();
         dismissToastNotification(false);
@@ -3157,6 +3163,7 @@ const Dashboard = (() => {
         currentFilteredEntries = [];
         originalParseResult = null;
         originalTimeRange = null;
+        announceResultActions();
     }
 
     if (typeof document !== 'undefined') {
@@ -3170,6 +3177,8 @@ const Dashboard = (() => {
 return {
         render,
         dispose,
+        getResultActions,
+        getResultActionsRevision,
         switchStage,
         switchMitigateTab,
         updateMitigationFirewallPreview,

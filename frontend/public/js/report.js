@@ -87,7 +87,7 @@ const Report = (() => {
                         <div style="width:38px;height:38px;border-radius:10px;background:var(--signal-tint);display:flex;align-items:center;justify-content:center;color:var(--accent-primary);font-size:1.1rem;">
                             <i class="bi bi-download"></i>
                         </div>
-                        <h3 style="margin:0;font-size:1.1rem;font-weight:700;color:var(--text-primary);">Download Report</h3>
+                        <h3 style="margin:0;font-size:1.1rem;font-weight:700;color:var(--text-primary);">Download HTML Report</h3>
                     </div>
                     <button id="dl-modal-close" style="background:none;border:none;color:var(--text-muted);font-size:1.3rem;cursor:pointer;padding:4px;line-height:1;">
                         <i class="bi bi-x-lg"></i>
@@ -127,16 +127,6 @@ const Report = (() => {
                         ">
                             <i class="bi bi-download"></i> Generate & Download
                         </button>
-                        <button id="dl-csv-btn" style="
-                            padding:12px 18px;border-radius:10px;
-                            border:1px solid var(--border-color);
-                            background:var(--bg-secondary);color:var(--text-primary);font-weight:600;
-                            font-size:0.92rem;cursor:pointer;display:flex;
-                            align-items:center;justify-content:center;gap:8px;
-                            transition:all 0.25s;
-                        ">
-                            <i class="bi bi-filetype-csv"></i> CSV
-                        </button>
                     </div>
                 </div>
 
@@ -173,120 +163,120 @@ const Report = (() => {
             if (e.target.id === 'download-modal-backdrop') closeModal();
         });
         document.getElementById('dl-start-btn').addEventListener('click', runDownload);
-        document.getElementById('dl-csv-btn').addEventListener('click', function() {
-            if (!_data) return;
-            const dateStr = new Date().toISOString().split('T')[0];
-            const csvRows = [];
-
-            // Summary Section
-            csvRows.push({
-                Section: 'Summary',
-                Category: 'Overview',
-                Item: 'Total Requests',
-                Value: _data.total_requests || 0,
-                Details: `Unique IPs: ${_data.unique_ips || 0}, Countries: ${_data.unique_countries || 0}, ASNs: ${_data.unique_asns || 0}`
-            });
-
-            // Top IPs
-            if (Array.isArray(_data.top_ips)) {
-                _data.top_ips.forEach(r => {
-                    csvRows.push({
-                        Section: 'Top IPs',
-                        Category: r.country || 'Unknown',
-                        Item: r.ip,
-                        Value: r.hits,
-                        Details: `ASN: ${r.asn || ''} ${r.asn_org || ''}`.trim()
-                    });
-                });
-            }
-
-            // Country Hits
-            if (Array.isArray(_data.country_hits)) {
-                _data.country_hits.forEach(r => {
-                    csvRows.push({
-                        Section: 'Country Distribution',
-                        Category: r.country_code || '',
-                        Item: r.country || 'Unknown',
-                        Value: r.hits,
-                        Details: `Unique IPs: ${r.unique_ips || 0}`
-                    });
-                });
-            }
-
-            // ASN Hits
-            if (Array.isArray(_data.asn_hits)) {
-                _data.asn_hits.forEach(r => {
-                    csvRows.push({
-                        Section: 'ASN Distribution',
-                        Category: `AS${r.asn || 0}`,
-                        Item: r.asn_org || 'Unknown',
-                        Value: r.hits,
-                        Details: `Unique IPs: ${r.unique_ips || 0}`
-                    });
-                });
-            }
-
-            // Top URLs / Paths
-            if (_data.http_metrics && Array.isArray(_data.http_metrics.top_urls)) {
-                _data.http_metrics.top_urls.forEach(r => {
-                    csvRows.push({
-                        Section: 'Top URLs',
-                        Category: 'HTTP',
-                        Item: r.url,
-                        Value: r.count,
-                        Details: `${r.percentage || ''}% of requests`
-                    });
-                });
-            }
-
-            // Status Codes
-            if (_data.http_metrics && Array.isArray(_data.http_metrics.status_hits)) {
-                _data.http_metrics.status_hits.forEach(r => {
-                    csvRows.push({
-                        Section: 'Status Codes',
-                        Category: 'HTTP Status',
-                        Item: String(r.code),
-                        Value: r.count,
-                        Details: `${r.percentage || ''}%`
-                    });
-                });
-            }
-
-            // Bot Hits & Verification
-            if (Array.isArray(_data.bot_groups)) {
-                _data.bot_groups.forEach(g => {
-                    csvRows.push({
-                        Section: 'Bot Traffic',
-                        Category: g.group_name || 'Bot Group',
-                        Item: `Status: ${g.verification_status || 'unverified'}`,
-                        Value: g.requests,
-                        Details: `${g.unique_ips} IPs (${g.pct}%) | Verified: ${g.verified_requests || 0}, Spoofed: ${g.spoofed_requests || 0}`,
-                    });
-                });
-            }
-
-            // Spoofed Bot Attackers
-            if (Array.isArray(_data.spoofed_bot_attackers)) {
-                _data.spoofed_bot_attackers.forEach(att => {
-                    csvRows.push({
-                        Section: 'Spoofed Bot Attackers',
-                        Category: att.bot_name || 'Fake Bot',
-                        Item: att.ip,
-                        Value: att.hits,
-                        Details: `${att.country} | ${att.asn} (${att.asn_org}) | ${att.reason}`,
-                    });
-                });
-            }
-
-            if (csvRows.length === 0) csvRows.push(flattenObject(_data));
-            exportToCSV(csvRows, `nginx-report-${dateStr}`);
-            closeModal();
-        });
-
         // Persist checkbox changes
         document.getElementById('dl-compact-cb').addEventListener('change', (e) => {
             setCompactPref(e.target.checked);
         });
+    }
+
+    /** Exports the dashboard's summary tables as one CSV file. */
+    function downloadCsv(data) {
+        if (!data) return;
+        const dateStr = new Date().toISOString().split('T')[0];
+        const csvRows = [];
+
+        // Summary Section
+        csvRows.push({
+            Section: 'Summary',
+            Category: 'Overview',
+            Item: 'Total Requests',
+            Value: data.total_requests || 0,
+            Details: `Unique IPs: ${data.unique_ips || 0}, Countries: ${data.unique_countries || 0}, ASNs: ${data.unique_asns || 0}`
+        });
+
+        // Top IPs
+        if (Array.isArray(data.top_ips)) {
+            data.top_ips.forEach(r => {
+                csvRows.push({
+                    Section: 'Top IPs',
+                    Category: r.country || 'Unknown',
+                    Item: r.ip,
+                    Value: r.hits,
+                    Details: `ASN: ${r.asn || ''} ${r.asn_org || ''}`.trim()
+                });
+            });
+        }
+
+        // Country Hits
+        if (Array.isArray(data.country_hits)) {
+            data.country_hits.forEach(r => {
+                csvRows.push({
+                    Section: 'Country Distribution',
+                    Category: r.country_code || '',
+                    Item: r.country || 'Unknown',
+                    Value: r.hits,
+                    Details: `Unique IPs: ${r.unique_ips || 0}`
+                });
+            });
+        }
+
+        // ASN Hits
+        if (Array.isArray(data.asn_hits)) {
+            data.asn_hits.forEach(r => {
+                csvRows.push({
+                    Section: 'ASN Distribution',
+                    Category: `AS${r.asn || 0}`,
+                    Item: r.asn_org || 'Unknown',
+                    Value: r.hits,
+                    Details: `Unique IPs: ${r.unique_ips || 0}`
+                });
+            });
+        }
+
+        // Top URLs / Paths
+        if (data.http_metrics && Array.isArray(data.http_metrics.top_urls)) {
+            data.http_metrics.top_urls.forEach(r => {
+                csvRows.push({
+                    Section: 'Top URLs',
+                    Category: 'HTTP',
+                    Item: r.url,
+                    Value: r.count,
+                    Details: `${r.percentage || ''}% of requests`
+                });
+            });
+        }
+
+        // Status Codes
+        if (data.http_metrics && Array.isArray(data.http_metrics.status_hits)) {
+            data.http_metrics.status_hits.forEach(r => {
+                csvRows.push({
+                    Section: 'Status Codes',
+                    Category: 'HTTP Status',
+                    Item: String(r.code),
+                    Value: r.count,
+                    Details: `${r.percentage || ''}%`
+                });
+            });
+        }
+
+        // Bot Hits & Verification
+        if (Array.isArray(data.bot_groups)) {
+            data.bot_groups.forEach(g => {
+                csvRows.push({
+                    Section: 'Bot Traffic',
+                    Category: g.group_name || 'Bot Group',
+                    Item: `Status: ${g.verification_status || 'unverified'}`,
+                    Value: g.requests,
+                    Details: `${g.unique_ips} IPs (${g.pct}%) | Verified: ${g.verified_requests || 0}, Spoofed: ${g.spoofed_requests || 0}`,
+                });
+            });
+        }
+
+        // Spoofed Bot Attackers
+        if (Array.isArray(data.spoofed_bot_attackers)) {
+            data.spoofed_bot_attackers.forEach(att => {
+                csvRows.push({
+                    Section: 'Spoofed Bot Attackers',
+                    Category: att.bot_name || 'Fake Bot',
+                    Item: att.ip,
+                    Value: att.hits,
+                    Details: `${att.country} | ${att.asn} (${att.asn_org}) | ${att.reason}`,
+                });
+            });
+        }
+
+        if (csvRows.length === 0) csvRows.push(flattenObject(data));
+        exportToCSV(csvRows, `nginx-report-${dateStr}`);
     }
 
     function openModal(data, parseResult, options = {}) {
@@ -1001,6 +991,6 @@ this.textContent=s?this.textContent.replace('Hide','View'):this.textContent.repl
 
     function n(v) { return (v || 0).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, ','); }
 
-    return { openModal };
+    return { openModal, downloadCsv };
 })();
 window.Report = Report;

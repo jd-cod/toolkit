@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
+import NginxResultActions from '@/components/share/NginxResultActions';
 import SharedSnapshot from '@/components/share/SharedSnapshot';
 import { api } from '@/lib/api';
 import type { GeoIPRuntime } from '@/lib/geoip';
@@ -146,20 +147,6 @@ export default function SharePage() {
         skip403: true,
         skipInternal: true,
       });
-
-      // Hide all action buttons (read-only mode)
-      setTimeout(() => {
-        const idsToHide = ['dash-back-btn', 'dash-share-btn', 'dash-download-btn', 'dash-new-btn'];
-        idsToHide.forEach(id => {
-          const el = document.getElementById(id);
-          if (el) el.style.display = 'none';
-        });
-        // Also hide any remaining action buttons by class
-        document.querySelectorAll('.dash-action-btn').forEach(el => {
-          (el as HTMLElement).style.display = 'none';
-        });
-      }, 300);
-
     } catch (error: unknown) {
       setAnalysisState('error');
       setAnalysisError(getErrorMessage(error, 'Analysis failed.'));
@@ -314,6 +301,7 @@ export default function SharePage() {
         {/* Nginx Dashboard Container — filled by dashboard.js */}
         <div id="nginx-input-section" style={{ display: 'none' }}></div>
         <div id="nginx-dashboard" style={{ display: 'none' }}></div>
+        <NginxResultActions />
       </main>
       <Footer />
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>

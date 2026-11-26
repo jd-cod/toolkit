@@ -1033,7 +1033,7 @@ const LogParser = (() => {
         if (typeof Worker !== 'undefined') {
             try {
                 return await new Promise((resolve, reject) => {
-                    const worker = new Worker('/js/log-parser.worker.js?v=6.52');
+                    const worker = new Worker('/js/log-parser.worker.js?v=6.53');
                     worker.onmessage = e => {
                         worker.terminate();
                         if (e.data.type === 'success') resolve(e.data.result);

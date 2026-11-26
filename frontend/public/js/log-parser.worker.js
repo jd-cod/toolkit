@@ -11,16 +11,16 @@
 function ensureDependencies() {
     if (typeof importScripts !== 'undefined') {
         if (typeof ChunkedLineSplitter === 'undefined') {
-            importScripts('/js/stream-line-splitter.js?v=6.52');
+            importScripts('/js/stream-line-splitter.js?v=6.53');
         }
         if (typeof ColumnarStorage === 'undefined') {
-            importScripts('/js/columnar-storage.js?v=6.52');
+            importScripts('/js/columnar-storage.js?v=6.53');
         }
         if (typeof BotDetector === 'undefined') {
-            importScripts('/js/bot-detector.js?v=6.52');
+            importScripts('/js/bot-detector.js?v=6.53');
         }
         if (typeof LogParser === 'undefined') {
-            importScripts('/js/log-parser.js?v=6.52');
+            importScripts('/js/log-parser.js?v=6.53');
         }
     } else if (typeof require !== 'undefined') {
         if (typeof ChunkedLineSplitter === 'undefined') {

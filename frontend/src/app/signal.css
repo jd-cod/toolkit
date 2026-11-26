@@ -395,8 +395,9 @@ body:has(.signal-workspace dialog[open]) { overflow: hidden; }
 .signal-action { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 7px 13px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-card); color: var(--text-secondary); font: 600 13px/1.2 var(--font-sans, inherit); white-space: nowrap; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease; }
 .signal-action:hover { color: var(--text-primary); border-color: var(--accent-primary); }
 .signal-action:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
-.signal-action:disabled, .signal-action[aria-disabled="true"] { opacity: .6; cursor: not-allowed; border-style: dashed; }
-.signal-action:disabled:hover, .signal-action[aria-disabled="true"]:hover { color: var(--text-secondary); border-color: var(--border-color); }
+.signal-action:disabled { opacity: .6; cursor: not-allowed; }
+.signal-action:disabled:hover { color: var(--text-secondary); border-color: var(--border-color); }
+.signal-action-unavailable { border-style: dashed; color: var(--text-muted); }
 .signal-action-primary { background: var(--accent-primary); border-color: var(--accent-primary); color: var(--signal-on-primary, #fff); }
 .signal-action-primary:hover { color: var(--signal-on-primary, #fff); filter: brightness(1.08); }
 .signal-actions-note { flex-basis: 100%; margin: 0; padding: 9px 12px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-input); color: var(--text-secondary); font-size: 13px; }

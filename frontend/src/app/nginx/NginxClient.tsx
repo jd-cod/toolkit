@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
+import NginxResultActions from '@/components/share/NginxResultActions';
 import { useClipboard } from '@/hooks/useClipboard';
 import { useHydrated } from '@/hooks/useHydrated';
 import { disposeNginxDashboard, loadNginxInput } from '@/lib/nginx-engine';
@@ -236,6 +237,7 @@ export default function NginxClient() {
         </section>
 
         <div id="nginx-dashboard" style={{ display: 'none' }} />
+        <NginxResultActions />
       </main>
       <Footer />
     </>
