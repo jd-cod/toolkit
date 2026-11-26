@@ -1,13 +1,25 @@
 'use client';
 
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import type { ReactNode } from 'react';
 import AsnSnapshotView from '@/components/AsnSnapshotView';
+import ChmodResultView from '@/components/ChmodResultView';
+import CronResultView from '@/components/CronResultView';
 import DnsSnapshotView from '@/components/DnsSnapshotView';
+import IpInfoResultView from '@/components/IpInfoResultView';
 import MyIpSnapshotView from '@/components/MyIpSnapshotView';
+import SslResultView from '@/components/SslResultView';
+import SubnetResultView from '@/components/SubnetResultView';
 import WhoisSnapshotView from '@/components/WhoisSnapshotView';
 import { normalizeAsnSnapshot } from '@/lib/asn';
+import { normalizeChmodSnapshot } from '@/lib/chmod';
+import { normalizeCronSnapshot } from '@/lib/cron';
 import { buildRerunHref, normalizeSharedSnapshot } from '@/lib/dns';
+import { normalizeIpInfoSnapshot } from '@/lib/ipinfo';
 import type { SnapshotTool } from '@/lib/share';
+import { buildSslRerunHref, normalizeSslSnapshot } from '@/lib/ssl';
+import { normalizeSubnetSnapshot, parseCIDR } from '@/lib/subnet';
 import { buildWhoisRerunHref, normalizeWhoisSnapshot } from '@/lib/whois';
 
 interface SharedSnapshotProps {
@@ -59,11 +71,80 @@ export default function SharedSnapshot({ tool, snapshot, title, code }: SharedSn
           />
         </div>
       );
-    default:
+    case 'ssl': {
+      const ssl = normalizeSslSnapshot(snapshot);
       return (
-        <div className="glass" style={{ maxWidth: 560, margin: '2rem auto', padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
-          This shared result cannot be displayed.
-        </div>
+        <SharedFrame title={title} code={code} liveHref={buildSslRerunHref(ssl)} liveLabel="Check Again">
+          <SslResultView result={ssl} mode="shared" />
+        </SharedFrame>
       );
+    }
+    case 'abuse':
+      return (
+        <SharedFrame title={title} code={code} liveHref="/abuse" liveLabel="New IP Lookup" wide>
+          <IpInfoResultView snapshot={normalizeIpInfoSnapshot(snapshot)} mode="shared" />
+        </SharedFrame>
+      );
+    case 'subnet': {
+      const subnet = normalizeSubnetSnapshot(snapshot);
+      const result = parseCIDR(subnet.cidr);
+      return (
+        <SharedFrame title={title} code={code} liveHref="/subnet" liveLabel="Open Calculator">
+          {result
+            ? <SubnetResultView result={result} awsMode={subnet.aws_mode} mode="shared" checkedAt={subnet.checked_at_utc} />
+            : <Unreadable />}
+        </SharedFrame>
+      );
+    }
+    case 'cron': {
+      const cron = normalizeCronSnapshot(snapshot);
+      return (
+        <SharedFrame title={title} code={code} liveHref="/cron" liveLabel="Open Builder">
+          {cron.expression ? <CronResultView expr={cron.expression} mode="shared" /> : <Unreadable />}
+        </SharedFrame>
+      );
+    }
+    case 'chmod': {
+      const chmod = normalizeChmodSnapshot(snapshot);
+      return (
+        <SharedFrame title={title} code={code} liveHref="/chmod" liveLabel="Open Calculator">
+          {chmod.octal ? <ChmodResultView octal={chmod.octal} mode="shared" /> : <Unreadable />}
+        </SharedFrame>
+      );
+    }
+    default:
+      return <Unreadable />;
   }
+}
+
+function Unreadable() {
+  return (
+    <div className="glass" style={{ maxWidth: 560, margin: '2rem auto', padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+      This shared result cannot be displayed.
+    </div>
+  );
+}
+
+interface SharedFrameProps {
+  title?: string;
+  code: string;
+  liveHref: string;
+  liveLabel: string;
+  wide?: boolean;
+  children: ReactNode;
+}
+
+/** Read-only notice and a link back to the live tool, for views that have no banner of their own. */
+function SharedFrame({ title, code, liveHref, liveLabel, wide, children }: SharedFrameProps) {
+  return (
+    <div style={{ maxWidth: wide ? 1400 : 1100, margin: '0 auto' }}>
+      <div className="signal-shared-banner">
+        <i className="bi bi-share-fill" aria-hidden="true" />
+        <span>You are viewing <strong>{title || 'a shared result'}</strong> — read-only snapshot.</span>
+        <code>/s/{code}</code>
+        <Link href={liveHref}><i className="bi bi-arrow-up-right-circle" aria-hidden="true" />{liveLabel}</Link>
+      </div>
+      {children}
+    </div>
+  );
 }

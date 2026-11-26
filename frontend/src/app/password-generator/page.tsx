@@ -6,7 +6,8 @@ import Footer from '@/components/Footer';
 import ToolWorkspace from '@/components/ToolWorkspace';
 import { useHydrated } from '@/hooks/useHydrated';
 import { useClipboard } from '@/hooks/useClipboard';
-import { exportToCSV } from '@/lib/csv-utils';
+import ResultActions, { ResultActionButton } from '@/components/share/ResultActions';
+import { buildReportHtml } from '@/lib/report-html';
 import {
   LENGTH_PRESETS,
   PIN_PRESETS,
@@ -58,6 +59,21 @@ const MODES: { id: PasswordMode; label: string; icon: string; hint: string }[] =
 ];
 
 const BULK_COUNTS = [5, 10, 25, 50];
+
+/** Builds the downloadable report for a bulk batch. It is created in the browser and saved straight to disk. */
+function buildPasswordListHtml(passwords: string[], modeLabel: string) {
+  return buildReportHtml({
+    title: 'Generated Passwords',
+    subtitle: `${passwords.length} generated in ${modeLabel} mode. Store this file somewhere safe.`,
+    checkedAt: new Date().toISOString(),
+    timeLabel: 'Generated at',
+    sections: [{
+      title: 'Passwords',
+      meta: `${passwords.length}`,
+      table: { columns: ['#', 'Password'], mono: [1], rows: passwords.map((password, index) => [index + 1, password]) },
+    }],
+  });
+}
 
 const HISTORY_PUSH_DELAY_MS = 1200;
 
@@ -517,16 +533,17 @@ function PasswordGeneratorControls() {
 
           {bulk.length > 0 && (
             <>
-              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-                <button onClick={() => void copy(bulk.join('\n'), 'bulk')} className="btn-secondary" style={{ padding: '8px 16px', borderRadius: 10, cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <i className={isCopied('bulk') ? 'bi bi-check-lg' : 'bi bi-clipboard'}></i> {isCopied('bulk') ? 'Copied!' : 'Copy All'}
-                </button>
-                <button onClick={() => exportToCSV(bulk.map((p, i) => ({ index: i + 1, password: p })), 'generated-passwords')} className="btn-secondary" style={{ padding: '8px 16px', borderRadius: 10, cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <i className="bi bi-download"></i> Export CSV
-                </button>
-                <button onClick={() => setBulk([])} className="btn-secondary" style={{ padding: '8px 16px', borderRadius: 10, cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <i className="bi bi-x-lg"></i> Clear
-                </button>
+              {/* No Share here on purpose: generated passwords never leave the browser. */}
+              <div style={{ marginBottom: '0.75rem' }}>
+                <ResultActions
+                  html={{ filename: 'generated-passwords', build: () => buildPasswordListHtml(bulk, MODES.find((m) => m.id === mode)?.label || mode) }}
+                  csv={{ filename: 'generated-passwords', rows: () => bulk.map((p, i) => ({ index: i + 1, password: p })) }}
+                >
+                  <ResultActionButton icon={isCopied('bulk') ? 'check-lg' : 'clipboard'} onClick={() => void copy(bulk.join('\n'), 'bulk')}>
+                    {isCopied('bulk') ? 'Copied' : 'Copy All'}
+                  </ResultActionButton>
+                  <ResultActionButton icon="x-lg" onClick={() => setBulk([])}>Clear</ResultActionButton>
+                </ResultActions>
               </div>
               <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: 10, background: 'var(--bg-input)' }}>
                 {bulk.map((p, i) => (

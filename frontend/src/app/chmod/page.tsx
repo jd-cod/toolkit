@@ -5,7 +5,7 @@ import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import ToolWorkspace from '@/components/ToolWorkspace';
 import { Fragment } from 'react';
-import { useClipboard } from '@/hooks/useClipboard';
+import ChmodResultView from '@/components/ChmodResultView';
 
 const PRESETS = [
   { label: 'Standard File', octal: '644', desc: 'Owner read/write, others read-only' },
@@ -23,28 +23,7 @@ const PERMS = ['Read', 'Write', 'Execute'];
 const PERM_ICONS = ['bi-eye', 'bi-pencil', 'bi-play-circle'];
 const PERM_COLORS = ['var(--accent-green)', 'var(--accent-amber)', 'var(--accent-red)'];
 
-function toSymbolic(bits: number[], special: number): string {
-  const chars = ['r', 'w', 'x'];
-  let s = '';
-  for (let r = 0; r < 3; r++) for (let p = 0; p < 3; p++) s += (bits[r] & (4 >> p)) ? chars[p] : '-';
-  if (special & 4) s = s.slice(0, 2) + (s[2] === 'x' ? 's' : 'S') + s.slice(3);
-  if (special & 2) s = s.slice(0, 5) + (s[5] === 'x' ? 's' : 'S') + s.slice(6);
-  if (special & 1) s = s.slice(0, 8) + (s[8] === 'x' ? 't' : 'T');
-  return s;
-}
-
-function describePerms(bits: number, role: string): string {
-  const names = [];
-  if (bits & 4) names.push('read');
-  if (bits & 2) names.push('write');
-  if (bits & 1) names.push('execute');
-  if (names.length === 0) return `${role} has no permissions`;
-  if (names.length === 3) return `${role} can read, write, and execute`;
-  return `${role} can ${names.join(' and ')}`;
-}
-
 export default function ChmodPage() {
-  const { copy, isCopied } = useClipboard();
   const [grid, setGrid] = useState<boolean[][]>([[true, true, true], [true, false, true], [true, false, true]]); // 755
   const [special, setSpecial] = useState([false, false, false]);
   const [octalDraft, setOctalDraft] = useState<string | null>(null);
@@ -53,9 +32,6 @@ export default function ChmodPage() {
   const specialBits = special.reduce((acc, v, i) => acc | (v ? (4 >> i) : 0), 0);
   const octal = specialBits ? `${specialBits}${bits.join('')}` : bits.join('');
   const octalInput = octalDraft ?? octal;
-  const sym = toSymbolic(bits, specialBits);
-  const is777 = bits[0] === 7 && bits[1] === 7 && bits[2] === 7;
-  const worldWrite = !!(bits[2] & 2);
 
   const toggleCell = (r: number, p: number) => {
     setOctalDraft(null);
@@ -131,52 +107,7 @@ export default function ChmodPage() {
           </div>
         </div>
 
-        {/* Output Cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-          <div className="glass" style={{ padding: '1rem', textAlign: 'center', borderTop: '3px solid var(--accent-cyan)' }}>
-            <div style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--accent-cyan)', fontFamily: 'var(--font-mono)' }}>{octal}</div>
-            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Octal</div>
-          </div>
-          <div className="glass" style={{ padding: '1rem', textAlign: 'center', borderTop: '3px solid var(--accent-primary)' }}>
-            <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--accent-primary)', fontFamily: 'var(--font-mono)' }}>{sym}</div>
-            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Symbolic</div>
-          </div>
-          <div className="glass" style={{ padding: '1rem', textAlign: 'center', borderTop: '3px solid var(--accent-green)' }}>
-            <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--accent-green)', fontFamily: 'var(--font-mono)' }}>-{sym}</div>
-            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>ls -la Output</div>
-          </div>
-        </div>
-
-        {/* Warnings */}
-        {(is777 || worldWrite || special[0] || special[1]) && (
-          <div style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.15)', borderRadius: 10, padding: '0.75rem 1rem', marginBottom: '1.25rem' }}>
-            {is777 && <div style={{ fontSize: '0.85rem', color: 'var(--accent-red)', marginBottom: 4 }}>🔴 777 gives full access to everyone — major security risk!</div>}
-            {worldWrite && !is777 && <div style={{ fontSize: '0.85rem', color: 'var(--accent-amber)', marginBottom: 4 }}>🟡 World-writable — other users can modify this file.</div>}
-            {special[0] && <div style={{ fontSize: '0.85rem', color: 'var(--accent-amber)', marginBottom: 4 }}>🟡 Setuid — file executes as the owning user.</div>}
-            {special[1] && <div style={{ fontSize: '0.85rem', color: 'var(--accent-amber)' }}>🟡 Setgid — file executes as the owning group.</div>}
-          </div>
-        )}
-
-        {/* Explanation */}
-        <div className="glass" style={{ padding: '1.25rem', marginBottom: '1.5rem' }}>
-          <div style={{ fontWeight: 600, marginBottom: '0.75rem' }}><i className="bi bi-info-circle" style={{ marginRight: '0.5rem' }}></i>Explanation</div>
-          <div style={{ fontSize: '0.88rem', color: 'var(--text-secondary)' }}>
-            <p style={{ marginBottom: '0.4rem' }}><i className="bi bi-person-fill" style={{ color: 'var(--accent-primary)', marginRight: 6 }}></i>{describePerms(bits[0], 'Owner')}</p>
-            <p style={{ marginBottom: '0.4rem' }}><i className="bi bi-people-fill" style={{ color: 'var(--accent-cyan)', marginRight: 6 }}></i>{describePerms(bits[1], 'Group')}</p>
-            <p><i className="bi bi-globe" style={{ color: 'var(--accent-amber)', marginRight: 6 }}></i>{describePerms(bits[2], 'Others')}</p>
-          </div>
-        </div>
-
-        {/* Command */}
-        <div className="glass" style={{ padding: '1.25rem', marginBottom: '1.5rem' }}>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.625rem' }}>Command</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
-            <code style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: '0.95rem', color: 'var(--accent-cyan)', background: 'rgba(99,102,241,0.06)', padding: '0.625rem 1rem', borderRadius: 8 }}>chmod {octal} filename</code>
-            <button onClick={() => void copy(`chmod ${octal} filename`, 'cmd')} className="btn-secondary">
-              <i className={isCopied('cmd') ? 'bi bi-check-lg' : 'bi bi-clipboard'}></i> {isCopied('cmd') ? 'Copied!' : 'Copy'}
-            </button>
-          </div>
-        </div>
+        <ChmodResultView octal={octal} mode="live" />
         </ToolWorkspace>
       </main>
       <Footer />
