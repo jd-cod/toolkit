@@ -122,6 +122,7 @@ ENTRYPOINT ["/sbin/tini", "--"]
 # new migrations. Replay them here; the runner is idempotent and logs per-file.
 #
 # `|| true` is deliberate: a migration that fails against a partially-upgraded
-# database must not stop the API from coming up. migrate.js already logs the
-# failing file and continues.
+# database must not stop the API from coming up. migrate.js stops at the failing
+# file, logs it and exits non-zero; /api/health then answers "degraded" with the
+# number of pending migrations until a later start applies them.
 CMD ["sh", "-c", "(cd /app/backend && node src/migrate.js) || true; cd /app; exec pm2-runtime start ecosystem.config.cjs"]

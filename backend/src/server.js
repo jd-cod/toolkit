@@ -39,6 +39,7 @@ import adminRoutes from './routes/admin.js';
 import publicRoutes from './routes/public.js';
 import whoisRoutes from './routes/whois.js';
 import ingestRoutes from './routes/ingest.js';
+import healthRoutes from './routes/health.js';
 import { initGeoIPReaders } from './lib/geoip-city.js';
 
 // Create Fastify instance
@@ -137,14 +138,7 @@ await fastify.register(whoisRoutes, { prefix: '/api' });
 await fastify.register(ingestRoutes, { prefix: '/api' });
 await fastify.register(ingestRoutes); // Also register at root so /ingest works directly
 
-fastify.get('/api/health', async (request, reply) => {
-  try {
-    const [rows] = await fastify.mysql.execute('SELECT 1 as ok');
-    return { status: 'ok', database: 'connected', timestamp: new Date().toISOString() };
-  } catch (err) {
-    return reply.code(500).send({ status: 'error', database: 'disconnected', error: err.message });
-  }
-});
+await fastify.register(healthRoutes, { prefix: '/api' });
 
 // ─── Global Error Handler ───
 
