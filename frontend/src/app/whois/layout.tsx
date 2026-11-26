@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 import { getSiteConfigServer } from '@/lib/site-config.server';
-import { buildToolMetadata, buildStructuredData } from '@/lib/seo';
+import { buildToolMetadata, buildStructuredData, serializeJsonLd } from '@/lib/seo';
 
 export async function generateMetadata(): Promise<Metadata> {
   const config = await getSiteConfigServer();
@@ -18,7 +18,7 @@ export default async function WhoisLayout({ children }: { children: ReactNode })
     <>
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schema) }}
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(schema) }}
       />
       {children}
     </>

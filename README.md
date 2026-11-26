@@ -29,9 +29,11 @@ Access in browser:
 - **Frontend**: http://localhost:3000
 - **Backend API**: http://localhost:4000/api
 
-Default Admin Credentials:
-- **Username**: `admin`
-- **Password**: `adminpassword123`
+Before the first start, create `backend/.env` from `backend/sample_production.env`
+(or `backend/sample_development.env`) and fill in your own database passwords,
+JWT secret and admin credentials. There are no default credentials: the admin
+account is created from `ADMIN_BOOTSTRAP_USERNAME` and `ADMIN_BOOTSTRAP_PASSWORD`
+on first boot.
 
 ---
 

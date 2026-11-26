@@ -11,12 +11,17 @@ declare global {
 // Classic scripts declare global consts. Removing their tags does not unload them:
 // load each dependency once per document, then bind fresh input DOM on each visit.
 const scriptLoads = new Map<string, Promise<void>>();
-function loadScript(src: string) {
+function loadScript(src: string, integrity?: string) {
   const existing = scriptLoads.get(src);
   if (existing) return existing;
   const promise = new Promise<void>((resolve, reject) => {
     const script = document.createElement('script');
     script.src = src;
+    if (integrity) {
+      // Third-party CDN file: the browser refuses it if the content changed.
+      script.integrity = integrity;
+      script.crossOrigin = 'anonymous';
+    }
     script.onload = () => resolve();
     script.onerror = () => {
       script.remove();
@@ -30,7 +35,10 @@ function loadScript(src: string) {
 }
 
 export async function loadNginxEngine() {
-  await loadScript('https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js');
+  await loadScript(
+    'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js',
+    'sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC',
+  );
   if (!await loadGeoIP()) throw new Error('The GeoIP engine could not load.');
   for (const src of [
     '/js/stream-line-splitter.js?v=6.52',
@@ -40,7 +48,7 @@ export async function loadNginxEngine() {
     '/js/analyzer.js?v=6.52',
     '/js/dashboard.js?v=6.52',
     '/js/share.js?v=6.52',
-    '/js/report.js?v=6.52',
+    '/js/report.js?v=6.53',
   ]) await loadScript(src);
 }
 

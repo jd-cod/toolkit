@@ -24,9 +24,11 @@ const Report = (() => {
 
     /* Pre-fetch Chart.js source for inline embedding */
     const CHART_JS_URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js';
+    // This source is inlined into exported reports, so it must be the exact published file.
+    const CHART_JS_INTEGRITY = 'sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC';
     (async function prefetchChartJs() {
         try {
-            const r = await fetch(CHART_JS_URL);
+            const r = await fetch(CHART_JS_URL, { integrity: CHART_JS_INTEGRITY });
             _chartJsSource = await r.text();
         } catch (e) { console.warn('[Report] Chart.js pre-cache failed:', e.message); }
     })();

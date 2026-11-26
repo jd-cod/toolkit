@@ -8,6 +8,8 @@
  * Reverse DNS still uses Cloudflare DoH (works in Node.js via fetch).
  */
 
+import { str } from '../lib/input.js';
+
 export default async function ipinfoRoutes(fastify, opts) {
   fastify.post('/ipinfo', async (request, reply) => {
     const body = request.body || {};
@@ -22,7 +24,7 @@ export default async function ipinfoRoutes(fastify, opts) {
       const batch = rawIPs.slice(i, i + BATCH);
       const batchResults = await Promise.all(
         batch.map(async (rawIP) => {
-          const ip = (rawIP || '').trim();
+          const ip = str(rawIP).trim();
           const version = detectIPVersion(ip);
           const isValid = version === 4 ? isValidIPv4(ip) : version === 6 ? isValidIPv6(ip) : false;
 

@@ -14,12 +14,20 @@
  */
 
 import r2Storage from '../lib/r2-storage.js';
+import { guardedRequest } from '../lib/net-guard.js';
 import zlib from 'node:zlib';
 import { promisify } from 'node:util';
 
 const gzipAsync = promisify(zlib.gzip);
 const gunzipAsync = promisify(zlib.gunzip);
 const MAX_UPLOAD_SIZE = 400 * 1024 * 1024; // 400 MB
+// Ceiling for decompressing an upload to count its lines; a larger result is a
+// decompression bomb or more than the browser can analyse anyway.
+const MAX_DECOMPRESSED_SIZE = 2048 * 1024 * 1024; // 2 GB
+const SHARE_CODE = /^[A-Za-z0-9]{8}$/;
+// These endpoints accept large bodies or make the server fetch a remote file,
+// so they get a tighter per-client limit than the global one.
+const UPLOAD_RATE_LIMIT = { max: 10, timeWindow: '1 minute' };
 
 /**
  * Check if content is already gzipped
@@ -53,6 +61,26 @@ export default async function storageRoutes(fastify, opts) {
     }
 
     const { code } = request.params;
+    if (!SHARE_CODE.test(code)) {
+      return reply.code(400).send({ error: 'Invalid share code.' });
+    }
+
+    // A code that already belongs to a share must go through
+    // /api/share/:code (and /verify), which enforce its password and expiry.
+    // Only fresh uploads that have not been turned into a share are served here.
+    const [shareRows] = await fastify.mysql.execute(
+      'SELECT password_hash, expires_at FROM shares WHERE code = ?', [code]
+    );
+    if (shareRows.length > 0) {
+      const share = shareRows[0];
+      if (share.expires_at && new Date() > new Date(share.expires_at)) {
+        return reply.code(410).send({ error: 'This share link has expired.' });
+      }
+      if (share.password_hash) {
+        return reply.code(401).send({ error: 'This share is password-protected.', needs_password: true });
+      }
+    }
+
     const r2Key = `shares/${code}.log.gz`;
 
     try {
@@ -71,13 +99,16 @@ export default async function storageRoutes(fastify, opts) {
   });
 
   // POST /api/storage/upload — Direct server-side upload (for small content or backward compatibility)
-  fastify.post('/storage/upload', { bodyLimit: MAX_UPLOAD_SIZE + 10 * 1024 * 1024 }, async (request, reply) => {
+  fastify.post('/storage/upload', {
+    bodyLimit: MAX_UPLOAD_SIZE + 10 * 1024 * 1024,
+    config: { rateLimit: UPLOAD_RATE_LIMIT },
+  }, async (request, reply) => {
     if (!r2Storage.isEnabled()) {
       return reply.code(503).send({ error: 'Storage service is not configured.' });
     }
 
     const body = request.body || {};
-    const content = body.content || '';
+    const content = typeof body.content === 'string' ? body.content : '';
 
     if (!content || content.length === 0) {
       return reply.code(400).send({ error: 'No content provided.' });
@@ -99,7 +130,7 @@ export default async function storageRoutes(fastify, opts) {
       if (isGzipped(inputBuffer)) {
         compressedBuffer = inputBuffer;
         try {
-          const decompressed = await gunzipAsync(inputBuffer);
+          const decompressed = await gunzipAsync(inputBuffer, { maxOutputLength: MAX_DECOMPRESSED_SIZE });
           decompressedSize = decompressed.length;
           lineCount = countLines(decompressed);
         } catch (err) {
@@ -148,44 +179,48 @@ export default async function storageRoutes(fastify, opts) {
   });
 
   // POST /api/storage/upload-external — Download from external URL and upload to R2
-  fastify.post('/storage/upload-external', async (request, reply) => {
+  fastify.post('/storage/upload-external', { config: { rateLimit: UPLOAD_RATE_LIMIT } }, async (request, reply) => {
     if (!r2Storage.isEnabled()) {
       return reply.code(503).send({ error: 'Storage service is not configured.' });
     }
 
     const body = request.body || {};
-    const sourceUrl = (body.url || '').trim();
+    const sourceUrl = typeof body.url === 'string' ? body.url.trim() : '';
 
     if (!sourceUrl) {
       return reply.code(400).send({ error: 'No source URL provided.' });
     }
 
     try {
-      // Fetch content from external URL (with timeout)
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+      // Fetch content from the external URL. guardedRequest only reaches
+      // public http(s) hosts, re-checks every redirect, and stops reading at
+      // the size limit instead of buffering an unbounded response.
+      let response;
+      try {
+        response = await guardedRequest(sourceUrl, {
+          headers: {
+            'User-Agent': 'SysAdmin-Toolkit/2.0 (Log Analyzer)',
+            'Accept': 'text/plain, application/octet-stream, */*',
+          },
+          timeoutMs: 30000, // 30s timeout
+          maxBytes: MAX_UPLOAD_SIZE,
+        });
+      } catch (err) {
+        if (err.code === 'ERESPONSETOOLARGE') {
+          return reply.code(413).send({ error: 'External content exceeds 400 MB limit.' });
+        }
+        if (err.statusCode === 400) {
+          return reply.code(400).send({ error: `Cannot fetch this URL: ${err.message}` });
+        }
+        throw err;
+      }
 
-      const response = await fetch(sourceUrl, {
-        headers: {
-          'User-Agent': 'SysAdmin-Toolkit/2.0 (Log Analyzer)',
-          'Accept': 'text/plain, application/octet-stream, */*',
-        },
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        return reply.code(response.status).send({ error: `Failed to fetch URL: HTTP ${response.status}` });
+      if (response.status < 200 || response.status >= 300) {
+        return reply.code(response.status >= 400 ? response.status : 502).send({ error: `Failed to fetch URL: HTTP ${response.status}` });
       }
 
       // Read content
-      const arrayBuffer = await response.arrayBuffer();
-      const inputBuffer = Buffer.from(arrayBuffer);
-
-      if (inputBuffer.length > MAX_UPLOAD_SIZE) {
-        return reply.code(413).send({ error: 'External content exceeds 400 MB limit.' });
-      }
+      const inputBuffer = response.body;
 
       // Compress if needed
       let compressedBuffer;
@@ -195,7 +230,7 @@ export default async function storageRoutes(fastify, opts) {
       if (isGzipped(inputBuffer)) {
         compressedBuffer = inputBuffer;
         try {
-          const decompressed = await gunzipAsync(inputBuffer);
+          const decompressed = await gunzipAsync(inputBuffer, { maxOutputLength: MAX_DECOMPRESSED_SIZE });
           decompressedSize = decompressed.length;
           lineCount = countLines(decompressed);
         } catch (err) {

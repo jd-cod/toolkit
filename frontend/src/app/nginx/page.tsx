@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { getSiteConfigServer } from '@/lib/site-config.server';
-import { buildToolMetadata, buildPageMetadata, buildStructuredData } from '@/lib/seo';
+import { buildToolMetadata, buildPageMetadata, buildStructuredData, serializeJsonLd } from '@/lib/seo';
 import NginxClient from './NginxClient';
 
 type Props = {
@@ -27,7 +27,7 @@ export default async function NginxPage() {
     <>
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(schema) }}
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(schema) }}
       />
       <NginxClient />
     </>

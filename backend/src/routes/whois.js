@@ -65,7 +65,7 @@ const PRIVACY_HINTS = [
 ];
 
 function normalizeDomain(input) {
-  const raw = (input || '').trim().toLowerCase();
+  const raw = (typeof input === 'string' ? input : '').trim().toLowerCase();
   const stripped = raw
     .replace(/^https?:\/\//, '')
     .replace(/\/.*$/, '')

@@ -86,6 +86,7 @@ COPY --from=build-frontend /app/frontend/public ./frontend/public
 COPY --from=build-frontend /app/frontend/package.json ./frontend/
 COPY --from=build-frontend /app/frontend/next.config.ts ./frontend/
 COPY --from=build-frontend /app/frontend/server.js ./frontend/
+COPY --from=build-frontend /app/frontend/access-gate.js ./frontend/
 COPY --from=deps-frontend /app/frontend/node_modules ./frontend/node_modules
 
 # ── PM2 / Process Config ──
@@ -95,8 +96,8 @@ COPY ecosystem.config.cjs ./
 RUN mkdir -p /app/backend/data /app/logs /app/frontend/public/data && \
     chown -R app:app /app
 
-# Install PM2 globally
-RUN npm install -g pm2 && npm cache clean --force
+# Install PM2 globally (pinned so a rebuild cannot pull in an unreviewed release)
+RUN npm install -g pm2@7.1.2 && npm cache clean --force
 
 # Switch to non-root user
 USER app

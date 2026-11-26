@@ -6,7 +6,18 @@ const apiBase = (
   "http://localhost:4000/api"
 ).replace(/\/+$/, "");
 
+// Sent on every response. HSTS is deliberately left to the TLS-terminating
+// proxy: it applies to the whole hostname, including other ports and services.
+const securityHeaders = [
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "X-Frame-Options", value: "SAMEORIGIN" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()" },
+  { key: "Content-Security-Policy", value: "frame-ancestors 'self'; base-uri 'self'; object-src 'none'" },
+];
+
 const nextConfig: NextConfig = {
+  poweredByHeader: false,
   allowedDevOrigins: [
     "192.168.0.12",
     ...(process.env.ALLOWED_DEV_ORIGINS
@@ -36,6 +47,10 @@ const nextConfig: NextConfig = {
   },
   async headers() {
     return [
+      {
+        source: "/:path*",
+        headers: securityHeaders,
+      },
       {
         source: "/data/:path*",
         headers: [

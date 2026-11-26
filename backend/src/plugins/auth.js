@@ -17,6 +17,7 @@ import jwt from 'jsonwebtoken';
 
 const BCRYPT_ROUNDS = 10;
 const JWT_EXPIRES_IN = '72h'; // Same as original: 72-hour admin sessions
+const JWT_ALGORITHM = 'HS256';
 
 async function authPlugin(fastify, opts) {
   const jwtSecret = process.env.ADMIN_JWT_SECRET;
@@ -46,7 +47,7 @@ async function authPlugin(fastify, opts) {
      * @returns {string} JWT token string
      */
     createToken(payload) {
-      return jwt.sign(payload, jwtSecret, { expiresIn: JWT_EXPIRES_IN });
+      return jwt.sign(payload, jwtSecret, { expiresIn: JWT_EXPIRES_IN, algorithm: JWT_ALGORITHM });
     },
 
     /**
@@ -56,7 +57,7 @@ async function authPlugin(fastify, opts) {
      */
     verifyToken(token) {
       try {
-        return jwt.verify(token, jwtSecret);
+        return jwt.verify(token, jwtSecret, { algorithms: [JWT_ALGORITHM] });
       } catch {
         return null;
       }
@@ -85,9 +86,62 @@ async function authPlugin(fastify, opts) {
         return reply.code(401).send({ error: 'Invalid or expired token' });
       }
 
+      // A signed token alone stays valid for its full lifetime. Comparing its
+      // version with the account's lets logout and password changes end
+      // sessions that already exist, and rejects tokens of deleted accounts.
+      const version = await auth.getTokenVersion(payload.sub);
+      if (version === null || (version !== undefined && (payload.tv ?? 0) !== version)) {
+        return reply.code(401).send({ error: 'Invalid or expired token' });
+      }
+
       request.admin = payload;
     },
+
+    /**
+     * Current session version of an admin account.
+     * @returns {Promise<number|null|undefined>} the version, null when the
+     *   account does not exist, or undefined when it cannot be checked (the
+     *   token_version column from migration 011 is not there yet).
+     */
+    async getTokenVersion(userId) {
+      const pool = fastify.mysql;
+      if (!pool || userId === undefined || userId === null) return undefined;
+      try {
+        const [rows] = await pool.execute('SELECT token_version FROM admin_users WHERE id = ?', [userId]);
+        return rows.length === 0 ? null : Number(rows[0].token_version) || 0;
+      } catch (err) {
+        if (err.code !== 'ER_BAD_FIELD_ERROR') throw err;
+        warnMissingColumn();
+        return undefined;
+      }
+    },
+
+    /**
+     * Ends every existing session of an admin account.
+     * @returns {Promise<number|undefined>} the new version, or undefined when
+     *   the token_version column is not there yet.
+     */
+    async revokeTokens(userId) {
+      const pool = fastify.mysql;
+      if (!pool || userId === undefined || userId === null) return undefined;
+      try {
+        await pool.execute('UPDATE admin_users SET token_version = token_version + 1 WHERE id = ?', [userId]);
+      } catch (err) {
+        if (err.code !== 'ER_BAD_FIELD_ERROR') throw err;
+        warnMissingColumn();
+        return undefined;
+      }
+      const version = await auth.getTokenVersion(userId);
+      return typeof version === 'number' ? version : undefined;
+    },
   };
+
+  let warnedMissingColumn = false;
+  function warnMissingColumn() {
+    if (warnedMissingColumn) return;
+    warnedMissingColumn = true;
+    fastify.log.warn('⚠️  admin_users.token_version is missing — run `npm run migrate`. Until then logout and password changes cannot end existing sessions.');
+  }
 
   fastify.decorate('auth', auth);
 }

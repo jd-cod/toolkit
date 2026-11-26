@@ -69,6 +69,8 @@ export default async function RootLayout({
         <link
           rel="stylesheet"
           href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
+          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
+          crossOrigin="anonymous"
         />
       </head>
       <body className={`${interfaceFont.variable} ${headingFont.variable}`} suppressHydrationWarning>

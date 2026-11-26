@@ -16,7 +16,7 @@ import crypto from 'crypto';
 import zlib from 'zlib';
 import { promisify } from 'util';
 import r2Storage from '../lib/r2-storage.js';
-import { generateIngestScript } from '../lib/ingest-script.js';
+import { generateIngestScript, isSafeBaseUrl, sanitizeSessionId } from '../lib/ingest-script.js';
 
 const gzipAsync = promisify(zlib.gzip);
 const MAX_COMPRESSED_BYTES = 250 * 1024 * 1024; // 250 MB max compressed upload (~2-2.5 GB uncompressed logs)
@@ -62,12 +62,25 @@ setInterval(async () => {
   }
 }, 60 * 1000).unref();
 
+const SAFE_HOST = /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
+const CHUNK_ID = /^chunk-\d{1,6}$/;
+
+function firstHeaderValue(value) {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return typeof raw === 'string' ? raw.split(',')[0].trim() : '';
+}
+
+// The result is embedded in the bash runner script and in links shown to the
+// user, and Host / X-Forwarded-* are client-controlled, so only a plain
+// scheme and host[:port] are accepted. Set APP_URL to pin it.
 function getPublicBaseUrl(request) {
   if (process.env.APP_URL) {
-    return process.env.APP_URL.replace(/\/+$/, '');
+    const configured = process.env.APP_URL.replace(/\/+$/, '');
+    if (isSafeBaseUrl(configured)) return configured;
   }
-  const proto = request.headers['x-forwarded-proto'] || 'http';
-  const host = request.headers['x-forwarded-host'] || request.headers.host || 'localhost:3000';
+  const proto = firstHeaderValue(request.headers['x-forwarded-proto']).toLowerCase() === 'https' ? 'https' : 'http';
+  const rawHost = firstHeaderValue(request.headers['x-forwarded-host']) || firstHeaderValue(request.headers.host);
+  const host = SAFE_HOST.test(rawHost) ? rawHost : 'localhost:3000';
   const frontendHost = host.replace(/:4000$/, ':3000');
   return `${proto}://${frontendHost}`;
 }
@@ -123,7 +136,7 @@ export default async function ingestRoutes(fastify, opts) {
     }
 
     const baseUrl = getPublicBaseUrl(request);
-    const targetSession = request.query?.session || '';
+    const targetSession = sanitizeSessionId(request.query?.session);
     reply.type('text/plain; charset=utf-8');
     return generateIngestScript(baseUrl, targetSession);
   });
@@ -197,15 +210,29 @@ export default async function ingestRoutes(fastify, opts) {
     }
 
     const reqChunkId = request.query?.chunkId || request.body?.chunkId || (session.nextChunkIndex > 1 ? `chunk-${session.nextChunkIndex}` : 'chunk-1');
+    // The chunk ID becomes part of a storage key; only IDs issued by /ingest/init are valid.
+    if (typeof reqChunkId !== 'string' || !CHUNK_ID.test(reqChunkId)) {
+      return reply.code(400).send({ error: 'Invalid chunk ID.' });
+    }
     const r2Key = `ephemeral/${sessionId}/${reqChunkId}.log.gz`;
 
     try {
       let head = await r2Storage.headObject(r2Key);
+      let headKey = r2Key;
       if ((!head || head.size === 0) && reqChunkId === 'chunk-1' && session.r2Key && session.r2Key !== r2Key) {
         head = await r2Storage.headObject(session.r2Key);
+        headKey = session.r2Key;
       }
       if (!head || head.size === 0) {
         return reply.code(400).send({ error: 'No uploaded data detected in storage.' });
+      }
+      // A presigned upload URL cannot cap the object size, so enforce the same
+      // ceiling as the direct upload path here and drop anything larger.
+      if (head.size > MAX_COMPRESSED_BYTES) {
+        await r2Storage.deleteLog(headKey).catch(() => {});
+        return reply.code(413).send({
+          error: `Compressed log size (${Math.round(head.size / (1024 * 1024))} MB) exceeds the ${Math.round(MAX_COMPRESSED_BYTES / (1024 * 1024))} MB limit.`,
+        });
       }
 
       const chunkData = {

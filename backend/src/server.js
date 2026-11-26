@@ -25,6 +25,8 @@ import { initIP2LocationDataRefresh } from './lib/ip2location-data.js';
 import { initBotIpRefresh } from './lib/bot-ip-updater.js';
 import { initCleanupScheduler } from './lib/cleanup-scheduler.js';
 import r2Storage from './lib/r2-storage.js';
+import { createClientIpResolver } from './lib/client-ip.js';
+import { resolveCorsOrigin } from './lib/cors-origin.js';
 
 // Routes
 import abuseRoutes from './routes/abuse.js';
@@ -55,10 +57,12 @@ const fastify = Fastify({
 // ─── Register Plugins ───
 
 // CORS — allow all origins during dev, restrict in production
+const corsOrigin = resolveCorsOrigin(process.env);
+if (process.env.NODE_ENV === 'production' && corsOrigin === true) {
+  fastify.log.warn('⚠️  CORS allows every origin. Set CORS_ORIGIN or APP_URL to restrict cross-origin API access.');
+}
 await fastify.register(cors, {
-  origin: process.env.NODE_ENV === 'production'
-    ? process.env.CORS_ORIGIN || true
-    : true,
+  origin: corsOrigin,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -67,26 +71,23 @@ await fastify.register(cors, {
 // Cookie parser (needed for JWT auth via cookies)
 await fastify.register(cookie);
 
-// Rate limiting
+// Rate limiting. The key is the client address as seen by trusted proxies
+// (see lib/client-ip.js), never a value the client can set itself.
+const clientIp = createClientIpResolver({ log: fastify.log });
+fastify.decorate('clientIp', clientIp);
 await fastify.register(rateLimit, {
   max: 100,
   timeWindow: '1 minute',
-  allowList: (request) => {
-    // Internal loopback SSR requests from Next.js on the same container/server
-    const isLoopback = request.ip === '127.0.0.1' || request.ip === '::1';
-    const hasExternalForward = Boolean(request.headers['x-forwarded-for'] || request.headers['x-real-ip']);
-    return isLoopback && !hasExternalForward;
-  },
-  keyGenerator: (request) => {
-    return request.headers['x-forwarded-for']?.split(',')[0]?.trim()
-      || request.headers['x-real-ip']
-      || request.ip;
-  },
+  // Skipped for internal SSR requests from Next.js and for requests with no
+  // public client address, which would otherwise all share one bucket.
+  allowList: (request) => clientIp.isLocal(request),
+  keyGenerator: (request) => clientIp.resolve(request),
 });
 
 // Cache-Control header for all API responses
 fastify.addHook('onSend', async (request, reply, payload) => {
   reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  reply.header('X-Content-Type-Options', 'nosniff');
   return payload;
 });
 
@@ -151,8 +152,12 @@ fastify.get('/api/health', async (request, reply) => {
 fastify.setErrorHandler((error, request, reply) => {
   fastify.log.error(error);
   const statusCode = error.statusCode || 500;
+  // Unexpected failures (no deliberate statusCode) can carry SQL, file paths
+  // or library internals. They are logged above; production clients get a
+  // generic message.
+  const hideDetail = !error.statusCode && process.env.NODE_ENV === 'production';
   reply.code(statusCode).send({
-    error: error.message || 'Internal server error.',
+    error: hideDetail ? 'Internal server error.' : (error.message || 'Internal server error.'),
     statusCode,
   });
 });

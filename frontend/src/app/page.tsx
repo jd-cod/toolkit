@@ -7,7 +7,7 @@ import Footer from '@/components/Footer';
 import ToolCard from '@/components/ToolCard';
 import { useSiteConfig } from '@/components/WorkspaceShell';
 import { enabledTools, matchesTool, toolMetadata, TOOL_CATEGORIES, type ToolCategory } from '@/lib/tool-catalog';
-import { buildStructuredData } from '@/lib/seo';
+import { buildStructuredData, serializeJsonLd } from '@/lib/seo';
 
 function SamplePreview() {
   return (
@@ -44,7 +44,7 @@ export default function HomePage() {
     <>
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteSchema) }}
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(websiteSchema) }}
       />
       <Navbar />
       {settings.announcement_enabled === '1' && settings.announcement_text && <div className={`announcement-bar ${settings.announcement_type === 'warning' ? 'warning' : ''}`}>{settings.announcement_text}</div>}

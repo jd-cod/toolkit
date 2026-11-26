@@ -8,10 +8,26 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { bruteForceLimit } from '../lib/client-ip.js';
+import { httpUrl } from '../lib/input.js';
 import { getGeoIpDataStatus } from '../lib/geoip-data.js';
 import { getIP2LocationStatus } from '../lib/ip2location-data.js';
 import { getRdapBootstrapStatus } from './whois.js';
 import { syncBotSource, syncAllBotSources, compileVerifiedBotsJson } from '../lib/bot-ip-updater.js';
+
+// Compared against when the username does not exist, so a failed login costs
+// the same bcrypt work either way and response time does not reveal which
+// usernames are real.
+const DUMMY_PASSWORD_HASH = '$2b$10$fqk12f5xPDshl0ILTS8ome8suxV63fDjmvHWrvSDggbbJUkkzKei.';
+const MIN_PASSWORD_LENGTH = 12;
+const ADMIN_COOKIE_MAX_AGE = 72 * 3600;
+
+function adminCookieOptions() {
+  return {
+    path: '/', httpOnly: true, sameSite: 'strict', maxAge: ADMIN_COOKIE_MAX_AGE,
+    secure: process.env.NODE_ENV === 'production',
+  };
+}
 
 const SHARE_CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 
@@ -103,25 +119,27 @@ export default async function adminRoutes(fastify, opts) {
   });
 
   // POST /api/admin/login
-  fastify.post('/admin/login', async (request, reply) => {
+  // Password guessing is throttled per client on top of the global limit.
+  fastify.post('/admin/login', { config: { rateLimit: bruteForceLimit(10, '5 minutes') } }, async (request, reply) => {
     const body = request.body || {};
     const { username, password } = body;
     if (!username || !password) return reply.code(400).send({ error: 'Username and password required' });
+    if (typeof username !== 'string' || typeof password !== 'string') return reply.code(400).send({ error: 'Username and password required' });
 
     const [rows] = await pool.execute('SELECT * FROM admin_users WHERE username = ?', [username]);
-    if (rows.length === 0) return reply.code(401).send({ error: 'Invalid credentials' });
+    if (rows.length === 0) {
+      await auth.verifyPassword(password, DUMMY_PASSWORD_HASH);
+      return reply.code(401).send({ error: 'Invalid credentials' });
+    }
 
     const user = rows[0];
     const valid = await auth.verifyPassword(password, user.password_hash);
     if (!valid) return reply.code(401).send({ error: 'Invalid credentials' });
 
-    const token = auth.createToken({ sub: user.id, username: user.username });
+    const token = auth.createToken({ sub: user.id, username: user.username, tv: Number(user.token_version) || 0 });
     await logActivity(pool, 'auth.login', `Admin "${username}" logged in`, username);
 
-    reply.setCookie('admin_token', token, {
-      path: '/', httpOnly: true, sameSite: 'strict', maxAge: 72 * 3600,
-      secure: process.env.NODE_ENV === 'production',
-    });
+    reply.setCookie('admin_token', token, adminCookieOptions());
 
     return { success: true, username: user.username };
   });
@@ -132,6 +150,9 @@ export default async function adminRoutes(fastify, opts) {
   // POST /api/admin/logout
   fastify.post('/admin/logout', { preHandler: [auth.authMiddleware] }, async (request, reply) => {
     await logActivity(pool, 'auth.logout', `Admin "${request.admin.username}" logged out`, request.admin.username);
+    // Clearing the cookie only affects this browser; revoking makes the token
+    // itself useless, including any copy that was stolen.
+    await auth.revokeTokens?.(request.admin.sub);
     reply.setCookie('admin_token', '', { path: '/', httpOnly: true, sameSite: 'strict', maxAge: 0 });
     return { success: true };
   });
@@ -475,7 +496,8 @@ export default async function adminRoutes(fastify, opts) {
     const body = request.body || {};
     const { current_password, new_password } = body;
     if (!current_password || !new_password) return reply.code(400).send({ error: 'Current and new passwords required' });
-    if (new_password.length < 6) return reply.code(400).send({ error: 'New password must be at least 6 characters' });
+    if (typeof current_password !== 'string' || typeof new_password !== 'string') return reply.code(400).send({ error: 'Current and new passwords required' });
+    if (new_password.length < MIN_PASSWORD_LENGTH) return reply.code(400).send({ error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters` });
 
     const [rows] = await pool.execute('SELECT * FROM admin_users WHERE id = ?', [request.admin.sub]);
     if (rows.length === 0) return reply.code(404).send({ error: 'Admin not found' });
@@ -486,6 +508,14 @@ export default async function adminRoutes(fastify, opts) {
     const newHash = await auth.hashPassword(new_password);
     await pool.execute('UPDATE admin_users SET password_hash = ?, updated_at = NOW() WHERE id = ?', [newHash, request.admin.sub]);
     await logActivity(pool, 'auth.password_change', 'Admin password changed', request.admin.username);
+
+    // End every session opened with the old password, then keep this browser
+    // signed in with a token for the new session version.
+    const tokenVersion = await auth.revokeTokens?.(request.admin.sub);
+    if (tokenVersion !== undefined) {
+      const token = auth.createToken({ sub: request.admin.sub, username: request.admin.username, tv: tokenVersion });
+      reply.setCookie('admin_token', token, adminCookieOptions());
+    }
     return { success: true };
   });
 
@@ -498,6 +528,7 @@ export default async function adminRoutes(fastify, opts) {
     const password = (body.password || '').trim();
     const expiresAt = body.expires_at || null;
     if (!title || !r2Key) return reply.code(400).send({ error: 'Title and R2 Key are required' });
+    if (sourceUrl && !httpUrl(sourceUrl)) return reply.code(400).send({ error: 'Source URL must start with http:// or https://' });
 
     const code = await createUniqueShareCode(pool);
     if (!code) return reply.code(500).send({ error: 'Could not generate a unique share code' });
@@ -569,6 +600,9 @@ export default async function adminRoutes(fastify, opts) {
   fastify.put('/admin/shares/:code', { preHandler: [auth.authMiddleware] }, async (request, reply) => {
     const code = request.params.code;
     const body = request.body || {};
+    if (body.source_url && !httpUrl(body.source_url)) {
+      return reply.code(400).send({ error: 'Source URL must start with http:// or https://' });
+    }
     const [existing] = await pool.execute('SELECT * FROM shares WHERE code = ?', [code]);
     if (existing.length === 0) return reply.code(404).send({ error: 'Share not found' });
     const ex = existing[0];

@@ -6,7 +6,24 @@
  * 100 MB proxy upload ceiling.
  */
 
+// Both values are written into a script that the user pipes into bash, so
+// anything outside these character sets would be executed on their server.
+const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const SAFE_BASE_URL = /^https?:\/\/(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?(?:\/[A-Za-z0-9._~\/-]*)?$/;
+
+export function sanitizeSessionId(value) {
+  return typeof value === 'string' && SAFE_SESSION_ID.test(value) ? value : '';
+}
+
+export function isSafeBaseUrl(value) {
+  return typeof value === 'string' && SAFE_BASE_URL.test(value);
+}
+
 export function generateIngestScript(baseUrl, targetSessionId = '') {
+  if (!isSafeBaseUrl(baseUrl)) {
+    throw new Error('Refusing to generate an ingest script for an unsafe base URL.');
+  }
+  targetSessionId = sanitizeSessionId(targetSessionId);
   const cleanBase = baseUrl.replace(/\/+$/, '');
 
   return `#!/usr/bin/env bash

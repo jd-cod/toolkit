@@ -313,3 +313,15 @@ export function getSitemapEntries(config: SiteConfig): Array<{
 
   return entries;
 }
+
+/**
+ * Serializes structured data for a <script type="application/ld+json"> block.
+ *
+ * JSON.stringify leaves "<" as-is, so a value such as "</script>" in a
+ * tool label or site setting would close the script element and the rest
+ * would be parsed as HTML. Escaping "<" keeps the output valid JSON and
+ * inert inside the tag.
+ */
+export function serializeJsonLd(data: unknown): string {
+  return JSON.stringify(data).replace(/</g, '\\u003c');
+}

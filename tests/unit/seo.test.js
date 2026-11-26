@@ -10,6 +10,7 @@ import {
   buildStructuredData,
   isRouteIndexable,
   getSitemapEntries,
+  serializeJsonLd,
 } from '../../frontend/src/lib/seo.ts';
 
 test('SITE_URL defaults to canonical production origin', () => {
@@ -122,4 +123,14 @@ test('getSitemapEntries includes only canonical indexable public pages', () => {
   assert.ok(!urls.some(u => u.includes('private-doc')));
   assert.ok(!urls.some(u => u.includes('/admin')));
   assert.ok(!urls.some(u => u.includes('/s/')));
+});
+
+test('serializeJsonLd cannot break out of its script element', () => {
+  const data = { name: 'Tool </script><script>alert(1)</script>', note: '<!-- x -->' };
+  const out = serializeJsonLd(data);
+
+  assert.ok(!out.includes('<'));
+  assert.ok(!out.toLowerCase().includes('</script'));
+  // Still the same data once parsed, which is what search engines read.
+  assert.deepEqual(JSON.parse(out), data);
 });

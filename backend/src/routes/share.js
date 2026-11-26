@@ -9,8 +9,11 @@
  * Uses Cloudflare R2 for log storage instead of GitHub Gist.
  */
 
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import bcrypt from 'bcrypt';
 import r2Storage from '../lib/r2-storage.js';
+import { str, httpUrl } from '../lib/input.js';
+import { bruteForceLimit } from '../lib/client-ip.js';
 
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 
@@ -19,8 +22,26 @@ function generateCode(length = 8) {
   return Array.from(bytes, b => CHARS[b % CHARS.length]).join('');
 }
 
+const SHARE_CODE = /^[A-Za-z0-9]{8}$/;
+const SHARE_R2_KEY = /^shares\/([A-Za-z0-9]{8})\.log\.gz$/;
+const CREATE_RATE_LIMIT = { max: 20, timeWindow: '1 minute' };
+const VERIFY_RATE_LIMIT = bruteForceLimit(20, '1 minute');
+
 function hashPassword(password) {
-  return createHash('sha256').update(password).digest('hex');
+  return bcrypt.hash(password, 10);
+}
+
+/**
+ * Shares created before bcrypt was introduced store an unsalted SHA-256 hex
+ * digest; those still verify, compared in constant time. Everything newer
+ * (including shares created from the admin panel) is a bcrypt hash.
+ */
+async function verifySharePassword(submitted, storedHash) {
+  if (typeof storedHash !== 'string' || !storedHash) return false;
+  if (storedHash.startsWith('$2')) return bcrypt.compare(submitted, storedHash);
+  const expected = Buffer.from(storedHash, 'utf8');
+  const actual = Buffer.from(createHash('sha256').update(submitted).digest('hex'), 'utf8');
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
 /** Format a Date as MySQL-compatible 'YYYY-MM-DD HH:MM:SS' in UTC */
@@ -91,47 +112,65 @@ export default async function shareRoutes(fastify, opts) {
   }
 
   // POST /api/share — Create nginx share with R2 storage
-  fastify.post('/share', { bodyLimit: 25 * 1024 * 1024 }, async (request, reply) => {
+  fastify.post('/share', { bodyLimit: 25 * 1024 * 1024, config: { rateLimit: CREATE_RATE_LIMIT } }, async (request, reply) => {
     const body = request.body || {};
-    const title = (body.title || 'Untitled Analysis').trim() || 'Untitled Analysis';
-    const r2Key = (body.r2_key || '').trim(); // R2 object key from storage upload
-    const shareCode = (body.shareCode || '').trim(); // Share code from storage upload
-    const sourceUrl = (body.source_url || '').trim(); // Optional: original external URL
+    const title = str(body.title, 'Untitled Analysis').trim() || 'Untitled Analysis';
+    const r2Key = str(body.r2_key).trim(); // R2 object key from storage upload
+    const shareCode = str(body.shareCode).trim(); // Share code from storage upload
+    const sourceUrl = httpUrl(body.source_url); // Optional: original external URL
     const expiry = body.expiry || 'never';
-    const password = (body.password || '').trim();
+    const password = str(body.password).trim();
 
     if (!r2Key && !shareCode) {
       return reply.code(400).send({ success: false, error: 'Missing r2_key or shareCode. Please upload the log first via /api/storage/upload.' });
     }
 
-    // Use provided shareCode or generate new one
-    const code = shareCode || await generateUniqueCode();
-    if (!code) return reply.code(500).send({ success: false, error: 'Could not generate unique code. Try again.' });
+    // A share may only point at the object its own upload created
+    // (shares/<code>.log.gz), under that upload's code. Accepting any key, or a
+    // fresh code for an existing key, would let a caller attach a new
+    // password-free share to someone else's stored log.
+    let code = shareCode;
+    if (r2Key) {
+      const match = SHARE_R2_KEY.exec(r2Key);
+      if (!match || (shareCode && shareCode !== match[1])) {
+        return reply.code(400).send({ success: false, error: 'Invalid r2_key or shareCode. Please upload the log again via /api/storage/upload.' });
+      }
+      code = match[1];
+    } else if (!SHARE_CODE.test(shareCode)) {
+      return reply.code(400).send({ success: false, error: 'Invalid shareCode. Please upload the log again via /api/storage/upload.' });
+    }
 
     const expiresAt = computeExpiry(expiry);
-    const passwordHash = password ? hashPassword(password) : null;
+    const passwordHash = password ? await hashPassword(password) : null;
     const createdAt = toMySQLDatetime(new Date());
     const uploadedAt = toMySQLDatetime(new Date());
 
     // Construct R2 key if not provided
     const finalR2Key = r2Key || `shares/${code}.log.gz`;
 
-    await pool.execute(
-      'INSERT INTO shares (code, title, r2_key, source_url, password_hash, expires_at, created_at, r2_uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [code, title, finalR2Key, sourceUrl || null, passwordHash, expiresAt, createdAt, uploadedAt]
-    );
+    try {
+      await pool.execute(
+        'INSERT INTO shares (code, title, r2_key, source_url, password_hash, expires_at, created_at, r2_uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [code, title, finalR2Key, sourceUrl || null, passwordHash, expiresAt, createdAt, uploadedAt]
+      );
+    } catch (err) {
+      if (err.code === 'ER_DUP_ENTRY') {
+        return reply.code(409).send({ success: false, error: 'A share link already exists for this upload.' });
+      }
+      throw err;
+    }
 
     return { success: true, code, url: `/s/${code}`, r2_key: finalR2Key, source_url: sourceUrl || null };
   });
 
   // POST /api/share/dns — Create DNS snapshot share
-  fastify.post('/share/dns', { bodyLimit: 25 * 1024 * 1024 }, async (request, reply) => {
+  fastify.post('/share/dns', { bodyLimit: 25 * 1024 * 1024, config: { rateLimit: CREATE_RATE_LIMIT } }, async (request, reply) => {
     const body = request.body || {};
-    const title = (body.title || 'DNS Snapshot').trim() || 'DNS Snapshot';
-    const domain = (body.domain || '').trim().toLowerCase();
+    const title = str(body.title, 'DNS Snapshot').trim() || 'DNS Snapshot';
+    const domain = str(body.domain).trim().toLowerCase();
     const expiry = body.expiry || 'never';
-    const password = (body.password || '').trim();
-    const checkedAtUTC = (body.checked_at_utc || '').trim();
+    const password = str(body.password).trim();
+    const checkedAtUTC = str(body.checked_at_utc).trim();
     const snapshot = body.snapshot;
 
     if (!domain) return reply.code(400).send({ success: false, error: 'Missing domain.' });
@@ -142,7 +181,7 @@ export default async function shareRoutes(fastify, opts) {
     if (!code) return reply.code(500).send({ success: false, error: 'Could not generate unique code. Try again.' });
 
     const expiresAt = computeExpiry(expiry);
-    const passwordHash = password ? hashPassword(password) : null;
+    const passwordHash = password ? await hashPassword(password) : null;
     const createdAt = toMySQLDatetime(new Date());
 
     await pool.execute(
@@ -154,13 +193,13 @@ export default async function shareRoutes(fastify, opts) {
   });
 
   // POST /api/share/whois — Create WHOIS snapshot share
-  fastify.post('/share/whois', { bodyLimit: 25 * 1024 * 1024 }, async (request, reply) => {
+  fastify.post('/share/whois', { bodyLimit: 25 * 1024 * 1024, config: { rateLimit: CREATE_RATE_LIMIT } }, async (request, reply) => {
     const body = request.body || {};
-    const title = (body.title || 'WHOIS Snapshot').trim() || 'WHOIS Snapshot';
-    const domain = (body.domain || '').trim().toLowerCase();
+    const title = str(body.title, 'WHOIS Snapshot').trim() || 'WHOIS Snapshot';
+    const domain = str(body.domain).trim().toLowerCase();
     const expiry = body.expiry || 'never';
-    const password = (body.password || '').trim();
-    const checkedAtUTC = (body.checked_at_utc || '').trim();
+    const password = str(body.password).trim();
+    const checkedAtUTC = str(body.checked_at_utc).trim();
     const snapshot = body.snapshot;
 
     if (!domain) return reply.code(400).send({ success: false, error: 'Missing domain.' });
@@ -171,7 +210,7 @@ export default async function shareRoutes(fastify, opts) {
     if (!code) return reply.code(500).send({ success: false, error: 'Could not generate unique code. Try again.' });
 
     const expiresAt = computeExpiry(expiry);
-    const passwordHash = password ? hashPassword(password) : null;
+    const passwordHash = password ? await hashPassword(password) : null;
     const createdAt = toMySQLDatetime(new Date());
 
     await pool.execute(
@@ -183,13 +222,13 @@ export default async function shareRoutes(fastify, opts) {
   });
 
   // POST /api/share/myip — Create MyIP snapshot share
-  fastify.post('/share/myip', { bodyLimit: 25 * 1024 * 1024 }, async (request, reply) => {
+  fastify.post('/share/myip', { bodyLimit: 25 * 1024 * 1024, config: { rateLimit: CREATE_RATE_LIMIT } }, async (request, reply) => {
     const body = request.body || {};
-    const title = (body.title || 'My IP Snapshot').trim() || 'My IP Snapshot';
-    const ip = (body.ip || '').trim();
+    const title = str(body.title, 'My IP Snapshot').trim() || 'My IP Snapshot';
+    const ip = str(body.ip).trim();
     const expiry = body.expiry || 'never';
-    const password = (body.password || '').trim();
-    const checkedAtUTC = (body.checked_at_utc || '').trim();
+    const password = str(body.password).trim();
+    const checkedAtUTC = str(body.checked_at_utc).trim();
     const snapshot = body.snapshot;
 
     if (!ip) return reply.code(400).send({ success: false, error: 'Missing IP address.' });
@@ -200,7 +239,7 @@ export default async function shareRoutes(fastify, opts) {
     if (!code) return reply.code(500).send({ success: false, error: 'Could not generate unique code. Try again.' });
 
     const expiresAt = computeExpiry(expiry);
-    const passwordHash = password ? hashPassword(password) : null;
+    const passwordHash = password ? await hashPassword(password) : null;
     const createdAt = toMySQLDatetime(new Date());
 
     await pool.execute(
@@ -212,13 +251,13 @@ export default async function shareRoutes(fastify, opts) {
   });
 
   // POST /api/share/asn — Create ASN snapshot share
-  fastify.post('/share/asn', { bodyLimit: 25 * 1024 * 1024 }, async (request, reply) => {
+  fastify.post('/share/asn', { bodyLimit: 25 * 1024 * 1024, config: { rateLimit: CREATE_RATE_LIMIT } }, async (request, reply) => {
     const body = request.body || {};
-    const title = (body.title || 'ASN Snapshot').trim() || 'ASN Snapshot';
+    const title = str(body.title, 'ASN Snapshot').trim() || 'ASN Snapshot';
     const asn = (body.asn || '').toString().trim().toUpperCase();
     const expiry = body.expiry || 'never';
-    const password = (body.password || '').trim();
-    const checkedAtUTC = (body.checked_at_utc || '').trim();
+    const password = str(body.password).trim();
+    const checkedAtUTC = str(body.checked_at_utc).trim();
     const snapshot = body.snapshot;
 
     if (!asn) return reply.code(400).send({ success: false, error: 'Missing ASN.' });
@@ -229,7 +268,7 @@ export default async function shareRoutes(fastify, opts) {
     if (!code) return reply.code(500).send({ success: false, error: 'Could not generate unique code. Try again.' });
 
     const expiresAt = computeExpiry(expiry);
-    const passwordHash = password ? hashPassword(password) : null;
+    const passwordHash = password ? await hashPassword(password) : null;
     const createdAt = toMySQLDatetime(new Date());
 
     await pool.execute(
@@ -291,17 +330,18 @@ export default async function shareRoutes(fastify, opts) {
   });
 
   // POST /api/share/:code/verify — Verify password + return data/download URL
-  fastify.post('/share/:code/verify', async (request, reply) => {
+  fastify.post('/share/:code/verify', { config: { rateLimit: VERIFY_RATE_LIMIT } }, async (request, reply) => {
     const row = await getShareRecord(request.params.code);
     if (!row) return reply.code(404).send({ error: 'Share not found.' });
     if (isExpired(row.expires_at)) return reply.code(410).send({ error: 'This share link has expired.' });
 
     if (row.password_hash) {
       const body = request.body || {};
-      const submitted = (body.password || '').trim();
+      const submitted = str(body.password).trim();
       if (!submitted) return reply.code(401).send({ error: 'Password required.', needs_password: true });
-      const hash = hashPassword(submitted);
-      if (hash !== row.password_hash) return reply.code(401).send({ error: 'Incorrect password.', needs_password: true });
+      if (!(await verifySharePassword(submitted, row.password_hash))) {
+        return reply.code(401).send({ error: 'Incorrect password.', needs_password: true });
+      }
     }
 
     if (row.share_type === 'dns') {

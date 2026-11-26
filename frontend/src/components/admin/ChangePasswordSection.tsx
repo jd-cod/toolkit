@@ -19,8 +19,8 @@ export default function ChangePasswordSection() {
       toast('New passwords do not match', 'error');
       return;
     }
-    if (newPw.length < 6) {
-      toast('New password must be at least 6 characters', 'error');
+    if (newPw.length < 12) {
+      toast('New password must be at least 12 characters', 'error');
       return;
     }
 
@@ -63,7 +63,7 @@ export default function ChangePasswordSection() {
             type="password"
             value={newPw}
             onChange={e => setNewPw(e.target.value)}
-            placeholder="Enter new password (min 6 chars)"
+            placeholder="Enter new password (min 12 chars)"
           />
         </div>
         <div className="form-group">

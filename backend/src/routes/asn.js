@@ -17,6 +17,7 @@ import {
   calculateSubnetDistribution,
   generateFirewallRules,
 } from '../lib/asn-utils.js';
+import { str } from '../lib/input.js';
 
 const RIPESTAT_API = 'https://stat.ripe.net/data';
 
@@ -338,7 +339,7 @@ export default async function asnRoutes(fastify, opts) {
   // ─── POST /api/asn/match-ip: Test if IP is in ASN prefixes ───
   fastify.post('/asn/match-ip', async (request, reply) => {
     const body = request.body || {};
-    const candidateIp = (body.ip || '').trim();
+    const candidateIp = str(body.ip).trim();
     const prefixes = body.prefixes || [];
 
     if (!candidateIp) {
@@ -376,7 +377,7 @@ export default async function asnRoutes(fastify, opts) {
   // ─── POST /api/asn/search: Search ASNs by Org / Keyword ───
   fastify.post('/asn/search', async (request, reply) => {
     const body = request.body || {};
-    const query = (body.query || '').trim().toLowerCase();
+    const query = str(body.query).trim().toLowerCase();
 
     if (!query) {
       return { results: POPULAR_ASNS.slice(0, 10) };

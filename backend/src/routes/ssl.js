@@ -13,16 +13,31 @@
 
 import tls from 'node:tls';
 import { createHash } from 'node:crypto';
+import { domainToASCII } from 'node:url';
+import { assertAllowedHost, guardedLookup, guardedRequest } from '../lib/net-guard.js';
+import { str } from '../lib/input.js';
+
+const HOSTNAME = /^[a-z0-9_]([a-z0-9._-]*[a-z0-9_])?$/;
 
 export default async function sslRoutes(fastify, opts) {
   fastify.post('/ssl', async (request, reply) => {
     const body = request.body || {};
-    let domain = (body.domain || '').trim().toLowerCase()
+    let domain = str(body.domain).trim().toLowerCase()
       .replace(/^https?:\/\//, '')
       .replace(/\/.*$/, '').replace(/:.*$/, '');
+    // Internationalized names are checked in their ASCII (punycode) form.
+    domain = domainToASCII(domain) || domain;
     const port = parseInt(body.port || '443', 10);
 
-    if (!domain || domain.length > 253) return { error: 'Invalid domain.' };
+    if (!domain || domain.length > 253 || !HOSTNAME.test(domain)) return { error: 'Invalid domain.' };
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return { error: 'Invalid port.' };
+    // This tool connects to whatever host the visitor names, so internal and
+    // loopback destinations are refused (see lib/net-guard.js).
+    try {
+      assertAllowedHost(domain);
+    } catch (e) {
+      return { error: e.message, domain };
+    }
 
     const start = Date.now();
     try {
@@ -68,7 +83,7 @@ export default async function sslRoutes(fastify, opts) {
 // ── TLS Certificate Check (Node.js native) ──────────────
 function checkCertificate(domain, port = 443) {
   return new Promise((resolve, reject) => {
-    const socket = tls.connect(port, domain, { servername: domain, rejectUnauthorized: false }, () => {
+    const socket = tls.connect(port, domain, { servername: domain, rejectUnauthorized: false, lookup: guardedLookup }, () => {
       try {
         const cert = socket.getPeerCertificate(true);
         const protocol = socket.getProtocol();
@@ -183,14 +198,17 @@ async function resolveDNS(domain) {
 // ── Server Type + Security Headers Detection ────────────
 async function detectServer(domain) {
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 5000);
-    const resp = await fetch(`https://${domain}`, {
-      method: 'HEAD', redirect: 'follow',
+    const response = await guardedRequest(`https://${domain}`, {
+      method: 'HEAD',
       headers: { 'User-Agent': 'Mozilla/5.0 SSL-Checker/2.0' },
-      signal: ctrl.signal,
+      timeoutMs: 5000,
+      maxBytes: 1024 * 1024,
     });
-    clearTimeout(timer);
+    const header = (name) => {
+      const value = response.headers[name];
+      return Array.isArray(value) ? value.join(', ') : (value || null);
+    };
+    const resp = { headers: { get: header } };
 
     const server = resp.headers.get('server') || '';
     const via = resp.headers.get('via') || '';

@@ -27,8 +27,9 @@ services:
     restart: unless-stopped
     env_file:
       - backend/.env
+    # Published on localhost only; set MYSQL_BIND=0.0.0.0 to expose it.
     ports:
-      - "3307:3306"
+      - "${MYSQL_BIND:-127.0.0.1}:3307:3306"
     volumes:
       - dev_mysql_data:/var/lib/mysql
     # Migration SQL is deliberately NOT mounted into docker-entrypoint-initdb.d.
@@ -41,7 +42,7 @@ services:
     command: >
       --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     healthcheck:
-      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD:-rootpassword123}" ]
+      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD}" ]
       interval: 10s
       timeout: 5s
       retries: 5

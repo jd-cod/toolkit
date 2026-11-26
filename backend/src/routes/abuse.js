@@ -7,16 +7,22 @@
  * Migrated from Hono/CF Workers. Only syntax changes.
  */
 
+import { str } from '../lib/input.js';
+
+const MAX_IPS_PER_REQUEST = 50;
+
 export default async function abuseRoutes(fastify, opts) {
-  fastify.post('/abuse', async (request, reply) => {
+  fastify.post('/abuse', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (request, reply) => {
     const apiKey = process.env.ABUSEIPDB_API_KEY;
     if (!apiKey) {
       return { abusive: [], non_abusive: [], api_available: false, checked_count: 0 };
     }
 
     const body = request.body || {};
-    const ips = body.ips || [];
-    const max = body.max || 20;
+    const ips = Array.isArray(body.ips) ? body.ips : [];
+    // Every checked IP spends AbuseIPDB quota, so the caller cannot raise the cap.
+    const requestedMax = Number.isInteger(body.max) && body.max > 0 ? body.max : 20;
+    const max = Math.min(requestedMax, MAX_IPS_PER_REQUEST);
 
     const toCheck = ips.slice(0, max);
     const results = [];
@@ -26,8 +32,8 @@ export default async function abuseRoutes(fastify, opts) {
       const batch = toCheck.slice(i, i + batchSize);
       const batchResults = await Promise.all(
         batch.map(async (ipInfo) => {
-          const ip = typeof ipInfo === 'string' ? ipInfo : ipInfo.ip;
-          const hits = typeof ipInfo === 'string' ? 0 : (ipInfo.hits || 0);
+          const ip = typeof ipInfo === 'string' ? ipInfo : str(ipInfo?.ip);
+          const hits = typeof ipInfo === 'string' ? 0 : (ipInfo?.hits || 0);
 
           try {
             const resp = await fetch(

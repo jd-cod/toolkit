@@ -10,6 +10,7 @@
 import dnsPacket from 'dns-packet';
 import { createGlobalDnsAccess } from '../services/global-dns-access.js';
 import { AwsClient } from 'aws4fetch';
+import { str } from '../lib/input.js';
 
 const DOH_ENDPOINTS = {
   '1.1.1.1': 'https://cloudflare-dns.com/dns-query',
@@ -80,9 +81,9 @@ export default async function dnsRoutes(fastify, opts) {
   fastify.get('/dns/global-capability', async () => globalAccess.capability());
   fastify.post('/dns', async (request, reply) => {
     const body = request.body || {};
-    const domain = (body.domain || '').trim().toLowerCase();
-    const type = (body.type || 'A').trim().toUpperCase();
-    const resolver = (body.resolver || '1.1.1.1').trim();
+    const domain = str(body.domain).trim().toLowerCase();
+    const type = str(body.type, 'A').trim().toUpperCase();
+    const resolver = str(body.resolver, '1.1.1.1').trim();
 
     if (!domain || domain.length > 253) return { error: 'Invalid domain name.', records: [] };
     if (!VALID_TYPES.includes(type)) return { error: `Invalid record type: ${type}`, records: [] };
@@ -128,8 +129,8 @@ export default async function dnsRoutes(fastify, opts) {
     }
   }, async (request, reply) => {
     const body = request.body || {};
-    const domain = (body.domain || '').trim().toLowerCase();
-    const type = (body.type || 'A').trim().toUpperCase();
+    const domain = str(body.domain).trim().toLowerCase();
+    const type = str(body.type, 'A').trim().toUpperCase();
 
     if (!domain || domain.length > 253) return { error: 'Invalid domain name.', results: [] };
     if (!VALID_TYPES.includes(type)) return { error: `Invalid record type: ${type}`, results: [] };

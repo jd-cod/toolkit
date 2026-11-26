@@ -8,6 +8,9 @@
  * Migrated from Hono/D1 to Fastify/MySQL.
  */
 
+import { generateGatePage } from '../lib/gate-page.js';
+import { createIpMatcher } from '../lib/client-ip.js';
+
 const DEFAULT_TOOLS = [
   ['nginx', 'Traffic Analyzer', 'Paste web access logs and get instant security insights — country & ASN breakdown, top attacking IPs, bot detection, and visual charts. 100% client-side.', 'bi-shield-lock-fill', '#6366f1', 'Traffic,GeoIP,Charts,Offline', 1, 1],
   ['asn', 'ASN to IPs Converter', 'Enter any ASN number to discover all IPv4 and IPv6 prefixes announced by that network. Export results with one click.', 'bi-diagram-3-fill', '#06b6d4', 'BGP,Prefixes,RIPEstat', 1, 2],
@@ -113,19 +116,43 @@ export default async function publicRoutes(fastify, opts) {
     return rows[0];
   });
 
+  // A signed-in admin always passes the invite-only gate.
+  async function isAdminRequest(request) {
+    const auth = fastify.auth;
+    const token = request.cookies?.admin_token;
+    if (!auth?.verifyToken || !token) return false;
+    const payload = auth.verifyToken(token);
+    if (!payload) return false;
+    const version = await auth.getTokenVersion?.(payload.sub);
+    return version !== null && (version === undefined || (payload.tv ?? 0) === version);
+  }
+
   // GET /api/site/access-check
-  fastify.get('/site/access-check', async (request, reply) => {
+  // Decides whether this visitor may see the site while invite-only mode is on:
+  // allowed for signed-in admins and for client IPs on the whitelist. The
+  // frontend server (frontend/server.js) calls it with `?gate=1` for page
+  // requests and serves `gate_html` instead of the page when it says no.
+  // Exempt from rate limiting: it is called once per page view, and a visitor
+  // must not be able to exhaust their limit to make the check fail.
+  fastify.get('/site/access-check', { config: { rateLimit: false } }, async (request, reply) => {
     try {
       const [rows] = await pool.execute(
-        "SELECT `key`, `value` FROM site_settings WHERE `key` IN ('invite_only_enabled', 'invite_only_whitelist_ips')"
+        "SELECT `key`, `value` FROM site_settings WHERE `key` IN ('invite_only_enabled', 'invite_only_whitelist_ips', 'invite_only_title', 'invite_only_message')"
       );
       const settings = {};
       for (const row of rows) settings[row.key] = row.value;
 
       const inviteOnly = settings.invite_only_enabled === '1';
-      const clientIP = request.headers['x-real-ip'] || request.headers['x-forwarded-for']?.split(',')[0]?.trim() || request.ip || '';
+      const clientIP = fastify.clientIp ? fastify.clientIp.resolve(request) : (request.ip || '');
+      if (!inviteOnly) return { invite_only: false, client_ip: clientIP, allowed: true };
 
-      return { invite_only: inviteOnly, client_ip: clientIP, allowed: !inviteOnly };
+      const allowed = createIpMatcher(settings.invite_only_whitelist_ips).matches(clientIP)
+        || await isAdminRequest(request);
+      const result = { invite_only: true, client_ip: clientIP, allowed };
+      if (!allowed && request.query?.gate) {
+        result.gate_html = generateGatePage(settings.invite_only_title || 'Invite Only', settings.invite_only_message || '');
+      }
+      return result;
     } catch {
       return { invite_only: false, allowed: true };
     }

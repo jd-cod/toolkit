@@ -9,15 +9,18 @@ services:
     restart: unless-stopped
     env_file:
       - backend/.env
+    # Published on localhost only: the app container reaches MySQL over the
+    # Docker network, and a host-side backend uses 127.0.0.1. Set
+    # MYSQL_BIND=0.0.0.0 only if another machine must connect to it.
     ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      - "${MYSQL_BIND:-127.0.0.1}:${MYSQL_PORT:-3306}:3306"
     volumes:
       - toolkit_mysql_data:/var/lib/mysql
     command: >
       --character-set-server=utf8mb4
       --collation-server=utf8mb4_unicode_ci
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD:-rootpassword123}"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
       timeout: 5s
       retries: 5
