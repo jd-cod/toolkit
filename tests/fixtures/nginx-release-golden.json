@@ -1,0 +1,99 @@
+{
+  "fixture": "nginx-release-golden.log",
+  "purpose": "Independent release-QA oracle for parser, analyzer, timeline, filtering, and report values.",
+  "policy": "Internal requests excluded by default, including private-IP bot claims (updated 2026-10-05).",
+  "line_count": 20,
+  "geoip_database_version_at_creation": "2026.10.03",
+  "bounds": {
+    "min_iso": "2026-10-01T00:00:00.000Z",
+    "max_iso": "2026-10-01T05:00:00.000Z",
+    "span_minutes": 300
+  },
+  "default_skip_403": {
+    "parsed_lines": 15,
+    "skipped_lines": 5,
+    "skip_reasons": {
+      "Private/reserved IP": 3,
+      "403 Forbidden (blocked)": 1,
+      "Invalid IP format": 1
+    },
+    "total_requests": 15,
+    "unique_ips": 11,
+    "unique_countries": 4,
+    "unique_asns": 7,
+    "human_requests": 9,
+    "verified_bots": 3,
+    "spoofed_bots": 2,
+    "unverified_bots": 1,
+    "status_categories": { "1xx": 1, "2xx": 8, "3xx": 2, "4xx": 3, "5xx": 1 },
+    "status_hits": { "101": 1, "200": 6, "201": 1, "204": 1, "301": 1, "304": 1, "401": 1, "403": 1, "404": 1, "500": 1 },
+    "method_hits": { "GET": 11, "POST": 2, "PUT": 1, "DELETE": 1 },
+    "response_size": { "total": 19744, "average": 1316, "median": 800, "min": 0, "max": 4096 },
+    "error_rate": 4,
+    "error_percentage": "26.7",
+    "country_hits": { "United States": 9, "Unknown": 4, "Germany": 1, "France": 1 },
+    "asn_hits": { "15169": 3, "13335": 2, "0": 3, "54113": 3, "60729": 1, "8075": 2, "16276": 1 },
+    "ip_hits": { "66.249.66.1": 2, "1.1.1.1": 2, "93.184.216.34": 1, "151.101.129.69": 3, "185.220.101.5": 1, "13.66.139.1": 1, "40.77.167.1": 1, "94.23.175.40": 1, "203.0.113.10": 1, "8.8.8.8": 1, "203.0.113.11": 1 },
+    "referrers": { "-": 8, "https://shop.test/": 4, "https://shop.test/login": 1, "https://shop.test/products": 1, "https://google.test/": 1 },
+    "top_urls": { "/products": 4, "/api/login": 1, "/assets/app.js": 1, "/.env": 1, "/api/search": 1, "/api/item/42": 1, "/admin": 1, "/api/session": 1, "/robots.txt": 1, "/blog": 1, "/about": 1, "/later": 1 },
+    "top_paths": { "/products": 4, "/api": 4, "/login": 1, "/assets": 1, "/app.js": 1, "/.env": 1, "/search": 1, "/item": 1, "/42": 1, "/admin": 1, "/session": 1, "/robots.txt": 1, "/blog": 1, "/about": 1, "/later": 1 },
+    "hourly_nonzero_utc": { "0": 14, "4": 1 },
+    "daily_nonzero_utc": { "4": 15 },
+    "request_rate": {
+      "bucket_seconds": 120,
+      "bucket_label": "2m",
+      "total_buckets": 121,
+      "total_requests": 15,
+      "duration_seconds": 14395,
+      "start_time": "00:00",
+      "end_time": "04:00",
+      "peak_count": 4,
+      "peak_timestamp_iso": "2026-10-01T00:00:00.000Z",
+      "nonzero_buckets": [
+        { "label": "00:00", "count": 4, "status_2xx": 2, "status_3xx": 1, "status_4xx": 1, "status_5xx": 0 },
+        { "label": "00:02", "count": 3, "status_2xx": 2, "status_3xx": 0, "status_4xx": 1, "status_5xx": 0 },
+        { "label": "00:04", "count": 2, "status_2xx": 0, "status_3xx": 1, "status_4xx": 1, "status_5xx": 0 },
+        { "label": "00:06", "count": 1, "status_2xx": 0, "status_3xx": 0, "status_4xx": 0, "status_5xx": 1 },
+        { "label": "00:08", "count": 2, "status_2xx": 2, "status_3xx": 0, "status_4xx": 0, "status_5xx": 0 },
+        { "label": "00:10", "count": 2, "status_2xx": 2, "status_3xx": 0, "status_4xx": 0, "status_5xx": 0 },
+        { "label": "04:00", "count": 1, "status_2xx": 0, "status_3xx": 0, "status_4xx": 0, "status_5xx": 0 }
+      ]
+    }
+  },
+  "entry_columns": ["line_number", "ip", "timestamp", "method", "url", "status_code", "response_size", "country", "asn_num", "bot_status"],
+  "default_entries": [
+    [2, "66.249.66.1", "2026-10-01T00:00:05.000Z", "GET", "/products", 200, 1000, "United States", 15169, "verified"],
+    [3, "1.1.1.1", "2026-10-01T00:00:10.000Z", "GET", "/products?sku=1", 200, 2000, "Unknown", 13335, "human"],
+    [4, "93.184.216.34", "2026-10-01T00:00:20.000Z", "POST", "/api/login", 401, 300, "United States", 0, "human"],
+    [5, "151.101.129.69", "2026-10-01T00:01:00.000Z", "GET", "/assets/app.js", 304, 0, "United States", 54113, "human"],
+    [6, "185.220.101.5", "2026-10-01T00:02:00.000Z", "GET", "/.env", 404, 512, "Germany", 60729, "spoofed"],
+    [7, "13.66.139.1", "2026-10-01T00:02:30.000Z", "POST", "/api/search", 201, 1500, "United States", 8075, "verified"],
+    [8, "40.77.167.1", "2026-10-01T00:03:00.000Z", "PUT", "/api/item/42", 204, 0, "United States", 8075, "human"],
+    [9, "94.23.175.40", "2026-10-01T00:04:00.000Z", "GET", "/admin", 403, 128, "France", 16276, "spoofed"],
+    [10, "151.101.129.69", "2026-10-01T00:05:00.000Z", "GET", "/products", 301, 800, "United States", 54113, "human"],
+    [12, "1.1.1.1", "2026-10-01T00:07:00.000Z", "DELETE", "/api/session", 500, 64, "Unknown", 13335, "unverified"],
+    [13, "66.249.66.1", "2026-10-01T00:08:00.000Z", "GET", "/robots.txt", 200, 1024, "United States", 15169, "verified"],
+    [14, "203.0.113.10", "2026-10-01T00:09:00.000Z", "GET", "/blog", 200, 4096, "Unknown", 0, "human"],
+    [15, "8.8.8.8", "2026-10-01T00:10:00.000Z", "GET", "/about", 200, 4096, "United States", 15169, "human"],
+    [16, "203.0.113.11", "2026-10-01T00:11:00.000Z", "GET", "/products", 200, 4096, "Unknown", 0, "human"],
+    [18, "151.101.129.69", "2026-10-01T04:00:00.000Z", "GET", "/later", 101, 128, "United States", 54113, "human"]
+  ],
+  "include_403": {
+    "parsed_lines": 16,
+    "skipped_lines": 4,
+    "skip_reasons": {
+      "Private/reserved IP": 3,
+      "Invalid IP format": 1
+    },
+    "total_requests": 16,
+    "human_requests": 10,
+    "unverified_bots": 1,
+    "status_categories": { "1xx": 1, "2xx": 8, "3xx": 2, "4xx": 4, "5xx": 1 },
+    "method_hits": { "GET": 12, "POST": 2, "PUT": 1, "DELETE": 1 },
+    "response_size": { "total": 20521, "average": 1283, "median": 789, "min": 0, "max": 4096 },
+    "error_rate": 5,
+    "error_percentage": "31.3",
+    "country_hits": { "United States": 10, "Unknown": 4, "Germany": 1, "France": 1 },
+    "asn_hits": { "15169": 3, "13335": 2, "0": 4, "54113": 3, "60729": 1, "8075": 2, "16276": 1 }
+  }
+}

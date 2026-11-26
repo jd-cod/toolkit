@@ -1,0 +1,12 @@
+USE sysadmin_toolkit;
+
+CREATE TABLE IF NOT EXISTS asn_shares (
+  code VARCHAR(20) PRIMARY KEY,
+  title VARCHAR(500) NOT NULL,
+  asn VARCHAR(50) NOT NULL,
+  password_hash VARCHAR(255),
+  expires_at TIMESTAMP NULL DEFAULT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  checked_at_utc VARCHAR(50) NOT NULL,
+  data_json LONGTEXT NOT NULL
+) ENGINE=InnoDB;

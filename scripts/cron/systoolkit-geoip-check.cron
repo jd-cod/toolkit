@@ -1,0 +1,46 @@
+# SysAdmin Toolkit — GeoIP staleness monitor (cron entry)
+#
+# The MaxMind auto-updater fails silently by design: a failed refresh is only
+# log.warn'd and stashed in the metadata's `last_error`, while the last good
+# .mmdb keeps being served. Nothing looks broken until someone opens the admin
+# panel weeks later. This check turns that silent failure into a non-zero exit
+# code plus a timestamped log line you can alert on.
+#
+# INSTALL
+#   sudo cp scripts/cron/systoolkit-geoip-check.cron /etc/cron.d/systoolkit-geoip-check
+#   sudo chmod 644 /etc/cron.d/systoolkit-geoip-check
+#   sudo touch /var/log/systoolkit-geoip-check.log && sudo chown ubuntu:ubuntu /var/log/systoolkit-geoip-check.log
+#
+#   Then verify it runs:
+#     sudo run-parts --test /etc/cron.d 2>/dev/null   # syntax sanity (see note below)
+#     sudo crontab -l >/dev/null                      # ensure cron daemon is active
+#     systemctl status cron                           # on Debian/Ubuntu
+#
+# RUN IT BY HAND FIRST (recommended — confirms exit codes before it goes live)
+#   cd /home/ubuntu/systoolkit-dev
+#   GEOIP_CHECK_BASE_URL=http://localhost:3001 \
+#   GEOIP_CHECK_API_URL=http://localhost:4001 \
+#   node scripts/check_geoip_freshness.mjs; echo "exit=$?"
+#
+#   0 = fresh, 1 = stale/unhealthy, 2 = backend unreachable
+#
+# TO ALERT
+#   This file only writes a log. To page someone, wrap the command in your
+#   alerting tool (mail, curl to Slack/PagerDuty, healthchecks.io, etc.). Exit
+#   codes are the integration point — e.g.:
+#
+#     node scripts/check_geoip_freshness.mjs || \
+#       curl -fsS -X POST https://hooks.slack.com/services/... \
+#         -d "{\"text\":\"GeoIP stale on systoolkit\"}"
+#
+#   Note the URLs below are the DEV stack. Change them to the production ports
+#   (3000 / 4000) when you install this against production.
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+GEOIP_CHECK_BASE_URL=http://localhost:3001
+GEOIP_CHECK_API_URL=http://localhost:4001
+GEOIP_CHECK_STALE_HOURS=48
+
+# 09:17 local (off the :00 mark to avoid the cron stampede)
+17 9 * * * ubuntu cd /home/ubuntu/systoolkit-dev && /usr/bin/node scripts/check_geoip_freshness.mjs >> /var/log/systoolkit-geoip-check.log 2>&1

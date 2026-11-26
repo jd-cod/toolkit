@@ -1,0 +1,101 @@
+# ──────────────────────────────────────────────────────────
+# SysAdmin Toolkit — DEV Environment Docker Compose
+# ──────────────────────────────────────────────────────────
+#
+# This compose file runs a COMPLETELY ISOLATED dev stack
+# alongside the production stack on the same server.
+#
+# Usage:
+#   Start:   docker compose -f docker-compose.dev.yml --profile prod up -d --build
+#   Stop:    docker compose -f docker-compose.dev.yml --profile prod down
+#   Logs:    docker compose -f docker-compose.dev.yml logs -f
+#   Rebuild: docker compose -f docker-compose.dev.yml --profile prod up -d --build --force-recreate
+#
+# Port Mapping (avoids conflicts with production):
+#   Production → Dev
+#   3000       → 3001  (Frontend)
+#   4000       → 4001  (Backend API)
+#   3306       → 3307  (MySQL)
+#
+# ──────────────────────────────────────────────────────────
+
+services:
+  # ── MySQL Database (DEV) ─────────────────────────────────
+  mysql:
+    image: mysql:8.4
+    container_name: sysadmin-toolkit-mysql-dev
+    restart: unless-stopped
+    env_file:
+      - backend/.env
+    ports:
+      - "3307:3306"
+    volumes:
+      - dev_mysql_data:/var/lib/mysql
+    # Migration SQL is deliberately NOT mounted into docker-entrypoint-initdb.d.
+    # That directory only runs on an empty data volume, so those mounts made
+    # the schema appear to be managed in two places while only one of them
+    # worked — and it was the one that did not. The app image runs
+    # backend/src/migrate.js on start, which applies the same files and keeps a
+    # ledger of what it has run. The database itself is created by
+    # MYSQL_DATABASE in backend/.env, not by these files.
+    command: >
+      --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: [ "CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD:-rootpassword123}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - systoolkit-dev
+
+  # ── Full Application (DEV) ──────────────────────────────
+  app:
+    profiles: [ "prod" ]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: /api
+        BACKEND_API_URL: http://127.0.0.1:4000/api
+    container_name: sysadmin-toolkit-app-dev
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    env_file:
+      - backend/.env
+    environment:
+      NODE_ENV: production
+      DB_HOST: mysql
+      DB_PORT: 3306
+      # Internal ports stay at 3000/4000 (same as prod).
+      # Docker port mapping (3001:3000, 4001:4000) handles
+      # exposing them on different host ports.
+      BACKEND_PORT: 4000
+      FRONTEND_PORT: 3000
+      HOST: 0.0.0.0
+    ports:
+      - "3001:3000"
+      - "4001:4000"
+    volumes:
+      - dev_geoip_data:/app/backend/data
+      - dev_app_logs:/app/logs
+      # GeoIP databases + bot-IP list are refreshed automatically at runtime
+      # by the MaxMind updater (backend/src/lib/geoip-data.js) and the bot-IP
+      # compiler (backend/src/lib/bot-ip-updater.js). Bind-mounting the data
+      # directory keeps the host copy in sync with the container instead of
+      # leaving stale files on the host that silently diverge from what is
+      # actually being served. These files are git-ignored (see .gitignore).
+      - ./frontend/public/data:/app/frontend/public/data
+    networks:
+      - systoolkit-dev
+
+volumes:
+  dev_mysql_data:
+  dev_geoip_data:
+  dev_app_logs:
+
+networks:
+  systoolkit-dev:
+    driver: bridge

@@ -1,0 +1,431 @@
+{
+  "generated_by": "scripts/generate_bot_intel_test_logs.py",
+  "feed_version": "2026.09.30",
+  "total_lines": 42,
+  "expected_counts": {
+    "verified": 13,
+    "spoofed": 13,
+    "human": 16
+  },
+  "ui_expected_counts": {
+    "verified": 13,
+    "spoofed": 12,
+    "human": 16
+  },
+  "unparseable_ips": [
+    "123.456.789.0"
+  ],
+  "by_scenario": {
+    "verified_bots": 12,
+    "impersonators": 6,
+    "edge_cases": 6,
+    "subnet_scan": 8,
+    "human_baseline": 10
+  },
+  "verified_ips_from_feed": {
+    "googlebot": [
+      "192.178.4.1",
+      "192.178.4.129"
+    ],
+    "bingbot": [
+      "13.66.139.1",
+      "13.66.144.1"
+    ],
+    "gptbot": [
+      "132.196.86.1",
+      "172.182.202.1"
+    ],
+    "applebot": [
+      "17.0.0.1",
+      "63.92.224.1"
+    ],
+    "ccbot": [
+      "18.97.14.81",
+      "18.97.14.89"
+    ],
+    "yandexbot": [
+      "141.8.128.1",
+      "178.154.128.1"
+    ]
+  },
+  "cases": [
+    {
+      "ip": "192.178.4.1",
+      "path": "/robots.txt",
+      "scenario": "verified_bots",
+      "expected_status": "verified",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Bot UA + IP inside published Googlebot ranges"
+    },
+    {
+      "ip": "192.178.4.1",
+      "path": "/sitemap.xml",
+      "scenario": "verified_bots",
+      "expected_status": "verified",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Bot UA + IP inside published Googlebot ranges"
+    },
+    {
+      "ip": "192.178.4.1",
+      "path": "/sitemap_index.xml",
+      "scenario": "verified_bots",
+      "expected_status": "verified",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Bot UA + IP inside published Googlebot ranges"
+    },
+    {
+      "ip": "192.178.4.129",
+      "path": "/robots.txt",
+      "scenario": "verified_bots",
+      "expected_status": "verified",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Bot UA + IP inside published Googlebot ranges"
+    },
+    {
+      "ip": "192.178.4.129",
+      "path": "/sitemap.xml",
+      "scenario": "verified_bots",
+      "expected_status": "verified",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Bot UA + IP inside published Googlebot ranges"
+    },
+    {
+      "ip": "192.178.4.129",
+      "path": "/sitemap_index.xml",
+      "scenario": "verified_bots",
+      "expected_status": "verified",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Bot UA + IP inside published Googlebot ranges"
+    },
+    {
+      "ip": "13.66.139.1",
+      "path": "/robots.txt",
+      "scenario": "verified_bots",
+      "expected_status": "verified",
+      "expected_bot": "Bingbot",
+      "parses": true,
+      "note": "Bot UA + IP inside published Bingbot ranges"
+    },
+    {
+      "ip": "13.66.144.1",
+      "path": "/robots.txt",
+      "scenario": "verified_bots",
+      "expected_status": "verified",
+      "expected_bot": "Bingbot",
+      "parses": true,
+      "note": "Bot UA + IP inside published Bingbot ranges"
+    },
+    {
+      "ip": "132.196.86.1",
+      "path": "/",
+      "scenario": "verified_bots",
+      "expected_status": "verified",
+      "expected_bot": "GPTBot",
+      "parses": true,
+      "note": "Bot UA + IP inside published ranges"
+    },
+    {
+      "ip": "17.0.0.1",
+      "path": "/",
+      "scenario": "verified_bots",
+      "expected_status": "verified",
+      "expected_bot": "Applebot",
+      "parses": true,
+      "note": "Bot UA + IP inside published ranges"
+    },
+    {
+      "ip": "18.97.14.81",
+      "path": "/",
+      "scenario": "verified_bots",
+      "expected_status": "verified",
+      "expected_bot": "CCBot",
+      "parses": true,
+      "note": "Bot UA + IP inside published ranges"
+    },
+    {
+      "ip": "141.8.128.1",
+      "path": "/",
+      "scenario": "verified_bots",
+      "expected_status": "verified",
+      "expected_bot": "YandexBot",
+      "parses": true,
+      "note": "Bot UA + IP inside published ranges"
+    },
+    {
+      "ip": "185.220.101.5",
+      "path": "/wp-login.php",
+      "scenario": "impersonators",
+      "expected_status": "spoofed",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Fake Googlebot from Tor exit node"
+    },
+    {
+      "ip": "185.220.101.5",
+      "path": "/wp-admin",
+      "scenario": "impersonators",
+      "expected_status": "spoofed",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Fake Googlebot from Tor exit node"
+    },
+    {
+      "ip": "185.220.101.5",
+      "path": "/.env",
+      "scenario": "impersonators",
+      "expected_status": "spoofed",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Fake Googlebot from Tor exit node"
+    },
+    {
+      "ip": "45.142.120.10",
+      "path": "/.env",
+      "scenario": "impersonators",
+      "expected_status": "spoofed",
+      "expected_bot": "Bingbot",
+      "parses": true,
+      "note": "Fake Bingbot harvesting secrets"
+    },
+    {
+      "ip": "94.23.175.40",
+      "path": "/admin/login",
+      "scenario": "impersonators",
+      "expected_status": "spoofed",
+      "expected_bot": "GPTBot",
+      "parses": true,
+      "note": "Fake GPTBot probing admin"
+    },
+    {
+      "ip": "192.168.1.100",
+      "path": "/wp-admin",
+      "scenario": "impersonators",
+      "expected_status": "spoofed",
+      "expected_bot": "ClaudeBot",
+      "parses": true,
+      "note": "Private IP + ClaudeBot; RFC1918 cannot reach a public edge, so the non-routable-IP guard fires before the missing-feed check"
+    },
+    {
+      "ip": "45.142.120.10",
+      "path": "/robots.txt",
+      "scenario": "edge_cases",
+      "expected_status": "spoofed",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Malformed/near-miss Googlebot UA from datacenter"
+    },
+    {
+      "ip": "45.142.120.10",
+      "path": "/robots.txt",
+      "scenario": "edge_cases",
+      "expected_status": "spoofed",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Malformed/near-miss Googlebot UA from datacenter"
+    },
+    {
+      "ip": "192.178.4.1",
+      "path": "/products",
+      "scenario": "edge_cases",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Human UA from a Googlebot IP - IP alone must not imply bot"
+    },
+    {
+      "ip": "123.456.789.0",
+      "path": "/",
+      "scenario": "edge_cases",
+      "expected_status": "spoofed",
+      "expected_bot": "Googlebot",
+      "parses": false,
+      "note": "Out-of-range octets; must degrade safely, never crash"
+    },
+    {
+      "ip": "::ffff:192.178.4.1",
+      "path": "/",
+      "scenario": "edge_cases",
+      "expected_status": "verified",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "v4-mapped form of a REAL Googlebot IP must still verify"
+    },
+    {
+      "ip": "::ffff:192.168.1.100",
+      "path": "/wp-admin",
+      "scenario": "edge_cases",
+      "expected_status": "spoofed",
+      "expected_bot": "ClaudeBot",
+      "parses": true,
+      "note": "v4-mapped RFC1918 must still be caught as non-routable"
+    },
+    {
+      "ip": "203.0.113.10",
+      "path": "/",
+      "scenario": "subnet_scan",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Benign traffic inside the scanned /24"
+    },
+    {
+      "ip": "203.0.113.11",
+      "path": "/blog",
+      "scenario": "subnet_scan",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Benign traffic inside the scanned /24"
+    },
+    {
+      "ip": "203.0.113.12",
+      "path": "/products",
+      "scenario": "subnet_scan",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Benign traffic inside the scanned /24"
+    },
+    {
+      "ip": "203.0.113.13",
+      "path": "/api/health",
+      "scenario": "subnet_scan",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Benign traffic inside the scanned /24"
+    },
+    {
+      "ip": "203.0.113.14",
+      "path": "/robots.txt",
+      "scenario": "subnet_scan",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Benign traffic inside the scanned /24"
+    },
+    {
+      "ip": "203.0.113.50",
+      "path": "/wp-login.php",
+      "scenario": "subnet_scan",
+      "expected_status": "spoofed",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Fake Googlebot inside the same /24 as benign traffic"
+    },
+    {
+      "ip": "203.0.113.51",
+      "path": "/wp-admin",
+      "scenario": "subnet_scan",
+      "expected_status": "spoofed",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Fake Googlebot inside the same /24 as benign traffic"
+    },
+    {
+      "ip": "203.0.113.52",
+      "path": "/.env",
+      "scenario": "subnet_scan",
+      "expected_status": "spoofed",
+      "expected_bot": "Googlebot",
+      "parses": true,
+      "note": "Fake Googlebot inside the same /24 as benign traffic"
+    },
+    {
+      "ip": "93.184.216.34",
+      "path": "/products",
+      "scenario": "human_baseline",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Baseline human traffic"
+    },
+    {
+      "ip": "151.101.129.69",
+      "path": "/blog",
+      "scenario": "human_baseline",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Baseline human traffic"
+    },
+    {
+      "ip": "203.0.113.42",
+      "path": "/",
+      "scenario": "human_baseline",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Baseline human traffic"
+    },
+    {
+      "ip": "93.184.216.34",
+      "path": "/about",
+      "scenario": "human_baseline",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Baseline human traffic"
+    },
+    {
+      "ip": "151.101.129.69",
+      "path": "/contact",
+      "scenario": "human_baseline",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Baseline human traffic"
+    },
+    {
+      "ip": "203.0.113.42",
+      "path": "/products",
+      "scenario": "human_baseline",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Baseline human traffic"
+    },
+    {
+      "ip": "93.184.216.34",
+      "path": "/blog",
+      "scenario": "human_baseline",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Baseline human traffic"
+    },
+    {
+      "ip": "151.101.129.69",
+      "path": "/",
+      "scenario": "human_baseline",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Baseline human traffic"
+    },
+    {
+      "ip": "203.0.113.42",
+      "path": "/about",
+      "scenario": "human_baseline",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Baseline human traffic"
+    },
+    {
+      "ip": "93.184.216.34",
+      "path": "/contact",
+      "scenario": "human_baseline",
+      "expected_status": "human",
+      "expected_bot": null,
+      "parses": true,
+      "note": "Baseline human traffic"
+    }
+  ]
+}

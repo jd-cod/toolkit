@@ -1,0 +1,45 @@
+node_modules/
+.env
+.env.*
+*.log
+!frontend/public/samples/*.log
+!tests/fixtures/nginx-release-golden.log
+.DS_Store
+.next/
+out/
+build/
+coverage/
+.vercel/
+logs/
+backend/logs/
+frontend/logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+# Added by code-review-graph
+.code-review-graph/
+
+# ── Playwright E2E (runtime artifacts) ────────────────
+# Failure screenshots, traces and videos are regenerated on every run.
+# The specs themselves under tests/e2e/ ARE tracked — they are the
+# regression suite.
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+tests/screenshots/
+screenshots/
+frontend/public/screenshots/
+
+# ── GeoIP databases (runtime-generated) ────────────────
+# These are downloaded/refreshed automatically by the MaxMind
+# auto-updater (backend/src/lib/geoip-data.js) and by the bot-IP
+# compiler (backend/src/lib/bot-ip-updater.js). They are large binaries
+# that change daily — tracking them in git caused stale August data to
+# silently overwrite fresh container data on every rebuild/deploy.
+# The directory is bind-mounted into the container; the files are
+# regenerated at runtime and must not be committed.
+frontend/public/data/*.mmdb
+frontend/public/data/geoip-meta.json
+frontend/public/data/verified-bots.json

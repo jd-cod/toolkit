@@ -1,0 +1,66 @@
+# ──────────────────────────────────────────────────────────
+# SysAdmin Toolkit — Docker Compose
+# ──────────────────────────────────────────────────────────
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: toolkit-mysql
+    restart: unless-stopped
+    env_file:
+      - backend/.env
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - toolkit_mysql_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD:-rootpassword123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - systoolkit
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
+        BACKEND_API_URL: http://127.0.0.1:4000/api
+    container_name: toolkit-app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    env_file:
+      - backend/.env
+    environment:
+      NODE_ENV: production
+      DB_HOST: mysql
+      DB_PORT: 3306
+      BACKEND_PORT: 4000
+      FRONTEND_PORT: 3000
+      HOST: 0.0.0.0
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+      - "${BACKEND_PORT:-4000}:4000"
+    volumes:
+      - toolkit_geoip_data:/app/backend/data
+      - toolkit_app_logs:/app/logs
+      - ./frontend/public/data:/app/frontend/public/data
+    networks:
+      - systoolkit
+
+volumes:
+  toolkit_mysql_data:
+  toolkit_geoip_data:
+  toolkit_app_logs:
+
+networks:
+  systoolkit:
+    driver: bridge
