@@ -196,12 +196,6 @@ export const api = {
 
   createSnapshotShare,
 
-  createDnsShare: (data: { title: string; domain: string; expiry?: string; password?: string; checked_at_utc: string; snapshot: unknown }) =>
-    createSnapshotShare({ tool: 'dns', subject: data.domain, ...data }),
-
-  createWhoisShare: (data: { title: string; domain: string; expiry?: string; password?: string; checked_at_utc: string; snapshot: WhoisSnapshot }) =>
-    createSnapshotShare({ tool: 'whois', subject: data.domain, ...data }),
-
   getShare: (code: string) => request<Record<string, unknown>>(`/share/${code}`),
 
   verifyShare: (code: string, password?: string) =>
@@ -210,12 +204,6 @@ export const api = {
   // What Is My IP
   getMyIP: (ip?: string | null) =>
     request<MyIPResult>(ip ? `/myip?ip=${encodeURIComponent(ip)}` : '/myip'),
-
-  createMyIPShare: (data: { title: string; ip: string; expiry?: string; password?: string; checked_at_utc: string; snapshot: unknown }) =>
-    createSnapshotShare({ tool: 'myip', subject: data.ip, ...data }),
-
-  createAsnShare: (data: { title: string; asn: string; expiry?: string; password?: string; checked_at_utc: string; snapshot: unknown }) =>
-    createSnapshotShare({ tool: 'asn', subject: data.asn, ...data }),
 
   searchASN: (query: string) =>
     request<{ results: { asn: string; name: string; holder: string; country: string; description: string }[] }>('/asn/search', {

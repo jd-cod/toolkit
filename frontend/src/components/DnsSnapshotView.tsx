@@ -1,11 +1,12 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
-import { exportToCSV } from '@/lib/csv-utils';
+import ResultActions, { ResultActionButton } from '@/components/share/ResultActions';
+import { useClipboard } from '@/hooks/useClipboard';
+import { snapshotShare } from '@/lib/api';
 import {
   buildDnsSnapshotHtml,
-  buildRerunHref,
+  dnsSnapshotCsvRows,
   DnsLookupResult,
   DnsSnapshot,
   formatLocation,
@@ -22,7 +23,6 @@ interface DnsSnapshotViewProps {
   mode: 'live' | 'shared';
   title?: string;
   code?: string;
-  onShare?: () => void;
   onRerun?: () => void;
 }
 
@@ -31,89 +31,15 @@ export default function DnsSnapshotView({
   mode,
   title,
   code,
-  onShare,
   onRerun,
 }: DnsSnapshotViewProps) {
-  const [copyLabel, setCopyLabel] = useState('Copy All Records');
-  const [downloadLabel, setDownloadLabel] = useState('Download HTML');
+  const { copy, isCopied } = useClipboard();
   const orderedResults = orderDnsResults(snapshot?.results || []);
   const allNoRecords = orderedResults.length > 0 && orderedResults.every((result) => !result.error && result.records.length === 0);
   const dnsProviderConfidence = `${capitalize(snapshot.dns_provider?.confidence || 'none')} confidence`;
   const dnsProviderSource = snapshot.dns_provider?.source ? `via ${snapshot.dns_provider.source}` : 'No strong DNS fingerprint';
   const hostingProviderConfidence = `${capitalize(snapshot.hosting_provider?.confidence || 'none')} confidence`;
   const hostingProviderSource = snapshot.hosting_provider?.source ? `via ${snapshot.hosting_provider.source}` : 'Derived from DNS answers';
-
-  async function handleCopy() {
-    const text = snapshotToPlainText(snapshot);
-    let success = false;
-    try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(text);
-        success = true;
-      }
-    } catch {
-      success = false;
-    }
-    if (!success && typeof document !== 'undefined') {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-      } catch {
-        // ignore
-      }
-    }
-    setCopyLabel('Copied!');
-    window.setTimeout(() => setCopyLabel('Copy All Records'), 2000);
-  }
-
-  function handleDownload() {
-    const html = buildDnsSnapshotHtml(snapshot);
-    const blob = new Blob([html], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = mode === 'shared' ? `${snapshot.domain}-shared-dns-snapshot.html` : `${snapshot.domain}-dns-snapshot.html`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    setDownloadLabel('Downloaded!');
-    window.setTimeout(() => setDownloadLabel('Download HTML'), 2000);
-  }
-
-  function handleCsvDownload() {
-    const rows = orderedResults.flatMap((res) => {
-      if (!res.records || res.records.length === 0) {
-        return [{
-          domain: snapshot.domain,
-          resolver: snapshot.resolver,
-          type: res._type,
-          record: res.message || (res.error ? `Error: ${res.error}` : 'No records'),
-          ttl: '',
-          priority: '',
-          location: '',
-          provider: '',
-        }];
-      }
-      return res.records.map((r) => ({
-        domain: snapshot.domain,
-        resolver: snapshot.resolver,
-        type: res._type,
-        record: r.data || r.value || '',
-        ttl: r.TTL != null ? String(r.TTL) : '',
-        priority: r.priority != null ? String(r.priority) : '',
-        location: formatLocation(r),
-        provider: r.provider_label || '',
-      }));
-    });
-    exportToCSV(rows.length > 0 ? rows : snapshot, `${snapshot.domain}-dns-snapshot`);
-  }
 
   return (
     <div>
@@ -156,33 +82,31 @@ export default function DnsSnapshotView({
           <strong style={{ color: 'var(--text-primary)', fontWeight: 600 }}>Checked At:</strong>{' '}
           <span style={{ fontFamily: 'var(--font-mono)' }}>{formatUTC(snapshot.checked_at_utc)}</span>
         </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          {mode === 'live' ? (
-            <button
-              onClick={onShare}
-              style={actionButtonStyle('rgba(99,102,241,0.35)', '#818cf8')}
+        <ResultActions
+          className="signal-actions-end"
+          share={mode === 'live' ? {
+            heading: 'Share DNS Snapshot',
+            title: `${snapshot.domain} DNS Snapshot`,
+            create: snapshotShare('dns', snapshot.domain, () => snapshot, snapshot.checked_at_utc),
+          } : undefined}
+          html={{
+            filename: mode === 'shared' ? `${snapshot.domain}-shared-dns-snapshot` : `${snapshot.domain}-dns-snapshot`,
+            build: () => buildDnsSnapshotHtml(snapshot),
+          }}
+          csv={{ filename: `${snapshot.domain}-dns-snapshot`, rows: () => dnsSnapshotCsvRows(snapshot) }}
+        >
+          {snapshot.total_records > 0 && (
+            <ResultActionButton
+              icon={isCopied('records') ? 'check-lg' : 'clipboard'}
+              onClick={() => void copy(snapshotToPlainText(snapshot), 'records')}
             >
-              <i className="bi bi-share-fill" style={{ marginRight: 6 }} aria-hidden="true"></i>
-              Share DNS Snapshot
-            </button>
-          ) : (
-            <button
-              onClick={onRerun}
-              style={actionButtonStyle('rgba(34,211,238,0.35)', '#22d3ee')}
-            >
-              <i className="bi bi-arrow-repeat" style={{ marginRight: 6 }} aria-hidden="true"></i>
-              Re-run DNS Lookup Now
-            </button>
+              {isCopied('records') ? 'Copied' : 'Copy Records'}
+            </ResultActionButton>
           )}
-          <button onClick={handleDownload} style={actionButtonStyle('var(--border-color)', 'var(--text-secondary)')}>
-            <i className="bi bi-download" style={{ marginRight: 6 }} aria-hidden="true"></i>
-            {downloadLabel}
-          </button>
-          <button onClick={handleCsvDownload} style={actionButtonStyle('var(--border-color)', 'var(--text-secondary)')}>
-            <i className="bi bi-download" style={{ marginRight: 6 }} aria-hidden="true"></i>
-            Export CSV
-          </button>
-        </div>
+          {mode === 'shared' && onRerun && (
+            <ResultActionButton icon="arrow-repeat" onClick={onRerun}>Re-run Lookup</ResultActionButton>
+          )}
+        </ResultActions>
       </div>
 
       {allNoRecords && (
@@ -212,20 +136,6 @@ export default function DnsSnapshotView({
         </div>
       ))}
 
-      {snapshot.total_records > 0 && (
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={handleCopy} style={actionButtonStyle('var(--border-color)', 'var(--text-secondary)')}>
-            <i className="bi bi-clipboard" style={{ marginRight: 6 }} aria-hidden="true"></i>
-            {copyLabel}
-          </button>
-          {mode === 'shared' && (
-            <Link href={buildRerunHref(snapshot)} style={{ ...actionButtonStyle('rgba(99,102,241,0.25)', '#818cf8'), textDecoration: 'none' }}>
-              <i className="bi bi-box-arrow-up-right" style={{ marginRight: 6 }}></i>
-              Open Live Lookup
-            </Link>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -309,18 +219,4 @@ function renderResultBody(result: DnsLookupResult) {
       </table>
     </div>
   );
-}
-
-function actionButtonStyle(borderColor: string, color: string) {
-  return {
-    background: 'none',
-    border: `1px solid ${borderColor}`,
-    color,
-    padding: '8px 16px',
-    borderRadius: 10,
-    cursor: 'pointer',
-    fontSize: '0.82rem',
-    display: 'inline-flex',
-    alignItems: 'center',
-  } as const;
 }

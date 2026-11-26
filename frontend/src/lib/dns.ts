@@ -1,5 +1,7 @@
 'use client';
 
+import { buildReportHtml, type ReportSection } from './report-html';
+
 export const DNS_TYPES = ['A', 'AAAA', 'MX', 'TXT', 'CNAME', 'NS', 'SOA', 'PTR', 'SRV', 'CAA'] as const;
 export const DEFAULT_DNS_TYPES = ['A', 'AAAA', 'MX', 'CNAME', 'NS', 'TXT'] as const;
 
@@ -340,112 +342,73 @@ export function buildRerunHref(snapshot: DnsSnapshot) {
 }
 
 export function buildDnsSnapshotHtml(snapshot: DnsSnapshot) {
-  const orderedResults = orderDnsResults(snapshot.results);
-  const dnsProviderConfidence = `${capitalize(snapshot.dns_provider.confidence)} confidence`;
-  const dnsProviderSource = snapshot.dns_provider.source ? `via ${snapshot.dns_provider.source}` : 'No strong DNS fingerprint';
-  const hostingProviderConfidence = `${capitalize(snapshot.hosting_provider.confidence)} confidence`;
-  const hostingProviderSource = snapshot.hosting_provider.source ? `via ${snapshot.hosting_provider.source}` : 'Derived from DNS answers';
-  const timestampLine = formatUTC(snapshot.checked_at_utc);
+  const providerMeta = (provider: DnsProviderInfo, fallbackSource: string) =>
+    `${capitalize(provider.confidence)} confidence - ${provider.source ? `via ${provider.source}` : fallbackSource}`;
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DNS Snapshot Report - ${escapeHtml(snapshot.domain)}</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0b14; color: #e8ecf4; padding: 40px 20px; }
-    .container { max-width: 1100px; margin: 0 auto; }
-    h1 { font-size: 2rem; font-weight: 800; background: linear-gradient(135deg, #22d3ee, #6366f1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 8px; }
-    .subtitle { color: #94a3b8; font-size: 0.9rem; margin-bottom: 28px; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 20px; }
-    .card { background: #12141f; border: 1px solid #1e2235; border-radius: 14px; padding: 22px 18px; text-align: center; min-height: 104px; display: flex; flex-direction: column; justify-content: center; }
-    .card-val { font-size: 1.3rem; font-weight: 800; line-height: 1.2; }
-    .card-val.big { font-size: 1.9rem; }
-    .card-label { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 6px; }
-    .card-meta { font-size: 0.76rem; color: #64748b; margin-top: 6px; }
-    .timestamp { color: #cbd5e1; margin-bottom: 22px; font-size: 0.88rem; }
-    .section { background: #12141f; border: 1px solid #1e2235; border-radius: 14px; margin-bottom: 18px; overflow: hidden; }
-    .section-header { padding: 14px 20px; border-bottom: 1px solid #1e2235; font-weight: 700; }
-    .section-meta { font-size: 0.78rem; color: #94a3b8; margin-left: 8px; font-weight: 500; }
-    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    th { background: #0e1019; padding: 12px 16px; text-align: left; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #94a3b8; border-bottom: 2px solid #1e2235; }
-    td { padding: 10px 16px; border-bottom: 1px solid rgba(30,34,53,0.5); font-size: 0.88rem; }
-    .right { text-align: right; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
-    .muted { color: #94a3b8; }
-    .footer { text-align: center; color: #64748b; font-size: 0.78rem; margin-top: 36px; padding-top: 18px; border-top: 1px solid #1e2235; }
-    .empty { padding: 16px 20px; color: #94a3b8; font-size: 0.86rem; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>DNS Snapshot Report</h1>
-    <p class="subtitle">${escapeHtml(snapshot.domain)} - Resolver ${escapeHtml(snapshot.resolver_name)}</p>
-    <p class="timestamp"><strong>Checked At:</strong> ${escapeHtml(timestampLine)}</p>
-    <div class="cards">
-      <div class="card"><div class="card-val mono">${escapeHtml(snapshot.domain)}</div><div class="card-label">Domain</div></div>
-      <div class="card"><div class="card-val big">${snapshot.total_records || 0}</div><div class="card-label">Records Found</div></div>
-      <div class="card"><div class="card-val">${escapeHtml(snapshot.dns_provider.name)}</div><div class="card-label">DNS Provider</div><div class="card-meta">${escapeHtml(dnsProviderConfidence)} - ${escapeHtml(dnsProviderSource)}</div></div>
-      <div class="card"><div class="card-val">${escapeHtml(snapshot.hosting_provider.name)}</div><div class="card-label">Hosting / Edge</div><div class="card-meta">${escapeHtml(hostingProviderConfidence)} - ${escapeHtml(hostingProviderSource)}</div></div>
-      <div class="card"><div class="card-val">${escapeHtml(snapshot.resolver_name)}</div><div class="card-label">Resolver</div></div>
-    </div>
-    ${orderedResults.map((result) => `
-      <div class="section">
-        <div class="section-header">${escapeHtml(result._type)} Records <span class="section-meta">${result.records.length} found - ${result._queryTime || 0}ms</span></div>
-        ${result.error
-          ? `<div class="empty">${escapeHtml(result.error)}</div>`
-          : result.records.length === 0
-            ? `<div class="empty">${escapeHtml(result.message || `No ${result._type} records found.`)}</div>`
-            : buildDnsSnapshotHtmlTable(result)}
-      </div>
-    `).join('')}
-    <div class="footer">Generated offline from a DNS snapshot - Timestamp shown in UTC</div>
-  </div>
-</body>
-</html>`;
+  return buildReportHtml({
+    title: 'DNS Snapshot',
+    subject: snapshot.domain,
+    subtitle: `Resolver ${snapshot.resolver_name}`,
+    checkedAt: snapshot.checked_at_utc,
+    cards: [
+      { label: 'Domain', value: snapshot.domain, mono: true },
+      { label: 'Records Found', value: snapshot.total_records || 0 },
+      { label: 'DNS Provider', value: snapshot.dns_provider.name, meta: providerMeta(snapshot.dns_provider, 'No strong DNS fingerprint') },
+      { label: 'Hosting / Edge', value: snapshot.hosting_provider.name, meta: providerMeta(snapshot.hosting_provider, 'Derived from DNS answers') },
+      { label: 'Resolver', value: snapshot.resolver_name },
+    ],
+    sections: orderDnsResults(snapshot.results).map((result): ReportSection => {
+      const title = `${result._type} Records`;
+      const meta = `${result.records.length} found - ${result._queryTime || 0}ms`;
+      if (result.error) return { title, meta, note: result.error };
+
+      const withIp = isIpType(result._type);
+      const withPriority = result._type === 'MX';
+      const columns = ['Value', ...(withIp ? ['Location', 'Provider'] : []), ...(withPriority ? ['Priority'] : []), 'TTL'];
+      return {
+        title,
+        meta,
+        empty: result.message || `No ${result._type} records found.`,
+        table: {
+          columns,
+          mono: [0],
+          alignRight: columns.map((_, index) => index).slice(1),
+          rows: result.records.map((record) => [
+            record.data || record.value || '',
+            ...(withIp ? [formatLocation(record), record.provider_label || 'Unknown'] : []),
+            ...(withPriority ? [record.priority ?? ''] : []),
+            formatTTL(record.TTL || 0),
+          ]),
+        },
+      };
+    }),
+  });
 }
 
-function buildDnsSnapshotHtmlTable(result: DnsLookupResult) {
-  return `
-    <table>
-      <colgroup>
-        <col style="width:auto;">
-        ${isIpType(result._type) ? '<col style="width:180px;">' : ''}
-        ${isIpType(result._type) ? '<col style="width:180px;">' : ''}
-        ${result._type === 'MX' ? '<col style="width:120px;">' : ''}
-        <col style="width:110px;">
-      </colgroup>
-      <thead><tr>
-        <th>Value</th>
-        ${isIpType(result._type) ? '<th class="right">Location</th>' : ''}
-        ${isIpType(result._type) ? '<th class="right">Provider</th>' : ''}
-        ${result._type === 'MX' ? '<th class="right">Priority</th>' : ''}
-        <th class="right">TTL</th>
-      </tr></thead>
-      <tbody>
-        ${result.records.map((record) => {
-          const flag = countryCodeToFlag(record.country_code || '');
-          const location = record.country ? `${flag ? flag + ' ' : ''}${record.country}` : '';
-          return `
-          <tr>
-            <td class="mono">${escapeHtml(record.data || record.value || '')}</td>
-            ${isIpType(result._type) ? `<td class="right muted">${escapeHtml(location)}</td>` : ''}
-            ${isIpType(result._type) ? `<td class="right muted">${escapeHtml(record.provider_label || 'Unknown')}</td>` : ''}
-            ${result._type === 'MX' ? `<td class="right muted">${escapeHtml(String(record.priority || ''))}</td>` : ''}
-            <td class="right muted">${escapeHtml(formatTTL(record.TTL || 0))}</td>
-          </tr>
-        `;
-        }).join('')}
-      </tbody>
-    </table>
-  `;
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+/** One CSV row per record; a record type with no answer still gets a row saying so. */
+export function dnsSnapshotCsvRows(snapshot: DnsSnapshot) {
+  return orderDnsResults(snapshot.results || []).flatMap((result) => {
+    if (!result.records || result.records.length === 0) {
+      return [{
+        domain: snapshot.domain,
+        resolver: snapshot.resolver,
+        type: result._type,
+        record: result.message || (result.error ? `Error: ${result.error}` : 'No records'),
+        ttl: '',
+        priority: '',
+        location: '',
+        provider: '',
+      }];
+    }
+    return result.records.map((record) => ({
+      domain: snapshot.domain,
+      resolver: snapshot.resolver,
+      type: result._type,
+      record: record.data || record.value || '',
+      ttl: record.TTL != null ? String(record.TTL) : '',
+      priority: record.priority != null ? String(record.priority) : '',
+      location: formatLocation(record),
+      provider: record.provider_label || '',
+    }));
+  });
 }

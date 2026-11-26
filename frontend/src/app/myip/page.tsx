@@ -5,8 +5,8 @@ import { useEffect, useState } from 'react';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import ToolWorkspace from '@/components/ToolWorkspace';
-import { api, MyIPResult } from '@/lib/api';
-import { exportToCSV } from '@/lib/csv-utils';
+import ResultActions from '@/components/share/ResultActions';
+import { api, MyIPResult, snapshotShare } from '@/lib/api';
 import { useClipboard } from '@/hooks/useClipboard';
 import {
   countryFlag,
@@ -16,6 +16,8 @@ import {
   formatProxyStatus,
   buildMyIPReportHtml,
   buildMyIPExportData,
+  myIPReportFilename,
+  UNKNOWN_CLIENT,
   type ConnectionInfo,
   type ClientInfo,
 } from '@/lib/myip';
@@ -85,15 +87,6 @@ export default function MyIPPage() {
   const [ipv6, setIpv6] = useState<string | null>(null);
   const [ipv4Loading, setIpv4Loading] = useState(true);
   const [ipv6Loading, setIpv6Loading] = useState(true);
-
-  // Share modal state
-  const [shareModalOpen, setShareModalOpen] = useState(false);
-  const [shareTitle, setShareTitle] = useState('');
-  const [shareExpiry, setShareExpiry] = useState('never');
-  const [sharePassword, setSharePassword] = useState('');
-  const [shareLoading, setShareLoading] = useState(false);
-  const [shareError, setShareError] = useState('');
-  const [shareUrl, setShareUrl] = useState('');
 
   useEffect(() => {
     // Collect client-side info
@@ -178,66 +171,6 @@ export default function MyIPPage() {
   function copyIPv6() {
     if (!ipv6) return;
     void copy(ipv6, 'v6');
-  }
-
-  function openShareModal() {
-    if (!data) return;
-    const defaultTitle = ipv4 && ipv6
-      ? `My IP Report — ${ipv4} / ${ipv6}`
-      : `My IP Report — ${ipv4 || ipv6 || data.ip}`;
-    setShareTitle(defaultTitle);
-    setShareExpiry('never');
-    setSharePassword('');
-    setShareError('');
-    setShareUrl('');
-    setShareModalOpen(true);
-  }
-
-  async function submitShare() {
-    if (!data) return;
-    setShareLoading(true);
-    setShareError('');
-    try {
-      const snapshot = { ...data, ipv4, ipv6, client: clientInfo, connection };
-      const defaultTitle = ipv4 && ipv6
-        ? `My IP Report — ${ipv4} / ${ipv6}`
-        : `My IP Report — ${ipv4 || ipv6 || data.ip}`;
-      const result = await api.createMyIPShare({
-        title: shareTitle.trim() || defaultTitle,
-        ip: ipv4 || ipv6 || data.ip,
-        expiry: shareExpiry,
-        password: sharePassword.trim(),
-        checked_at_utc: data.checked_at_utc,
-        snapshot,
-      });
-      setShareUrl(`${window.location.origin}/s/${result.code}`);
-    } catch (err: unknown) {
-      setShareError(err instanceof Error ? err.message : 'Failed to create share link.');
-    } finally {
-      setShareLoading(false);
-    }
-  }
-
-  function downloadHTML() {
-    if (!data || !clientInfo || !connection) return;
-    const html = buildMyIPReportHtml(data, { connection, ...clientInfo }, { ipv4, ipv6 });
-    const blob = new Blob([html], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const filenameIp = (ipv4 || data.ip || 'ip').replace(/[.:]/g, '-');
-    a.download = `my-ip-report-${filenameIp}.html`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  function downloadCSV() {
-    if (!data) return;
-    const exportData = buildMyIPExportData(data, { ipv4, ipv6 });
-    const filenameIp = (ipv4 || data.ip || 'ip').replace(/[.:]/g, '-');
-    exportToCSV(exportData, `my-ip-report-${filenameIp}`);
   }
 
   const badge = data ? networkBadge(data.network_type) : null;
@@ -375,96 +308,38 @@ export default function MyIPPage() {
             </div>
 
             {/* ─── Action Toolbar ─── */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
-              <button
-                onClick={openShareModal}
-                className="btn-primary"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '8px 16px',
-                  borderRadius: 10,
-                  fontSize: '0.84rem',
-                  fontWeight: 600,
-                  boxShadow: '0 2px 10px rgba(99,102,241,0.25)',
+            <div style={{ marginBottom: '1.5rem' }}>
+              <ResultActions
+                className="signal-actions-end"
+                share={{
+                  heading: 'Share IP Report',
+                  title: ipv4 && ipv6 ? `My IP Report — ${ipv4} / ${ipv6}` : `My IP Report — ${ipv4 || ipv6 || data.ip}`,
+                  create: snapshotShare(
+                    'myip',
+                    ipv4 || ipv6 || data.ip,
+                    () => ({ ...data, ipv4, ipv6, client: clientInfo, connection }),
+                    data.checked_at_utc,
+                  ),
                 }}
-              >
-                <i className="bi bi-share-fill"></i>
-                Share Results
-              </button>
-              <button
-                onClick={downloadHTML}
-                className="btn-secondary"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '8px 16px',
-                  borderRadius: 10,
-                  fontSize: '0.84rem',
-                  fontWeight: 600,
+                html={{
+                  filename: myIPReportFilename(data, { ipv4, ipv6 }),
+                  build: () => buildMyIPReportHtml(data, { ...(clientInfo || UNKNOWN_CLIENT), connection: connection || undefined }, { ipv4, ipv6 }),
                 }}
+                csv={{ filename: myIPReportFilename(data, { ipv4, ipv6 }), rows: () => buildMyIPExportData(data, { ipv4, ipv6 }) }}
               >
-                <i className="bi bi-download"></i>
-                Download HTML
-              </button>
-              <button
-                onClick={downloadCSV}
-                className="btn-secondary"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  padding: '8px 16px',
-                  borderRadius: 10,
-                  fontSize: '0.84rem',
-                  fontWeight: 600,
-                }}
-              >
-                <i className="bi bi-file-earmark-spreadsheet"></i>
-                Export CSV
-              </button>
-
-              {data.asn && (
-                <Link
-                  href={`/asn?asn=${data.asn}`}
-                  className="btn-secondary"
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    padding: '8px 16px',
-                    borderRadius: 10,
-                    textDecoration: 'none',
-                    fontSize: '0.84rem',
-                    fontWeight: 600,
-                  }}
-                >
-                  <i className="bi bi-diagram-3-fill" style={{ color: 'var(--accent-purple)' }}></i>
-                  ASN Lookup
-                </Link>
-              )}
-
-              {data.reverse_dns && (
-                <Link
-                  href={`/dns?domain=${encodeURIComponent(extractDomainFromRDNS(data.reverse_dns))}`}
-                  className="btn-secondary"
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    padding: '8px 16px',
-                    borderRadius: 10,
-                    textDecoration: 'none',
-                    fontSize: '0.84rem',
-                    fontWeight: 600,
-                  }}
-                >
-                  <i className="bi bi-globe2" style={{ color: 'var(--accent-cyan)' }}></i>
-                  DNS Lookup
-                </Link>
-              )}
+                {data.asn && (
+                  <Link href={`/asn?asn=${data.asn}`} className="signal-action">
+                    <i className="bi bi-diagram-3-fill" aria-hidden="true"></i>
+                    ASN Lookup
+                  </Link>
+                )}
+                {data.reverse_dns && (
+                  <Link href={`/dns?domain=${encodeURIComponent(extractDomainFromRDNS(data.reverse_dns))}`} className="signal-action">
+                    <i className="bi bi-globe2" aria-hidden="true"></i>
+                    DNS Lookup
+                  </Link>
+                )}
+              </ResultActions>
             </div>
 
             {/* ─── Stats Row ─── */}
@@ -576,84 +451,6 @@ export default function MyIPPage() {
       </main>
       <Footer />
 
-      {/* Share Modal */}
-      {shareModalOpen && data && (
-        <div
-          onClick={(e) => { if (e.target === e.currentTarget) setShareModalOpen(false); }}
-          style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(7,8,15,0.75)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}
-        >
-          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: 18, padding: '32px 36px', maxWidth: 480, width: '100%', boxShadow: '0 24px 80px rgba(0,0,0,0.5)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div style={{ width: 38, height: 38, borderRadius: 10, background: 'rgba(99,102,241,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6366f1', fontSize: '1.1rem' }}>
-                  <i className="bi bi-share-fill"></i>
-                </div>
-                <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)' }}>Share IP Report</h3>
-              </div>
-              <button onClick={() => setShareModalOpen(false)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '1.2rem', cursor: 'pointer' }}>
-                <i className="bi bi-x-lg"></i>
-              </button>
-            </div>
-
-            {shareLoading ? (
-              <div style={{ textAlign: 'center', padding: '20px 0' }}>
-                <div style={{ width: 40, height: 40, border: '3px solid var(--border-color)', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'spin 1s linear infinite', margin: '0 auto 12px' }}></div>
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', margin: 0 }}>Creating share link...</p>
-              </div>
-            ) : shareUrl ? (
-              <div>
-                <div style={{ textAlign: 'center', marginBottom: 20 }}>
-                  <div style={{ width: 52, height: 52, borderRadius: '50%', background: 'rgba(16,185,129,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#10b981', fontSize: '1.5rem', margin: '0 auto 12px' }}>
-                    <i className="bi bi-check-circle-fill"></i>
-                  </div>
-                  <p style={{ margin: 0, color: 'var(--text-primary)', fontWeight: 600, fontSize: '0.95rem' }}>Share link created!</p>
-                </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--bg-input)', border: '1px solid var(--border-color)', borderRadius: 10, padding: '10px 14px', marginBottom: 12 }}>
-                  <span style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: '0.82rem', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shareUrl}</span>
-                  <button
-                    onClick={() => void copy(shareUrl, 'share')}
-                    style={{ background: 'var(--gradient-primary)', border: 'none', color: '#fff', padding: '6px 14px', borderRadius: 7, cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}
-                  >
-                    <i className={isCopied('share') ? 'bi bi-check-lg' : 'bi bi-clipboard'} style={{ marginRight: 4 }}></i>{isCopied('share') ? 'Copied!' : 'Copy'}
-                  </button>
-                </div>
-                <button onClick={() => { setShareUrl(''); setShareError(''); }} style={{ width: '100%', marginTop: 16, padding: 10, borderRadius: 10, border: '1px solid var(--border-color)', background: 'none', color: 'var(--text-secondary)', fontSize: '0.85rem', cursor: 'pointer' }}>
-                  Create Another Link
-                </button>
-              </div>
-            ) : (
-              <div>
-                <div style={{ marginBottom: 16 }}>
-                  <label style={modalLabelStyle}>Title</label>
-                  <input value={shareTitle} onChange={(e) => setShareTitle(e.target.value)} style={modalInputStyle} />
-                </div>
-                <div style={{ marginBottom: 16 }}>
-                  <label style={modalLabelStyle}>Link Expiry</label>
-                  <select value={shareExpiry} onChange={(e) => setShareExpiry(e.target.value)} style={modalInputStyle}>
-                    <option value="never">Never expires</option>
-                    <option value="24h">24 hours</option>
-                    <option value="7d">7 days</option>
-                    <option value="30d">30 days</option>
-                  </select>
-                </div>
-                <div style={{ marginBottom: 16 }}>
-                  <label style={modalLabelStyle}>Password</label>
-                  <input type="password" value={sharePassword} onChange={(e) => setSharePassword(e.target.value)} placeholder="Leave blank for public link" style={modalInputStyle} />
-                </div>
-                {shareError && (
-                  <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, padding: '10px 14px', color: '#f87171', fontSize: '0.82rem', marginBottom: 12 }}>
-                    {shareError}
-                  </div>
-                )}
-                <button onClick={() => void submitShare()} style={{ width: '100%', padding: 12, borderRadius: 10, border: 'none', background: 'var(--gradient-primary)', color: '#fff', fontWeight: 700, fontSize: '0.92rem', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-                  <i className="bi bi-link-45deg"></i>
-                  Generate Share Link
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
       <style>{`@keyframes spin { to { transform: rotate(360deg); } } @keyframes iconPulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:0.5; transform:scale(1.1); } }`}</style>
     </>
   );
@@ -731,28 +528,6 @@ function DetailTable({ rows }: { rows: DetailRow[] }) {
     </dl>
   );
 }
-
-const modalLabelStyle = {
-  fontSize: '0.78rem',
-  fontWeight: 600,
-  color: 'var(--text-muted)',
-  textTransform: 'uppercase' as const,
-  letterSpacing: '0.06em',
-  display: 'block',
-  marginBottom: 6,
-};
-
-const modalInputStyle = {
-  width: '100%',
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: '1px solid var(--border-color)',
-  background: 'var(--bg-input)',
-  color: 'var(--text-primary)',
-  fontSize: '0.88rem',
-  boxSizing: 'border-box' as const,
-  outline: 'none',
-};
 
 function capitalize(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1);

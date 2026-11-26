@@ -7,7 +7,6 @@ import ToolWorkspace, { ToolEmptyState } from '@/components/ToolWorkspace';
 import AsnSnapshotView from '@/components/AsnSnapshotView';
 import { api } from '@/lib/api';
 import { normalizeAsnSnapshot, ASNResult } from '@/lib/asn';
-import { useClipboard } from '@/hooks/useClipboard';
 
 const QUICK_ASNS = [
   { label: 'Cloudflare', asn: '13335' },
@@ -21,21 +20,10 @@ const QUICK_ASNS = [
 ];
 
 export default function ASNPage() {
-  const { copy, isCopied } = useClipboard();
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ASNResult | null>(null);
   const [error, setError] = useState('');
-
-  // Share Modal State
-  const [shareModalOpen, setShareModalOpen] = useState(false);
-  const [shareTitle, setShareTitle] = useState('');
-  const [shareExpiry, setShareExpiry] = useState('never');
-  const [sharePassword, setSharePassword] = useState('');
-  const [shareLoading, setShareLoading] = useState(false);
-  const [shareError, setShareError] = useState('');
-  const [shareUrl, setShareUrl] = useState('');
-
   const prefillApplied = useRef(false);
 
   const lookupASN = useCallback(async (value?: string) => {
@@ -73,37 +61,6 @@ export default function ASNPage() {
       void lookupASN(asnParam);
     }
   }, [lookupASN]);
-
-  function openShareModal() {
-    if (!result) return;
-    setShareTitle(`AS${result.asn} - ${result.holder || result.name || 'ASN'} Intelligence Snapshot`);
-    setShareExpiry('never');
-    setSharePassword('');
-    setShareError('');
-    setShareUrl('');
-    setShareModalOpen(true);
-  }
-
-  async function submitShare() {
-    if (!result) return;
-    setShareLoading(true);
-    setShareError('');
-    try {
-      const res = await api.createAsnShare({
-        title: shareTitle.trim() || `AS${result.asn} Snapshot`,
-        asn: result.asn,
-        expiry: shareExpiry,
-        password: sharePassword.trim(),
-        checked_at_utc: result.checked_at_utc,
-        snapshot: result,
-      });
-      setShareUrl(`${window.location.origin}/s/${res.code}`);
-    } catch (err: unknown) {
-      setShareError(err instanceof Error ? err.message : 'Failed to create share link.');
-    } finally {
-      setShareLoading(false);
-    }
-  }
 
   return (
     <>
@@ -190,7 +147,6 @@ export default function ASNPage() {
             <AsnSnapshotView
               snapshot={result}
               mode="live"
-              onShare={openShareModal}
               onRerun={lookupASN}
             />
           </div>
@@ -198,174 +154,6 @@ export default function ASNPage() {
         </ToolWorkspace>
       </main>
       <Footer />
-
-      {/* ─── Share Modal ─── */}
-      {shareModalOpen && result && (
-        <div
-          onClick={e => {
-            if (e.target === e.currentTarget) setShareModalOpen(false);
-          }}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 10000,
-            background: 'rgba(7,8,15,0.75)',
-            backdropFilter: 'blur(6px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '24px',
-          }}
-        >
-          <div
-            style={{
-              background: 'var(--bg-card)',
-              border: '1px solid var(--border-color)',
-              borderRadius: '16px',
-              padding: '2rem',
-              maxWidth: '500px',
-              width: '100%',
-              boxShadow: '0 24px 80px rgba(0,0,0,0.5)',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-              <h3 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-primary)' }}>
-                <i className="bi bi-share-fill" style={{ color: 'var(--accent-cyan)', marginRight: '0.5rem' }}></i>
-                Share ASN Snapshot
-              </h3>
-              <button
-                onClick={() => setShareModalOpen(false)}
-                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '1.2rem', cursor: 'pointer' }}
-              >
-                ✕
-              </button>
-            </div>
-
-            {!shareUrl ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '0.4rem', fontWeight: 600 }}>
-                    Snapshot Title:
-                  </label>
-                  <input
-                    type="text"
-                    value={shareTitle}
-                    onChange={e => setShareTitle(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: '0.65rem 0.9rem',
-                      background: 'var(--bg-input)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: 'var(--radius-sm)',
-                      color: 'var(--text-primary)',
-                      fontSize: '0.9rem',
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '0.4rem', fontWeight: 600 }}>
-                    Link Expiration:
-                  </label>
-                  <select
-                    value={shareExpiry}
-                    onChange={e => setShareExpiry(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: '0.65rem 0.9rem',
-                      background: 'var(--bg-input)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: 'var(--radius-sm)',
-                      color: 'var(--text-primary)',
-                      fontSize: '0.9rem',
-                    }}
-                  >
-                    <option value="never">Never expire</option>
-                    <option value="24h">24 Hours</option>
-                    <option value="7d">7 Days</option>
-                    <option value="30d">30 Days</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '0.4rem', fontWeight: 600 }}>
-                    Password Protection (Optional):
-                  </label>
-                  <input
-                    type="password"
-                    value={sharePassword}
-                    onChange={e => setSharePassword(e.target.value)}
-                    placeholder="Leave blank for public access"
-                    style={{
-                      width: '100%',
-                      padding: '0.65rem 0.9rem',
-                      background: 'var(--bg-input)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: 'var(--radius-sm)',
-                      color: 'var(--text-primary)',
-                      fontSize: '0.9rem',
-                    }}
-                  />
-                </div>
-
-                {shareError && (
-                  <div style={{ color: 'var(--accent-red)', fontSize: '0.85rem', padding: '0.5rem', background: 'rgba(239,68,68,0.1)', borderRadius: '4px' }}>
-                    {shareError}
-                  </div>
-                )}
-
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
-                  <button onClick={() => setShareModalOpen(false)} className="btn-secondary">
-                    Cancel
-                  </button>
-                  <button onClick={submitShare} disabled={shareLoading} className="btn-primary">
-                    {shareLoading ? 'Creating Link...' : 'Generate Share Link'}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                <div style={{ textAlign: 'center', padding: '1rem 0' }}>
-                  <div style={{ fontSize: '2.5rem', color: 'var(--accent-green)', marginBottom: '0.5rem' }}>
-                    <i className="bi bi-check-circle-fill"></i>
-                  </div>
-                  <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '1.1rem' }}>Share Link Ready!</h4>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', margin: 0 }}>
-                    Anyone with this link can view the frozen AS{result.asn} snapshot.
-                  </p>
-                </div>
-
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <input
-                    type="text"
-                    readOnly
-                    value={shareUrl}
-                    style={{
-                      flex: 1,
-                      padding: '0.65rem 0.9rem',
-                      background: 'var(--bg-input)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: 'var(--radius-sm)',
-                      color: 'var(--accent-cyan)',
-                      fontSize: '0.9rem',
-                      fontFamily: 'var(--font-mono)',
-                    }}
-                  />
-                  <button onClick={() => void copy(shareUrl, 'share')} className="btn-primary" style={{ whiteSpace: 'nowrap' }}>
-                    <i className={`bi ${isCopied('share') ? 'bi-check-lg' : 'bi-clipboard'}`}></i> {isCopied('share') ? 'Copied!' : 'Copy'}
-                  </button>
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
-                  <button onClick={() => setShareModalOpen(false)} className="btn-secondary">
-                    Close
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </>
   );
 }

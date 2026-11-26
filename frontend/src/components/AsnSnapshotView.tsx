@@ -1,10 +1,14 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import ResultActions, { ResultActionButton } from '@/components/share/ResultActions';
+import { snapshotShare } from '@/lib/api';
 import { exportToCSV } from '@/lib/csv-utils';
+import { downloadFile } from '@/lib/download';
 import {
   ASNResult,
   ASNPrefix,
+  asnPrefixCsvRows,
   FirewallFormat,
   FirewallAction,
   aggregateIpv4Cidrs,
@@ -21,7 +25,6 @@ interface AsnSnapshotViewProps {
   mode: 'live' | 'shared';
   title?: string;
   code?: string;
-  onShare?: () => void;
   onRerun?: (asn: string) => void;
 }
 
@@ -30,7 +33,6 @@ export default function AsnSnapshotView({
   mode,
   title,
   code,
-  onShare,
   onRerun,
 }: AsnSnapshotViewProps) {
   // Tabs: 'prefixes' | 'firewall' | 'tester' | 'bgp'
@@ -168,54 +170,6 @@ export default function AsnSnapshotView({
     setTestResult(res);
   }
 
-  // Download export files
-  function downloadExport(type: 'json' | 'csv' | 'txt' | 'html') {
-    if (type === 'csv') {
-      const prefixesToExport = displayedPrefixes.length > 0
-        ? displayedPrefixes
-        : [...(snapshot.ipv4_prefixes || []), ...(snapshot.ipv6_prefixes || [])];
-      const rows = prefixesToExport.map(p => ({
-        asn: `AS${snapshot.asn}`,
-        holder: snapshot.holder || snapshot.name || '',
-        prefix: p.prefix,
-        ip_version: p.ip_version || (p.prefix.includes(':') ? 'ipv6' : 'ipv4'),
-        mask: p.mask,
-        total_ips: p.total_ips,
-        first_ip: p.first_ip || '',
-        last_ip: p.last_ip || '',
-        netmask: p.netmask || '',
-      }));
-      exportToCSV(rows, `AS${snapshot.asn}-prefixes`);
-      return;
-    }
-    let content = '';
-    let mime = 'text/plain';
-    let filename = `AS${snapshot.asn}-prefixes.${type}`;
-
-    if (type === 'json') {
-      content = JSON.stringify(snapshot, null, 2);
-      mime = 'application/json';
-    } else if (type === 'html') {
-      content = buildAsnSnapshotHtml(snapshot);
-      mime = 'text/html';
-      filename = `AS${snapshot.asn}-snapshot.html`;
-    } else {
-      content = buildAsnPlainText(snapshot);
-      mime = 'text/plain';
-      filename = `AS${snapshot.asn}-report.txt`;
-    }
-
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       {/* ─── Top Header Card ─── */}
@@ -312,40 +266,38 @@ export default function AsnSnapshotView({
           </div>
 
           {/* Action Buttons */}
-          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-            {mode === 'live' && onShare && (
-              <button onClick={onShare} className="btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.88rem' }}>
-                <i className="bi bi-share-fill"></i> Share Snapshot
-              </button>
-            )}
-            {mode === 'shared' && onRerun && (
-              <button onClick={() => onRerun(snapshot.asn)} className="btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.88rem' }}>
-                <i className="bi bi-arrow-repeat"></i> Run Live Lookup
-              </button>
-            )}
-            <button
+          <ResultActions
+            className="signal-actions-end"
+            share={mode === 'live' ? {
+              heading: 'Share ASN Snapshot',
+              title: `AS${snapshot.asn} - ${snapshot.holder || snapshot.name || 'ASN'} Intelligence Snapshot`,
+              create: snapshotShare('asn', snapshot.asn, () => snapshot, snapshot.checked_at_utc),
+            } : undefined}
+            html={{ filename: `AS${snapshot.asn}-snapshot`, build: () => buildAsnSnapshotHtml(snapshot) }}
+            csv={{ filename: `AS${snapshot.asn}-prefixes`, rows: () => asnPrefixCsvRows(snapshot) }}
+          >
+            <ResultActionButton
+              icon="file-earmark-text"
+              title="Download plain text report"
+              onClick={() => downloadFile(buildAsnPlainText(snapshot), `AS${snapshot.asn}-report.txt`, 'text/plain')}
+            >
+              Download Text
+            </ResultActionButton>
+            <ResultActionButton
+              icon={copiedSummary ? 'check-lg' : 'clipboard'}
               onClick={() => {
                 copyText(buildAsnPlainText(snapshot), () => {
                   setCopiedSummary(true);
                   setTimeout(() => setCopiedSummary(false), 2000);
                 });
               }}
-              className="btn-secondary"
-              style={{ padding: '0.5rem 0.9rem', fontSize: '0.88rem' }}
             >
-              <i className={`bi ${copiedSummary ? 'bi-check-lg' : 'bi-clipboard'}`}></i> {copiedSummary ? 'Copied!' : 'Copy Summary'}
-            </button>
-            <div style={{ position: 'relative', display: 'inline-block' }}>
-              <button
-                onClick={() => downloadExport('txt')}
-                className="btn-secondary"
-                style={{ padding: '0.5rem 0.9rem', fontSize: '0.88rem' }}
-                title="Download plain text report"
-              >
-                <i className="bi bi-download"></i> Export
-              </button>
-            </div>
-          </div>
+              {copiedSummary ? 'Copied' : 'Copy Summary'}
+            </ResultActionButton>
+            {mode === 'shared' && onRerun && (
+              <ResultActionButton icon="arrow-repeat" onClick={() => onRerun(snapshot.asn)}>Run Live Lookup</ResultActionButton>
+            )}
+          </ResultActions>
         </div>
 
         {/* ─── Metric Stat Cards ─── */}
@@ -541,12 +493,12 @@ export default function AsnSnapshotView({
                 </button>
 
                 <button
-                  onClick={() => downloadExport('csv')}
+                  onClick={() => exportToCSV(asnPrefixCsvRows(snapshot, displayedPrefixes), `AS${snapshot.asn}-visible-prefixes`)}
                   className="btn-secondary"
                   style={{ padding: '0.45rem 0.85rem', fontSize: '0.82rem' }}
-                  title="Download CSV"
+                  title="Download the prefixes currently shown as CSV"
                 >
-                  <i className="bi bi-file-earmark-spreadsheet"></i> CSV
+                  <i className="bi bi-file-earmark-spreadsheet"></i> CSV of Visible
                 </button>
               </div>
             </div>

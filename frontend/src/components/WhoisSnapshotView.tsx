@@ -3,8 +3,10 @@
 import Link from 'next/link';
 import type { CSSProperties, ReactNode } from 'react';
 import { useMemo, useState } from 'react';
-import { WhoisSnapshot } from '@/lib/api';
-import { exportToCSV } from '@/lib/csv-utils';
+import ResultActions, { ResultActionButton } from '@/components/share/ResultActions';
+import { useClipboard } from '@/hooks/useClipboard';
+import { snapshotShare, WhoisSnapshot } from '@/lib/api';
+import { downloadFile } from '@/lib/download';
 import {
   buildWhoisPlainText,
   buildWhoisRerunHref,
@@ -17,7 +19,6 @@ interface WhoisSnapshotViewProps {
   mode: 'live' | 'shared';
   title?: string;
   code?: string;
-  onShare?: () => void;
   onRerun?: () => void;
 }
 
@@ -31,11 +32,9 @@ export default function WhoisSnapshotView({
   mode,
   title,
   code,
-  onShare,
   onRerun,
 }: WhoisSnapshotViewProps) {
-  const [copyLabel, setCopyLabel] = useState('Copy Summary');
-  const [downloadLabel, setDownloadLabel] = useState('Download HTML');
+  const { copy, isCopied } = useClipboard();
   const [showRaw, setShowRaw] = useState(false);
   const sourceLabel = snapshot.data_source === 'rdap' ? 'RDAP' : 'WHOIS';
   const contactSections = useMemo<ContactSection[]>(() => [
@@ -43,66 +42,6 @@ export default function WhoisSnapshotView({
     { label: 'Admin', contact: snapshot.contacts.admin },
     { label: 'Tech', contact: snapshot.contacts.tech },
   ].filter(({ contact }) => contact.name || contact.email || contact.phone), [snapshot.contacts]);
-
-  async function handleCopy() {
-    const text = buildWhoisPlainText(snapshot);
-    let success = false;
-    try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(text);
-        success = true;
-      }
-    } catch {
-      success = false;
-    }
-    if (!success && typeof document !== 'undefined') {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-      } catch {
-        // ignore
-      }
-    }
-    setCopyLabel('Copied!');
-    window.setTimeout(() => setCopyLabel('Copy Summary'), 2000);
-  }
-
-  function handleDownload() {
-    const html = buildWhoisSnapshotHtml(snapshot);
-    const blob = new Blob([html], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${snapshot.domain}-whois-snapshot.html`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    setDownloadLabel('Downloaded!');
-    window.setTimeout(() => setDownloadLabel('Download HTML'), 2000);
-  }
-
-  function handleJsonDownload() {
-    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${snapshot.domain}-whois-snapshot.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  }
-
-  function handleCsvDownload() {
-    exportToCSV(snapshot, `${snapshot.domain}-whois-snapshot`);
-  }
 
   return (
     <div>
@@ -146,35 +85,32 @@ export default function WhoisSnapshotView({
           <strong style={{ color: 'var(--text-primary)', fontWeight: 600 }}>Checked At:</strong>{' '}
           <span style={{ fontFamily: 'var(--font-mono)' }}>{formatWhoisDate(snapshot.checked_at_utc)}</span>
         </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          {mode === 'live' ? (
-            <button onClick={onShare} style={actionButtonStyle('rgba(56,189,248,0.28)', '#38bdf8')}>
-              <i className="bi bi-share-fill" style={{ marginRight: 6 }}></i>
-              Share Snapshot
-            </button>
-          ) : (
-            <button onClick={onRerun} style={actionButtonStyle('rgba(34,211,238,0.35)', '#22d3ee')}>
-              <i className="bi bi-arrow-repeat" style={{ marginRight: 6 }}></i>
-              Re-run Lookup
-            </button>
+        <ResultActions
+          className="signal-actions-end"
+          share={mode === 'live' ? {
+            heading: 'Share WHOIS Snapshot',
+            title: `${snapshot.domain} WHOIS Snapshot`,
+            create: snapshotShare('whois', snapshot.domain, () => snapshot, snapshot.checked_at_utc),
+          } : undefined}
+          html={{ filename: `${snapshot.domain}-whois-snapshot`, build: () => buildWhoisSnapshotHtml(snapshot) }}
+          csv={{ filename: `${snapshot.domain}-whois-snapshot`, rows: () => snapshot }}
+        >
+          <ResultActionButton
+            icon="filetype-json"
+            onClick={() => downloadFile(JSON.stringify(snapshot, null, 2), `${snapshot.domain}-whois-snapshot.json`, 'application/json')}
+          >
+            Download JSON
+          </ResultActionButton>
+          <ResultActionButton
+            icon={isCopied('summary') ? 'check-lg' : 'clipboard'}
+            onClick={() => void copy(buildWhoisPlainText(snapshot), 'summary')}
+          >
+            {isCopied('summary') ? 'Copied' : 'Copy Summary'}
+          </ResultActionButton>
+          {mode === 'shared' && onRerun && (
+            <ResultActionButton icon="arrow-repeat" onClick={onRerun}>Re-run Lookup</ResultActionButton>
           )}
-          <button onClick={handleCopy} style={actionButtonStyle('var(--border-color)', 'var(--text-secondary)')}>
-            <i className="bi bi-clipboard" style={{ marginRight: 6 }}></i>
-            {copyLabel}
-          </button>
-          <button onClick={handleDownload} style={actionButtonStyle('var(--border-color)', 'var(--text-secondary)')}>
-            <i className="bi bi-download" style={{ marginRight: 6 }}></i>
-            {downloadLabel}
-          </button>
-          <button onClick={handleJsonDownload} style={actionButtonStyle('var(--border-color)', 'var(--text-secondary)')}>
-            <i className="bi bi-filetype-json" style={{ marginRight: 6 }}></i>
-            JSON
-          </button>
-          <button onClick={handleCsvDownload} style={actionButtonStyle('var(--border-color)', 'var(--text-secondary)')}>
-            <i className="bi bi-download" style={{ marginRight: 6 }}></i>
-            CSV
-          </button>
-        </div>
+        </ResultActions>
       </div>
 
       <Section title="Domain Status">

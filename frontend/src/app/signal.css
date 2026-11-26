@@ -392,7 +392,7 @@ body:has(.signal-workspace dialog[open]) { overflow: hidden; }
 /* Result actions: the Share / Download HTML / Download CSV bar and its dialog, shared by every tool. */
 .signal-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .signal-actions-end { justify-content: flex-end; }
-.signal-action { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 7px 13px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-card); color: var(--text-secondary); font: 600 13px/1.2 var(--font-sans, inherit); white-space: nowrap; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease; }
+.signal-action { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 7px 13px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-card); color: var(--text-secondary); font: 600 13px/1.2 var(--font-sans, inherit); white-space: nowrap; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease; }
 .signal-action:hover { color: var(--text-primary); border-color: var(--accent-primary); }
 .signal-action:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
 .signal-action:disabled, .signal-action[aria-disabled="true"] { opacity: .6; cursor: not-allowed; border-style: dashed; }

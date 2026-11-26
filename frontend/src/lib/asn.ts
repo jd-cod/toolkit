@@ -3,6 +3,8 @@
  * Types, IP conversions, subnet math, CIDR aggregation, firewall generator & snapshot export.
  */
 
+import { buildReportHtml } from './report-html';
+
 export interface ASNPrefix {
   prefix: string;
   ip_version?: 'ipv4' | 'ipv6';
@@ -510,57 +512,76 @@ export function buildAsnPlainText(snapshot: ASNResult): string {
   return lines.join('\n');
 }
 
-export function buildAsnSnapshotHtml(snapshot: ASNResult): string {
-  const escape = (str: string) => (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const v4Rows = snapshot.ipv4_prefixes.map((p, i) => `
-    <tr>
-      <td style="padding:6px 12px;border-bottom:1px solid #1e2235;color:#94a3b8;">${i + 1}</td>
-      <td style="padding:6px 12px;border-bottom:1px solid #1e2235;font-family:monospace;font-weight:600;color:#38bdf8;">${escape(p.prefix)}</td>
-      <td style="padding:6px 12px;border-bottom:1px solid #1e2235;font-family:monospace;">${escape(p.first_ip || '')} - ${escape(p.last_ip || '')}</td>
-      <td style="padding:6px 12px;border-bottom:1px solid #1e2235;text-align:right;">${formatNumber(p.total_ips)}</td>
-      <td style="padding:6px 12px;border-bottom:1px solid #1e2235;font-family:monospace;color:#94a3b8;">${escape(p.netmask || '')}</td>
-    </tr>
-  `).join('');
+/** CSV rows for a set of prefixes; defaults to every IPv4 and IPv6 prefix in the snapshot. */
+export function asnPrefixCsvRows(snapshot: ASNResult, prefixes?: ASNPrefix[]) {
+  const list = prefixes ?? [...(snapshot.ipv4_prefixes || []), ...(snapshot.ipv6_prefixes || [])];
+  return list.map(p => ({
+    asn: `AS${snapshot.asn}`,
+    holder: snapshot.holder || snapshot.name || '',
+    prefix: p.prefix,
+    ip_version: p.ip_version || (p.prefix.includes(':') ? 'ipv6' : 'ipv4'),
+    mask: p.mask,
+    total_ips: p.total_ips,
+    first_ip: p.first_ip || '',
+    last_ip: p.last_ip || '',
+    netmask: p.netmask || '',
+  }));
+}
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>AS${escape(snapshot.asn)} - ${escape(snapshot.name || '')} ASN Intelligence Report</title>
-  <style>
-    body { background: #0b0f19; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 24px; }
-    .container { max-width: 1000px; margin: 0 auto; }
-    h1 { color: #38bdf8; margin-bottom: 4px; }
-    .meta { color: #94a3b8; font-size: 0.9rem; margin-bottom: 24px; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 24px; }
-    .card { background: #131b2e; border: 1px solid #1e2235; border-radius: 8px; padding: 16px; text-align: center; }
-    .card-val { font-size: 1.5rem; font-weight: bold; color: #f8fafc; }
-    .card-lbl { font-size: 0.75rem; text-transform: uppercase; color: #94a3b8; margin-top: 4px; letter-spacing: 0.05em; }
-    table { width: 100%; border-collapse: collapse; background: #131b2e; border: 1px solid #1e2235; border-radius: 8px; overflow: hidden; margin-bottom: 24px; }
-    th { background: #0f172a; padding: 10px 12px; text-align: left; font-size: 0.8rem; text-transform: uppercase; color: #94a3b8; border-bottom: 1px solid #1e2235; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>AS${escape(snapshot.asn)} — ${escape(snapshot.holder || snapshot.name || 'ASN')}</h1>
-    <div class="meta">${escape(snapshot.description || '')} • Country: ${escape(snapshot.country_code || 'Unknown')} • Checked ${escape(formatAsnDate(snapshot.checked_at_utc))}</div>
-    <div class="cards">
-      <div class="card"><div class="card-val">AS${escape(snapshot.asn)}</div><div class="card-lbl">ASN Number</div></div>
-      <div class="card"><div class="card-val">${formatNumber(snapshot.ipv4_prefixes.length)}</div><div class="card-lbl">IPv4 Prefixes</div></div>
-      <div class="card"><div class="card-val">${snapshot.stats?.total_ipv4_ips_formatted || formatNumber(snapshot.stats?.total_ipv4_ips)}</div><div class="card-lbl">Total IPv4 IPs</div></div>
-      <div class="card"><div class="card-val">${formatNumber(snapshot.ipv6_prefixes.length)}</div><div class="card-lbl">IPv6 Prefixes</div></div>
-      <div class="card"><div class="card-val">${snapshot.announced ? 'Active' : 'Inactive'}</div><div class="card-lbl">BGP Status</div></div>
-    </div>
-    <h2>IPv4 Announced Prefixes</h2>
-    <table>
-      <thead>
-        <tr><th>#</th><th>Prefix CIDR</th><th>IP Range</th><th style="text-align:right;">Usable IPs</th><th>Netmask</th></tr>
-      </thead>
-      <tbody>${v4Rows}</tbody>
-    </table>
-  </div>
-</body>
-</html>`;
+export function buildAsnSnapshotHtml(snapshot: ASNResult): string {
+  const neighbours = snapshot.neighbours;
+  const range = (p: ASNPrefix) => (p.first_ip || p.last_ip ? `${p.first_ip || ''} - ${p.last_ip || ''}` : '');
+
+  return buildReportHtml({
+    title: 'ASN Intelligence Report',
+    subject: `AS${snapshot.asn} — ${snapshot.holder || snapshot.name || 'ASN'}`,
+    subtitle: snapshot.description || undefined,
+    checkedAt: snapshot.checked_at_utc,
+    cards: [
+      { label: 'ASN Number', value: `AS${snapshot.asn}`, mono: true },
+      { label: 'IPv4 Prefixes', value: formatNumber(snapshot.ipv4_prefixes.length) },
+      { label: 'Total IPv4 IPs', value: snapshot.stats?.total_ipv4_ips_formatted || formatNumber(snapshot.stats?.total_ipv4_ips) },
+      { label: 'IPv6 Prefixes', value: formatNumber(snapshot.ipv6_prefixes.length) },
+      { label: 'BGP Status', value: snapshot.announced ? 'Active' : 'Inactive' },
+    ],
+    sections: [
+      {
+        title: 'Network',
+        rows: [
+          ['Holder', snapshot.holder || snapshot.name],
+          ['Description', snapshot.description],
+          ['Country', snapshot.country_code || 'Unknown'],
+          ['Registry', snapshot.rir ? snapshot.rir.toUpperCase() : ''],
+          ['Abuse Contacts', (snapshot.abuse_emails || []).join(', ')],
+          ['Upstreams', neighbours?.upstreams_count],
+          ['Downstreams', neighbours?.downstreams_count],
+          ['Peers', neighbours?.peers_count],
+        ],
+      },
+      {
+        title: 'IPv4 Announced Prefixes',
+        meta: `${formatNumber(snapshot.ipv4_prefixes.length)} prefixes`,
+        empty: 'No IPv4 prefixes announced.',
+        table: {
+          columns: ['#', 'Prefix CIDR', 'IP Range', 'Usable IPs', 'Netmask'],
+          mono: [1, 2, 4],
+          alignRight: [3],
+          rows: snapshot.ipv4_prefixes.map((p, i) => [i + 1, p.prefix, range(p), formatNumber(p.total_ips), p.netmask || '']),
+        },
+      },
+      {
+        title: 'IPv6 Announced Prefixes',
+        meta: `${formatNumber(snapshot.ipv6_prefixes.length)} prefixes`,
+        empty: 'No IPv6 prefixes announced.',
+        table: {
+          columns: ['#', 'Prefix CIDR', 'Mask'],
+          mono: [1],
+          alignRight: [2],
+          rows: snapshot.ipv6_prefixes.map((p, i) => [i + 1, p.prefix, p.mask != null ? `/${p.mask}` : '']),
+        },
+      },
+    ],
+  });
 }
 
 export function normalizeAsnSnapshot(data: unknown): ASNResult {

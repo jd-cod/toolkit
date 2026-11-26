@@ -97,7 +97,7 @@ test('buildMyIPReportHtml places Browser & Device, then HTTP Headers, then Brows
     ipv6: null,
   });
 
-  const deviceIdx = html.indexOf('Browser & Device');
+  const deviceIdx = html.indexOf('Browser &amp; Device');
   const headersIdx = html.indexOf('HTTP Request Headers');
   const connectionIdx = html.indexOf('Browser-Estimated Connection');
 
@@ -142,4 +142,17 @@ test('normalizeMyIPSnapshot falls back to d.ip when ipv4/ipv6 fields are missing
   assert.equal(snapshot.ipv4, '198.51.100.1');
   assert.equal(snapshot.ipv6, null);
   assert.equal(snapshot.isDualStack, false);
+});
+
+test('buildMyIPReportHtml escapes values that come from the network or the browser', () => {
+  const html = buildMyIPReportHtml(
+    { ...mockData, reverse_dns: '<img src=x onerror=alert(1)>', headers: { ...mockData.headers, user_agent: '<script>alert(1)</script>' } },
+    { ...mockClientInfo, browser: '<b>Chrome</b>' },
+    { ipv4: '203.0.113.195', ipv6: null },
+  );
+
+  assert.equal(html.includes('<script>alert(1)</script>'), false);
+  assert.equal(html.includes('<img src=x'), false);
+  assert.equal(html.includes('<b>Chrome</b>'), false);
+  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
 });
