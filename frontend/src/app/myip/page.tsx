@@ -1,13 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import ToolWorkspace from '@/components/ToolWorkspace';
 import ResultActions from '@/components/share/ResultActions';
 import { api, MyIPResult, snapshotShare } from '@/lib/api';
 import { useClipboard } from '@/hooks/useClipboard';
+import { useHydrated } from '@/hooks/useHydrated';
 import {
   countryFlag,
   networkBadge,
@@ -60,6 +61,20 @@ function getConnectionInfo(): ConnectionInfo {
   };
 }
 
+function getClientInfo(): ClientInfo {
+  const parsed = parseUserAgent(navigator.userAgent);
+  return {
+    browser: parsed.browser,
+    os: parsed.os,
+    screen: `${window.screen.width} × ${window.screen.height}`,
+    language: navigator.language || 'Unknown',
+    dnt: navigator.doNotTrack === '1' ? 'Enabled' : 'Disabled',
+    cookies: navigator.cookieEnabled ? 'Enabled' : 'Disabled',
+    webgl: getWebGLRenderer(),
+    platform: navigator.platform || 'Unknown',
+  };
+}
+
 // WebGL renderer
 function getWebGLRenderer() {
   try {
@@ -79,8 +94,9 @@ export default function MyIPPage() {
   const [data, setData] = useState<MyIPResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [connection, setConnection] = useState<ConnectionInfo | null>(null);
-  const [clientInfo, setClientInfo] = useState<ClientInfo | null>(null);
+  const hydrated = useHydrated();
+  const connection = useMemo<ConnectionInfo | null>(() => (hydrated ? getConnectionInfo() : null), [hydrated]);
+  const clientInfo = useMemo<ClientInfo | null>(() => (hydrated ? getClientInfo() : null), [hydrated]);
 
   // Dual-stack detection
   const [ipv4, setIpv4] = useState<string | null>(null);
@@ -89,23 +105,6 @@ export default function MyIPPage() {
   const [ipv6Loading, setIpv6Loading] = useState(true);
 
   useEffect(() => {
-    // Collect client-side info
-    const conn = getConnectionInfo();
-    setConnection(conn);
-
-    const ua = navigator.userAgent;
-    const parsed = parseUserAgent(ua);
-    setClientInfo({
-      browser: parsed.browser,
-      os: parsed.os,
-      screen: `${window.screen.width} × ${window.screen.height}`,
-      language: navigator.language || 'Unknown',
-      dnt: navigator.doNotTrack === '1' ? 'Enabled' : 'Disabled',
-      cookies: navigator.cookieEnabled ? 'Enabled' : 'Disabled',
-      webgl: getWebGLRenderer(),
-      platform: navigator.platform || 'Unknown',
-    });
-
     async function detectIP(url: string, timeoutMs = 2500) {
       try {
         const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
