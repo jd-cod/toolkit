@@ -14,6 +14,7 @@
  */
 
 import r2Storage from '../lib/r2-storage.js';
+import { SHARE_CODE_RE, isExpired } from '../lib/share-utils.js';
 import zlib from 'node:zlib';
 import { promisify } from 'node:util';
 
@@ -53,7 +54,25 @@ export default async function storageRoutes(fastify, opts) {
     }
 
     const { code } = request.params;
+    if (!SHARE_CODE_RE.test(code || '')) {
+      return reply.code(404).send({ error: 'Not found.' });
+    }
     const r2Key = `shares/${code}.log.gz`;
+
+    // A freshly uploaded log has no share record yet and is fetched by the
+    // browser that uploaded it. Once it is published as a share, that share's
+    // password and expiry apply here too; otherwise this route would hand out
+    // the log to anyone who knows the code.
+    const [shareRows] = await fastify.mysql.execute(
+      'SELECT password_hash, expires_at FROM shares WHERE code = ? OR r2_key = ?',
+      [code, r2Key]
+    );
+    if (shareRows.some(row => isExpired(row.expires_at))) {
+      return reply.code(410).send({ error: 'This share link has expired.' });
+    }
+    if (shareRows.some(row => row.password_hash)) {
+      return reply.code(403).send({ error: 'This share is password protected. Open it through its share link.' });
+    }
 
     try {
       // Generate presigned download URL (1 hour expiry)

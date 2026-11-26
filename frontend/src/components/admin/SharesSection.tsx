@@ -3,10 +3,14 @@ import { useState, useEffect, useCallback } from 'react';
 import { adminApi, formatTime, formatDateInputValue, errorMessage, type AdminShare, type ShareList } from './adminUtils';
 import { useToast } from './AdminToast';
 import AdminModal from './AdminModal';
+import { SHARE_TYPE_LABELS } from '@/lib/share';
+
+const SHARE_TYPES = Object.entries(SHARE_TYPE_LABELS);
+const shareTypeLabel = (type: string) => (SHARE_TYPE_LABELS as Record<string, string>)[type] || type;
 
 export default function SharesSection() {
   const { toast } = useToast();
-  const [shares, setShares] = useState<ShareList>({ items: [], total: 0, counts: { nginx: 0, dns: 0 } });
+  const [shares, setShares] = useState<ShareList>({ items: [], total: 0, counts: {} });
   const [filter, setFilter] = useState('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [editItem, setEditItem] = useState<AdminShare | null>(null);
@@ -75,8 +79,7 @@ export default function SharesSection() {
           <div className="d-flex align-center gap-2">
             <select className="form-select" style={{ minWidth: 140 }} value={filter} onChange={e => setFilter(e.target.value)}>
               <option value="all">All Shares</option>
-              <option value="nginx">Traffic Log Shares</option>
-              <option value="dns">DNS Shares</option>
+              {SHARE_TYPES.map(([type, label]) => <option key={type} value={type}>{label} Shares</option>)}
             </select>
             <span className="badge-admin badge-info">{shares.total} links</span>
             <button className="btn btn-sm btn-admin-primary" onClick={openCreate}><i className="bi bi-plus-lg" /> Create Share</button>
@@ -93,13 +96,13 @@ export default function SharesSection() {
                   <td>
                     <strong style={{ color: 'var(--text-primary)' }}>{s.title}</strong>
                     <div className="d-flex align-center gap-1" style={{ marginTop: 4 }}>
-                      <span className={`badge-admin ${s.share_type === 'dns' ? 'badge-warning' : 'badge-info'}`}>{s.share_type === 'dns' ? 'DNS' : 'Nginx'}</span>
+                      <span className={`badge-admin ${s.share_type === 'nginx' ? 'badge-info' : 'badge-warning'}`}>{shareTypeLabel(s.share_type)}</span>
                       <code className="share-code-label">{s.code}</code>
                       <button className="btn btn-icon btn-admin-outline" style={{ width: 24, height: 24, fontSize: '0.7rem' }} onClick={() => copyText(s.code, 'Code copied')} title="Copy code"><i className="bi bi-clipboard" /></button>
                       <button className="btn btn-icon btn-admin-outline" style={{ width: 24, height: 24, fontSize: '0.7rem' }} onClick={() => copyText(`${window.location.origin}/s/${s.code}`, 'Link copied')} title="Copy link"><i className="bi bi-link-45deg" /></button>
                     </div>
                   </td>
-                  <td>{s.share_type === 'dns' ? <span>{s.domain}</span> : <div style={{ fontSize: '0.78rem' }}>
+                  <td>{s.share_type !== 'nginx' ? <span>{s.subject}</span> : <div style={{ fontSize: '0.78rem' }}>
                     {s.r2_key && <div><span className="share-meta-text">R2 Key: </span><code>{s.r2_key}</code></div>}
                     {s.source_url && <div><span className="share-meta-text">Source: </span><a href={s.source_url} target="_blank" rel="noopener">{s.source_url.substring(0, 36)}...</a></div>}
                   </div>}</td>

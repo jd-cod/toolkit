@@ -7,18 +7,11 @@
  * Migrated from Hono/D1 to Fastify/MySQL.
  */
 
-import { randomBytes } from 'node:crypto';
 import { getGeoIpDataStatus } from '../lib/geoip-data.js';
 import { getIP2LocationStatus } from '../lib/ip2location-data.js';
 import { getRdapBootstrapStatus } from './whois.js';
 import { syncBotSource, syncAllBotSources, compileVerifiedBotsJson } from '../lib/bot-ip-updater.js';
-
-const SHARE_CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-
-function generateShareCode(length = 8) {
-  const bytes = randomBytes(length);
-  return Array.from(bytes, b => SHARE_CODE_CHARS[b % SHARE_CODE_CHARS.length]).join('');
-}
+import { SNAPSHOT_TOOLS, generateShareCode, isExpired } from '../lib/share-utils.js';
 
 async function logActivity(pool, action, details, username) {
   try {
@@ -35,10 +28,23 @@ async function createUniqueShareCode(pool) {
   for (let attempt = 0; attempt < 10; attempt++) {
     const candidate = generateShareCode(8);
     const [rows] = await pool.execute('SELECT 1 FROM shares WHERE code = ?', [candidate]);
-    if (rows.length === 0) return candidate;
+    if (rows.length > 0) continue;
+    const [toolRows] = await pool.execute('SELECT 1 FROM tool_shares WHERE code = ?', [candidate]);
+    if (toolRows.length === 0) return candidate;
   }
   return null;
 }
+
+function nginxShareItem(r) {
+  return { share_type: 'nginx', code: r.code, title: r.title, r2_key: r.r2_key, source_url: r.source_url || '', has_password: !!r.password_hash, expires_at: r.expires_at, created_at: r.created_at, is_expired: isExpired(r.expires_at) };
+}
+
+function snapshotShareItem(r) {
+  return { share_type: r.tool_key, code: r.code, title: r.title, subject: r.subject, checked_at_utc: r.checked_at_utc, has_password: !!r.password_hash, expires_at: r.expires_at, created_at: r.created_at, is_expired: isExpired(r.expires_at) };
+}
+
+const NGINX_SHARE_COLUMNS = 'code, title, r2_key, source_url, password_hash, expires_at, created_at, r2_uploaded_at';
+const SNAPSHOT_SHARE_COLUMNS = 'code, tool_key, title, subject, password_hash, expires_at, created_at, checked_at_utc';
 
 const DEFAULT_TOOLS = [
   { tool_key: 'nginx', label: 'Traffic Analyzer', description: 'Parse and analyze web access & traffic logs with rich visualizations.', icon: 'bi-filetype-log', color: '#10b981', tags: 'traffic,logs,analyzer,access,error', sort_order: 1 },
@@ -150,7 +156,7 @@ export default async function adminRoutes(fastify, opts) {
       pool.execute('SELECT COUNT(*) as cnt FROM menus'),
       pool.execute('SELECT COUNT(*) as cnt FROM admin_activity_log'),
       pool.execute('SELECT COUNT(*) as cnt FROM tools WHERE is_enabled = 1'),
-      pool.execute('SELECT COUNT(*) as cnt FROM shares'),
+      pool.execute('SELECT (SELECT COUNT(*) FROM shares) + (SELECT COUNT(*) FROM tool_shares) as cnt'),
     ]);
 
     const [recentActivity] = await pool.execute('SELECT * FROM admin_activity_log ORDER BY created_at DESC LIMIT 10');
@@ -514,56 +520,47 @@ export default async function adminRoutes(fastify, opts) {
   });
 
   fastify.get('/admin/shares', { preHandler: [auth.authMiddleware] }, async (request, reply) => {
-    const limit = parseInt(request.query.limit || '50');
-    const offset = parseInt(request.query.offset || '0');
-    const shareType = (request.query.type || 'all').toLowerCase();
+    const limit = Math.min(Math.max(parseInt(request.query.limit || '50', 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(request.query.offset || '0', 10) || 0, 0);
+    const shareType = String(request.query.type || 'all').toLowerCase();
 
-    let nginxItems = [], dnsItems = [], whoisItems = [], nginxTotal = 0, dnsTotal = 0, whoisTotal = 0;
+    const counts = { nginx: 0 };
+    for (const tool of Object.keys(SNAPSHOT_TOOLS)) counts[tool] = 0;
 
+    const [nginxTotal] = await pool.execute('SELECT COUNT(*) as cnt FROM shares');
+    counts.nginx = nginxTotal[0]?.cnt || 0;
+    const [toolTotals] = await pool.execute('SELECT tool_key, COUNT(*) as cnt FROM tool_shares GROUP BY tool_key');
+    for (const row of toolTotals) counts[row.tool_key] = row.cnt;
+
+    let items = [];
     if (shareType === 'all' || shareType === 'nginx') {
-      const [rows] = await pool.execute('SELECT code, title, r2_key, source_url, password_hash, expires_at, created_at, r2_uploaded_at FROM shares ORDER BY created_at DESC');
-      const [total] = await pool.execute('SELECT COUNT(*) as cnt FROM shares');
-      nginxItems = rows.map(r => ({ share_type: 'nginx', code: r.code, title: r.title, r2_key: r.r2_key, source_url: r.source_url || '', has_password: !!r.password_hash, expires_at: r.expires_at, created_at: r.created_at, is_expired: r.expires_at ? new Date() > new Date(r.expires_at) : false }));
-      nginxTotal = total[0]?.cnt || 0;
+      const [rows] = await pool.execute(`SELECT ${NGINX_SHARE_COLUMNS} FROM shares ORDER BY created_at DESC`);
+      items = items.concat(rows.map(nginxShareItem));
+    }
+    if (shareType === 'all') {
+      const [rows] = await pool.execute(`SELECT ${SNAPSHOT_SHARE_COLUMNS} FROM tool_shares ORDER BY created_at DESC`);
+      items = items.concat(rows.map(snapshotShareItem));
+    } else if (Object.hasOwn(SNAPSHOT_TOOLS, shareType)) {
+      const [rows] = await pool.execute(`SELECT ${SNAPSHOT_SHARE_COLUMNS} FROM tool_shares WHERE tool_key = ? ORDER BY created_at DESC`, [shareType]);
+      items = items.concat(rows.map(snapshotShareItem));
     }
 
-    if (shareType === 'all' || shareType === 'dns') {
-      const [rows] = await pool.execute('SELECT code, title, domain, password_hash, expires_at, created_at, checked_at_utc FROM dns_shares ORDER BY created_at DESC');
-      const [total] = await pool.execute('SELECT COUNT(*) as cnt FROM dns_shares');
-      dnsItems = rows.map(r => ({ share_type: 'dns', code: r.code, title: r.title, domain: r.domain, checked_at_utc: r.checked_at_utc, has_password: !!r.password_hash, expires_at: r.expires_at, created_at: r.created_at, is_expired: r.expires_at ? new Date() > new Date(r.expires_at) : false }));
-      dnsTotal = total[0]?.cnt || 0;
-    }
-
-    if (shareType === 'all' || shareType === 'whois') {
-      const [rows] = await pool.execute('SELECT code, title, domain, password_hash, expires_at, created_at, checked_at_utc FROM whois_shares ORDER BY created_at DESC');
-      const [total] = await pool.execute('SELECT COUNT(*) as cnt FROM whois_shares');
-      whoisItems = rows.map(r => ({ share_type: 'whois', code: r.code, title: r.title, domain: r.domain, checked_at_utc: r.checked_at_utc, has_password: !!r.password_hash, expires_at: r.expires_at, created_at: r.created_at, is_expired: r.expires_at ? new Date() > new Date(r.expires_at) : false }));
-      whoisTotal = total[0]?.cnt || 0;
-    }
-
-    const items = [...nginxItems, ...dnsItems, ...whoisItems]
+    const total = items.length;
+    items = items
       .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
       .slice(offset, offset + limit);
 
-    return { items, total: nginxTotal + dnsTotal + whoisTotal, counts: { nginx: nginxTotal, dns: dnsTotal, whois: whoisTotal }, limit, offset, type: shareType };
+    return { items, total, counts, limit, offset, type: shareType };
   });
 
   fastify.get('/admin/shares/:code', { preHandler: [auth.authMiddleware] }, async (request, reply) => {
     const code = request.params.code;
-    const [shareRows] = await pool.execute('SELECT code, title, r2_key, source_url, password_hash, expires_at, created_at, r2_uploaded_at FROM shares WHERE code = ?', [code]);
-    if (shareRows.length > 0) {
-      const r = shareRows[0];
-      return { share_type: 'nginx', code: r.code, title: r.title, r2_key: r.r2_key, source_url: r.source_url || '', has_password: !!r.password_hash, expires_at: r.expires_at, created_at: r.created_at };
-    }
-    const [dnsRows] = await pool.execute('SELECT code, title, domain, password_hash, expires_at, created_at, checked_at_utc FROM dns_shares WHERE code = ?', [code]);
-    if (dnsRows.length > 0) {
-      const r = dnsRows[0];
-      return { share_type: 'dns', code: r.code, title: r.title, domain: r.domain, has_password: !!r.password_hash, expires_at: r.expires_at, created_at: r.created_at, checked_at_utc: r.checked_at_utc };
-    }
-    const [whoisRows] = await pool.execute('SELECT code, title, domain, password_hash, expires_at, created_at, checked_at_utc FROM whois_shares WHERE code = ?', [code]);
-    if (whoisRows.length === 0) return reply.code(404).send({ error: 'Share not found' });
-    const r = whoisRows[0];
-    return { share_type: 'whois', code: r.code, title: r.title, domain: r.domain, has_password: !!r.password_hash, expires_at: r.expires_at, created_at: r.created_at, checked_at_utc: r.checked_at_utc };
+    const [shareRows] = await pool.execute(`SELECT ${NGINX_SHARE_COLUMNS} FROM shares WHERE code = ?`, [code]);
+    if (shareRows.length > 0) return nginxShareItem(shareRows[0]);
+
+    const [toolRows] = await pool.execute(`SELECT ${SNAPSHOT_SHARE_COLUMNS} FROM tool_shares WHERE code = ?`, [code]);
+    if (toolRows.length === 0) return reply.code(404).send({ error: 'Share not found' });
+    return snapshotShareItem(toolRows[0]);
   });
 
   fastify.put('/admin/shares/:code', { preHandler: [auth.authMiddleware] }, async (request, reply) => {
@@ -595,16 +592,11 @@ export default async function adminRoutes(fastify, opts) {
       await logActivity(pool, 'share.delete', `Deleted share "${shareRows[0].title}" (${code})`, request.admin.username);
       return { success: true };
     }
-    const [dnsRows] = await pool.execute('SELECT title FROM dns_shares WHERE code = ?', [code]);
-    if (dnsRows.length > 0) {
-      await pool.execute('DELETE FROM dns_shares WHERE code = ?', [code]);
-      await logActivity(pool, 'share.delete', `Deleted DNS share "${dnsRows[0].title}" (${code})`, request.admin.username);
-      return { success: true };
-    }
-    const [whoisRows] = await pool.execute('SELECT title FROM whois_shares WHERE code = ?', [code]);
-    if (whoisRows.length === 0) return reply.code(404).send({ error: 'Share not found' });
-    await pool.execute('DELETE FROM whois_shares WHERE code = ?', [code]);
-    await logActivity(pool, 'share.delete', `Deleted WHOIS share "${whoisRows[0].title}" (${code})`, request.admin.username);
+    const [toolRows] = await pool.execute('SELECT title, tool_key FROM tool_shares WHERE code = ?', [code]);
+    if (toolRows.length === 0) return reply.code(404).send({ error: 'Share not found' });
+    await pool.execute('DELETE FROM tool_shares WHERE code = ?', [code]);
+    const label = SNAPSHOT_TOOLS[toolRows[0].tool_key] || toolRows[0].tool_key;
+    await logActivity(pool, 'share.delete', `Deleted ${label} share "${toolRows[0].title}" (${code})`, request.admin.username);
     return { success: true };
   });
 

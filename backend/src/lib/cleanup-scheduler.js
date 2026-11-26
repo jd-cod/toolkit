@@ -1,9 +1,13 @@
 /**
- * Cleanup Scheduler for R2 Storage
+ * Cleanup Scheduler
  *
  * Runs hourly to:
- *  - Delete expired shares past 7-day grace period from R2 and MySQL
+ *  - Delete expired snapshot shares from MySQL
+ *  - Delete expired Traffic Analyzer shares past 7-day grace period from R2 and MySQL
  *  - Cleanup orphaned ephemeral sessions older than 10 minutes
+ *
+ * The R2 steps are skipped when R2 is not configured; snapshot shares live in
+ * MySQL only, so they are cleaned up either way.
  */
 
 import r2Storage from './r2-storage.js';
@@ -19,11 +23,6 @@ let mysqlPool = null;
  * @param {Object} mysql - MySQL connection pool from Fastify
  */
 export function initCleanupScheduler(mysql) {
-  if (!r2Storage.isEnabled()) {
-    console.log('⚠️  R2 storage disabled, cleanup scheduler will not start');
-    return;
-  }
-
   mysqlPool = mysql;
 
   // Run cleanup immediately on startup
@@ -48,7 +47,7 @@ export function initCleanupScheduler(mysql) {
  * Run cleanup process
  */
 export async function runCleanup() {
-  if (!r2Storage.isEnabled() || !mysqlPool) {
+  if (!mysqlPool) {
     return;
   }
 
@@ -56,16 +55,40 @@ export async function runCleanup() {
   console.log('🧹 Starting cleanup process...');
 
   try {
-    // Cleanup 1: Expired shares (past grace period)
-    await cleanupExpiredShares();
+    await cleanupExpiredSnapshotShares(mysqlPool);
 
-    // Cleanup 2: Ephemeral sessions older than 10 minutes
-    await cleanupEphemeralSessions();
+    if (r2Storage.isEnabled()) {
+      // Expired Traffic Analyzer shares (past grace period)
+      await cleanupExpiredShares();
+
+      // Ephemeral sessions older than 10 minutes
+      await cleanupEphemeralSessions();
+    }
 
     const duration = Date.now() - startTime;
     console.log(`✅ Cleanup completed in ${duration}ms`);
   } catch (err) {
     console.error('Cleanup process error:', err);
+  }
+}
+
+/**
+ * Delete snapshot shares as soon as they expire. An expired link already
+ * answers 410, so there is nothing to keep the stored result for.
+ */
+export async function cleanupExpiredSnapshotShares(pool, now = new Date()) {
+  try {
+    const [result] = await pool.execute(
+      'DELETE FROM tool_shares WHERE expires_at IS NOT NULL AND expires_at < ?',
+      [now]
+    );
+    if (result.affectedRows > 0) {
+      console.log(`   Deleted ${result.affectedRows} expired snapshot shares from MySQL`);
+    }
+    return result.affectedRows || 0;
+  } catch (err) {
+    console.error('Error cleaning up expired snapshot shares:', err);
+    return 0;
   }
 }
 

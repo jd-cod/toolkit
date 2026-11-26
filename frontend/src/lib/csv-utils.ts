@@ -1,3 +1,5 @@
+import { downloadFile } from './download';
+
 export function flattenObject(obj: unknown, prefix = ''): Record<string, unknown> {
   if (!obj || typeof obj !== 'object') return { [prefix || 'value']: obj };
   return Object.entries(obj).reduce<Record<string, unknown>>((acc, [k, value]) => {
@@ -13,31 +15,21 @@ export function flattenObject(obj: unknown, prefix = ''): Record<string, unknown
   }, {});
 }
 
-export function exportToCSV(data: unknown, filename: string) {
+/** Serialise one object or an array of objects as CSV, one column per flattened key. */
+export function toCSV(data: unknown) {
   const rows = Array.isArray(data) ? data : [data];
   const flattenedData = rows.map(row => flattenObject(row));
-  
+
   // Get all unique headers across all rows
   const headers = Array.from(new Set(flattenedData.flatMap(row => Object.keys(row))));
-  
-  const csvContent = [
-    headers.join(','), 
-    ...flattenedData.map(row => 
-      headers.map(h => {
-        const val = row[h] === undefined ? '' : String(row[h]);
-        return `"${val.replace(/"/g, '""')}"`;
-      }).join(',')
-    )
-  ].join('\n');
+  const cell = (value: unknown) => `"${(value === undefined || value === null ? '' : String(value)).replace(/"/g, '""')}"`;
 
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.setAttribute('href', url);
-  link.setAttribute('download', `${filename}.csv`);
-  link.style.visibility = 'hidden';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  return [
+    headers.map(cell).join(','),
+    ...flattenedData.map(row => headers.map(h => cell(row[h])).join(',')),
+  ].join('\n');
+}
+
+export function exportToCSV(data: unknown, filename: string) {
+  downloadFile(toCSV(data), `${filename}.csv`, 'text/csv;charset=utf-8;');
 }

@@ -170,9 +170,9 @@ try {
   await initGeoIPReaders(fastify.log);
   await initBotIpRefresh(fastify);
 
-  // Initialize R2 cleanup scheduler
+  // Expired shares are cleaned up whether or not R2 is configured
+  initCleanupScheduler(fastify.mysql);
   if (r2Storage.isEnabled()) {
-    initCleanupScheduler(fastify.mysql);
     fastify.log.info('✅ R2 storage and cleanup scheduler initialized');
   } else {
     fastify.log.warn('⚠️  R2 storage not configured - storage features disabled');

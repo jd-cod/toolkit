@@ -21,7 +21,7 @@ export interface ContentPage {
 }
 
 export interface AdminShare {
-  code: string; title: string; share_type: string; domain?: string; r2_key?: string; source_url?: string;
+  code: string; title: string; share_type: string; subject?: string; r2_key?: string; source_url?: string;
   expires_at?: string; created_at: string; is_expired: boolean; has_password: boolean;
 }
 export interface ShareList { items: AdminShare[]; total: number; counts: Record<string, number> }

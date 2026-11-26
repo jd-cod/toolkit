@@ -5,6 +5,7 @@
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || '/api').replace(/\/$/, '');
 import type { AbuseResult, GlobalDnsRegion, IPInfoEntry, SSLResult } from './tool-results';
+import type { ShareOptions, SnapshotTool } from './share';
 
 interface RequestOptions extends Omit<RequestInit, 'body'> {
   body?: unknown;
@@ -118,6 +119,32 @@ export interface WhoisSnapshot {
   checked_at_utc: string;
 }
 
+export interface CreatedShareResponse {
+  success: boolean;
+  code: string;
+  url: string;
+  expires_at: string | null;
+  has_password: boolean;
+}
+
+function createSnapshotShare(data: {
+  tool: SnapshotTool;
+  subject: string;
+  title: string;
+  expiry?: string;
+  password?: string;
+  checked_at_utc?: string;
+  snapshot: unknown;
+}) {
+  return request<CreatedShareResponse>('/share/snapshot', { method: 'POST', body: data });
+}
+
+/** Builds the `create` callback the share dialog needs for a tool that shares a snapshot of its result. */
+export function snapshotShare(tool: SnapshotTool, subject: string, getSnapshot: () => unknown, checkedAt?: string) {
+  return (options: ShareOptions) =>
+    createSnapshotShare({ tool, subject, checked_at_utc: checkedAt, snapshot: getSnapshot(), ...options });
+}
+
 export const api = {
   // Site config (public)
   getSiteConfig: () => request<SiteConfig>('/site/config'),
@@ -164,28 +191,16 @@ export const api = {
   // storage API. Both were unreferenced; if you need them, use the R2 names.
 
   // Shares
-  createShare: (data: { title: string; r2_key?: string; shareCode?: string; source_url?: string; expiry?: string; password?: string }) =>
-    request('/share', { method: 'POST', body: data }),
+  createShare: (data: { title: string; shareCode: string; source_url?: string; expiry?: string; password?: string }) =>
+    request<CreatedShareResponse>('/share', { method: 'POST', body: data }),
 
-  createDnsShare: (data: {
-    title: string;
-    domain: string;
-    expiry?: string;
-    password?: string;
-    checked_at_utc: string;
-    snapshot: unknown;
-  }) =>
-    request<{ success: boolean; code: string; url: string }>('/share/dns', { method: 'POST', body: data }),
+  createSnapshotShare,
 
-  createWhoisShare: (data: {
-    title: string;
-    domain: string;
-    expiry?: string;
-    password?: string;
-    checked_at_utc: string;
-    snapshot: WhoisSnapshot;
-  }) =>
-    request<{ success: boolean; code: string; url: string }>('/share/whois', { method: 'POST', body: data }),
+  createDnsShare: (data: { title: string; domain: string; expiry?: string; password?: string; checked_at_utc: string; snapshot: unknown }) =>
+    createSnapshotShare({ tool: 'dns', subject: data.domain, ...data }),
+
+  createWhoisShare: (data: { title: string; domain: string; expiry?: string; password?: string; checked_at_utc: string; snapshot: WhoisSnapshot }) =>
+    createSnapshotShare({ tool: 'whois', subject: data.domain, ...data }),
 
   getShare: (code: string) => request<Record<string, unknown>>(`/share/${code}`),
 
@@ -196,26 +211,11 @@ export const api = {
   getMyIP: (ip?: string | null) =>
     request<MyIPResult>(ip ? `/myip?ip=${encodeURIComponent(ip)}` : '/myip'),
 
-  createMyIPShare: (data: {
-    title: string;
-    ip: string;
-    expiry?: string;
-    password?: string;
-    checked_at_utc: string;
-    snapshot: unknown;
-  }) =>
-    request<{ success: boolean; code: string; url: string }>('/share/myip', { method: 'POST', body: data }),
+  createMyIPShare: (data: { title: string; ip: string; expiry?: string; password?: string; checked_at_utc: string; snapshot: unknown }) =>
+    createSnapshotShare({ tool: 'myip', subject: data.ip, ...data }),
 
-  // ASN Snapshot Share & Helpers
-  createAsnShare: (data: {
-    title: string;
-    asn: string;
-    expiry?: string;
-    password?: string;
-    checked_at_utc: string;
-    snapshot: unknown;
-  }) =>
-    request<{ success: boolean; code: string; url: string }>('/share/asn', { method: 'POST', body: data }),
+  createAsnShare: (data: { title: string; asn: string; expiry?: string; password?: string; checked_at_utc: string; snapshot: unknown }) =>
+    createSnapshotShare({ tool: 'asn', subject: data.asn, ...data }),
 
   searchASN: (query: string) =>
     request<{ results: { asn: string; name: string; holder: string; country: string; description: string }[] }>('/asn/search', {
