@@ -29,13 +29,15 @@ export interface ResultActionsProps {
   /** Extra tool-specific actions, shown after the standard three. Use ResultActionButton. */
   children?: ReactNode;
   className?: string;
+  /** Element ids for the standard buttons, for callers that need stable hooks. */
+  ids?: { share?: string; html?: string; csv?: string };
 }
 
 /**
  * The action bar every tool shows above its results: Share, Download HTML and
  * Download CSV, always in that order and with those labels.
  */
-export default function ResultActions({ share, shareDisabledReason, html, csv, children, className }: ResultActionsProps) {
+export default function ResultActions({ share, shareDisabledReason, html, csv, children, className, ids }: ResultActionsProps) {
   const [shareOpen, setShareOpen] = useState(false);
   const [reasonShown, setReasonShown] = useState(false);
 
@@ -54,12 +56,13 @@ export default function ResultActions({ share, shareDisabledReason, html, csv, c
   return (
     <div className={`signal-actions${className ? ` ${className}` : ''}`} role="group" aria-label="Result actions">
       {share && !shareDisabledReason && (
-        <ResultActionButton icon="share-fill" primary data-action="share" onClick={() => setShareOpen(true)}>
+        <ResultActionButton id={ids?.share} icon="share-fill" primary data-action="share" onClick={() => setShareOpen(true)}>
           Share
         </ResultActionButton>
       )}
       {shareDisabledReason && (
         <ResultActionButton
+          id={ids?.share}
           icon="shield-lock"
           className="signal-action-unavailable"
           data-action="share"
@@ -71,12 +74,12 @@ export default function ResultActions({ share, shareDisabledReason, html, csv, c
         </ResultActionButton>
       )}
       {html && (
-        <ResultActionButton icon="filetype-html" data-action="download-html" onClick={downloadHtml}>
+        <ResultActionButton id={ids?.html} icon="filetype-html" data-action="download-html" onClick={downloadHtml}>
           Download HTML
         </ResultActionButton>
       )}
       {csv && (
-        <ResultActionButton icon="filetype-csv" data-action="download-csv" onClick={downloadCsv}>
+        <ResultActionButton id={ids?.csv} icon="filetype-csv" data-action="download-csv" onClick={downloadCsv}>
           Download CSV
         </ResultActionButton>
       )}

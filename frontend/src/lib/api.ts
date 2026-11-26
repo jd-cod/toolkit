@@ -194,8 +194,6 @@ export const api = {
   createShare: (data: { title: string; shareCode: string; source_url?: string; expiry?: string; password?: string }) =>
     request<CreatedShareResponse>('/share', { method: 'POST', body: data }),
 
-  createSnapshotShare,
-
   getShare: (code: string) => request<Record<string, unknown>>(`/share/${code}`),
 
   verifyShare: (code: string, password?: string) =>

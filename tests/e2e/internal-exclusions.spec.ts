@@ -187,6 +187,6 @@ test('shared logs apply the same internal default and allow local inclusion with
   await page.locator('#dash-skip-internal').uncheck();
   await expect(page.locator('.kpi-card-total .stat-value')).toHaveText('5');
   await expect(page.locator('#dash-share-btn')).toBeHidden();
-  await expect(page.locator('#dash-download-btn')).toBeHidden();
+  await expect(page.locator('#dash-download-btn')).toBeVisible();
   watcher.assertClean();
 });

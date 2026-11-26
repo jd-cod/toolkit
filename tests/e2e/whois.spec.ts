@@ -171,19 +171,19 @@ test.describe('WHOIS Checkup Tool (/whois)', () => {
     await expect(page.locator('.stat-card').first()).toBeVisible({ timeout: 15_000 });
 
     // Open share modal
-    await page.getByRole('button', { name: /Share Snapshot/i }).click();
+    await page.getByRole('button', { name: 'Share', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Share WHOIS Snapshot' })).toBeVisible();
 
     // Create share link (without password)
-    const createBtn = page.getByRole('button', { name: /Generate Share Link/i });
+    const createBtn = page.getByRole('button', { name: 'Create share link' });
     await expect(createBtn).toBeVisible();
     await createBtn.click();
 
     // Confirm share link generated
-    await expect(page.getByText('Share link created!')).toBeVisible({ timeout: 10_000 });
-    const shareInput = page.locator('span:has-text("/s/")');
+    await expect(page.getByText('Share link created')).toBeVisible({ timeout: 10_000 });
+    const shareInput = page.getByLabel('Share link');
     await expect(shareInput).toBeVisible();
-    const shareUrl = await shareInput.innerText();
+    const shareUrl = await shareInput.inputValue();
     expect(shareUrl).toContain('/s/');
 
     // Extract path and navigate to shared view
@@ -241,23 +241,23 @@ test.describe('WHOIS Checkup Tool (/whois)', () => {
     const copyBtn = page.getByRole('button', { name: /Copy Summary/i });
     await expect(copyBtn).toBeVisible();
     await copyBtn.click();
-    await expect(page.getByRole('button', { name: /Copied!/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Copied', exact: true })).toBeVisible();
 
     // Test JSON download event
     const jsonDownloadPromise = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'JSON' }).click();
+    await page.getByRole('button', { name: 'Download JSON', exact: true }).click();
     const jsonDownload = await jsonDownloadPromise;
     expect(jsonDownload.suggestedFilename()).toBe('google.com-whois-snapshot.json');
 
     // Test CSV download event
     const csvDownloadPromise = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'CSV' }).click();
+    await page.getByRole('button', { name: 'Download CSV', exact: true }).click();
     const csvDownload = await csvDownloadPromise;
     expect(csvDownload.suggestedFilename()).toContain('google.com-whois-snapshot.csv');
 
     // Test HTML download event
     const htmlDownloadPromise = page.waitForEvent('download');
-    await page.getByRole('button', { name: /Download HTML/i }).click();
+    await page.getByRole('button', { name: 'Download HTML', exact: true }).click();
     const htmlDownload = await htmlDownloadPromise;
     expect(htmlDownload.suggestedFilename()).toBe('google.com-whois-snapshot.html');
 
@@ -271,17 +271,16 @@ test.describe('WHOIS Checkup Tool (/whois)', () => {
     await expect(page.locator('.stat-card').first()).toBeVisible({ timeout: 15_000 });
 
     // Open share modal
-    await page.getByRole('button', { name: /Share Snapshot/i }).click();
+    await page.getByRole('button', { name: 'Share', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Share WHOIS Snapshot' })).toBeVisible();
 
     // Fill password
-    const pwdInput = page.getByPlaceholder('Leave blank for public link');
+    const pwdInput = page.getByPlaceholder('Leave blank for a public link');
     await pwdInput.fill('secret123');
-    await page.getByRole('button', { name: /Generate Share Link/i }).click();
+    await page.getByRole('button', { name: 'Create share link' }).click();
 
-    await expect(page.getByText('Share link created!')).toBeVisible({ timeout: 10_000 });
-    const shareInput = page.locator('span:has-text("/s/")');
-    const shareUrl = await shareInput.innerText();
+    await expect(page.getByText('Share link created')).toBeVisible({ timeout: 10_000 });
+    const shareUrl = await page.getByLabel('Share link').inputValue();
     const urlObj = new URL(shareUrl);
 
     // Navigate to protected share

@@ -12,12 +12,14 @@ test.describe('Dashboard structure', () => {
     await gotoAnalyzedDashboard(page);
   });
 
-  test('top action bar exposes New Analysis, Download and Share', async ({ page }) => {
+  test('top action bar exposes New Analysis, Share, Download HTML and Download CSV', async ({ page }) => {
     // getByRole over #id: survives a className restyle, still matches the
     // accessible name the user actually sees.
     await expect(page.getByRole('button', { name: /new analysis/i })).toBeVisible();
-    await expect(page.getByRole('button', { name: /download/i })).toBeVisible();
-    await expect(page.getByRole('button', { name: /share/i })).toBeVisible();
+    // The same three result actions, with the same labels, as every other tool.
+    for (const name of ['Share', 'Download HTML', 'Download CSV']) {
+      await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
+    }
   });
 
   test('renders all 7 micro KPI cards', async ({ page }) => {

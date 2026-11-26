@@ -37,7 +37,11 @@ export default function ShareDialog({ open, onClose, heading = 'Share Results', 
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
-    if (open && !dialog.open) dialog.showModal();
+    if (open && !dialog.open) {
+      dialog.showModal();
+      // showModal focuses the first control, the close button; start in the form instead.
+      dialog.querySelector<HTMLElement>('[data-initial-focus]')?.focus();
+    }
     if (!open && dialog.open) dialog.close();
   }, [open]);
 
@@ -135,7 +139,7 @@ function ShareForm({ defaultTitle, create, note, onClose }: Pick<ShareDialogProp
     <form className="signal-share-dialog-body" onSubmit={(event) => void submit(event)} data-share-state="form">
       <div className="signal-share-field">
         <label htmlFor={`${fieldId}-title`}>Title</label>
-        <input id={`${fieldId}-title`} value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} autoFocus />
+        <input id={`${fieldId}-title`} value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} data-initial-focus />
       </div>
       <div className="signal-share-field-row">
         <div className="signal-share-field">

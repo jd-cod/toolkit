@@ -95,21 +95,11 @@ test.describe('Multi-Node Report & Share Verification', () => {
     await page.goto(`/nginx?session=${sessionId}`, { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#nginx-dashboard')).toBeVisible({ timeout: 45_000 });
 
-    // Setup dialog handler to verify zero-retention notice alert
-    let dialogMessage = '';
-    page.once('dialog', async (dialog) => {
-      dialogMessage = dialog.message();
-      await dialog.accept();
-    });
-
-    // Click Share button
+    // Share stays visible but explains why it is unavailable instead of opening the dialog
     await page.locator('#dash-share-btn').click();
-
-    // Assert dialog alerted with zero-retention message
-    expect(dialogMessage).toContain('Zero-Data Retention');
-    expect(dialogMessage).toContain('Download Report');
-
-    // Assert share modal was NOT opened
-    await expect(page.locator('#share-modal-backdrop')).toBeHidden();
+    const notice = page.locator('#dash-result-actions .signal-actions-note');
+    await expect(notice).toContainText('zero-retention policy');
+    await expect(notice).toContainText('Download HTML');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
   });
 });

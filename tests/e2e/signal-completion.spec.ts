@@ -53,7 +53,7 @@ test('global DNS distinguishes partial success, empty results, and all-region fa
   await expect(page.getByRole('row').filter({ hasText: 'Tokyo' })).toContainText('Regional request timed out');
   await expect(page.getByRole('row').filter({ hasText: 'London' })).toContainText('No records');
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Export CSV', exact: true }).click();
+  await page.getByRole('button', { name: 'Download CSV', exact: true }).click();
   expect((await download).suggestedFilename()).toBe('example.com-global-dns-snapshot.csv');
   results = results.filter(result => result.status === 'error');
   await page.getByRole('button', { name: 'Lookup', exact: true }).click();

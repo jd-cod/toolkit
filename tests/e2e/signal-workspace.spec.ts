@@ -140,7 +140,10 @@ test('Nginx combines raw and compressed files and keeps report and share control
   await expect(page.locator('#download-modal-backdrop')).toBeVisible();
   await page.locator('#dl-modal-close').click();
   await page.locator('#dash-share-btn').click();
-  await expect(page.getByRole('heading', { name: /Share/i }).last()).toBeVisible();
+  const shareDialog = page.getByRole('dialog');
+  await expect(shareDialog.getByRole('heading', { name: 'Share Analysis' })).toBeVisible();
+  await expect(shareDialog.getByLabel('Link expiry').locator('option')).toHaveText(['1 hour', '24 hours', '7 days', '30 days', 'Never expires']);
+  await expect(shareDialog.getByLabel(/^Password/)).toBeVisible();
   watcher.assertClean();
 });
 
@@ -180,7 +183,7 @@ test('DNS query preserves record selection, resolver, exports, and distinct empt
   await expect(page.getByText('v=spf1 -all', { exact: true })).toBeVisible();
   expect(queries).toEqual([{ domain: 'example.com', type: 'TXT', resolver: '8.8.8.8' }]);
   const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Export CSV', exact: true }).click();
+  await page.getByRole('button', { name: 'Download CSV', exact: true }).click();
   expect((await downloadPromise).suggestedFilename()).toContain('example.com');
   outcome = 'empty';
   await page.getByRole('button', { name: 'Lookup', exact: true }).click();
@@ -205,7 +208,9 @@ test('shared Nginx snapshots use the same engine and remain read-only', async ({
   await page.locator('#filter-ip').fill('66.249.66.1');
   await expect(page.locator('.kpi-card-total .stat-value')).toHaveText('1');
   for (const selector of ['#rps-chart', '#country-chart', '#asn-chart', '.cross-filter-bot-row', '.incident-3col-grid', '#nginx-log-explorer']) await expect(page.locator(selector).first()).toBeVisible();
-  for (const id of ['dash-share-btn', 'dash-back-btn', 'dash-download-btn']) await expect(page.locator(`#${id}`)).toBeHidden();
+  // A shared snapshot cannot be re-shared or restarted, but it can still be downloaded.
+  for (const id of ['dash-share-btn', 'dash-back-btn']) await expect(page.locator(`#${id}`)).toBeHidden();
+  for (const id of ['dash-download-btn', 'dash-csv-btn']) await expect(page.locator(`#${id}`)).toBeVisible();
   await page.locator('.signal-sidebar a[href="/nginx"]').click();
   await waitForEngineReady(page);
   await expect(page.getByRole('tab', { name: 'Upload file' })).toBeVisible();

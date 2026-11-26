@@ -77,6 +77,7 @@ export default function NginxResultActions() {
       shareDisabledReason={!actions.readOnly && terminalIngest ? TERMINAL_INGEST_REASON : undefined}
       html={{ onClick: actions.downloadHtml }}
       csv={{ onClick: actions.downloadCsv }}
+      ids={{ share: 'dash-share-btn', html: 'dash-download-btn', csv: 'dash-csv-btn' }}
     />,
     mount,
   );
