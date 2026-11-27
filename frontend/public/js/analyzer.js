@@ -210,10 +210,9 @@ const Analyzer = (() => {
             if (entry.status_code !== null && !isNaN(entry.status_code)) {
                 statusCounter.set(entry.status_code, (statusCounter.get(entry.status_code) || 0) + 1);
             }
-            if (entry.method) {
-                const method = entry.method.toUpperCase();
-                methodCounter.set(method, (methodCounter.get(method) || 0) + 1);
-            }
+            // The parser writes real methods in capitals; anything else that stood
+            // in the method position is counted as it was sent.
+            if (entry.method) methodCounter.set(entry.method, (methodCounter.get(entry.method) || 0) + 1);
             if (entry.url) {
                 let rec = urlCounter.get(entry.url);
                 if (!rec) { rec = { count: 0, statuses: new Map() }; urlCounter.set(entry.url, rec); }

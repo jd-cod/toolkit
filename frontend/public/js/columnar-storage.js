@@ -323,6 +323,11 @@ class ColumnarStorage {
         if (filters.method && filters.method !== 'all') {
             targetMethodId = this.methodMap.get(String(filters.method).toUpperCase());
             if (targetMethodId === undefined) targetMethodId = this.methodMap.get(filters.method);
+            if (targetMethodId === undefined) {
+                // Text that is not a method is kept as sent; match it in any letter case.
+                const wanted = String(filters.method).toUpperCase();
+                for (const [name, id] of this.methodMap) if (name.toUpperCase() === wanted) { targetMethodId = id; break; }
+            }
             if (targetMethodId === undefined) return null;
         }
 

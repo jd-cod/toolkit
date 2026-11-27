@@ -27,23 +27,15 @@ const Dashboard = (() => {
     let originalEnrichedEntries = [];
     let originalParseResult = null;
     let originalTimeRange = null;
-    let uploadFilterOptions = null;
+    // Dropdown choices of the whole log, kept while a filter narrows the result.
+    let wholeLogOptions = null;
     let uploadTotalRequests = 0;
     let uploadRateSeries = null; // requests over time of the whole uploaded log
     let currentReanalyze = null; // re-reads an uploaded file with other exclusions, when it can be
     let timelineDragEvents = null;
     let modalKeyEvents = null;
     let currentFilteredEntries = [];
-    let activeFilters = {
-        statusCategory: 'all',
-        method: 'all',
-        country: 'all',
-        asn: 'all',
-        bot: 'all',
-        ipSearch: '',
-        pathSearch: '',
-        uaSearch: ''
-    };
+    let activeFilters = DashboardFilters.none();
     let activeTimeMinutes = 0;
     let maxLogTimestamp = 0;
     let explorerPage = 1;
@@ -886,16 +878,7 @@ const Dashboard = (() => {
             originalTimeRange = null;
             sliderStartPct = 0;
             sliderEndPct = 100;
-            activeFilters = {
-                statusCategory: 'all',
-                method: 'all',
-                country: 'all',
-                asn: 'all',
-                bot: 'all',
-                ipSearch: '',
-                pathSearch: '',
-                uaSearch: ''
-            };
+            activeFilters = DashboardFilters.none();
             activeTimeMinutes = 0;
             maxLogTimestamp = parseResult?.maxTimestamp || 0;
             if (!maxLogTimestamp && originalEnrichedEntries.length > 0) {
@@ -920,18 +903,16 @@ const Dashboard = (() => {
             // overwrites the chart data with a subset.
         }
 
-        let filterOptions = getFilterOptions(originalEnrichedEntries, data);
-        if (!originalEnrichedEntries.length) {
-            // The upload engine sends a summary of the filtered requests only.
-            // The choices offered stay those of the whole log, as in paste mode.
-            if (!uploadFilterOptions || !options.preserveFilters || !hasActiveFilters()) {
-                uploadFilterOptions = filterOptions;
+        // The choices offered are those of the whole log. `data` is the whole
+        // log whenever no filter is active.
+        if (!wholeLogOptions || !options.preserveFilters || !hasActiveFilters()) {
+            wholeLogOptions = DashboardFilters.options(data);
+            if (!originalEnrichedEntries.length) {
                 uploadTotalRequests = data?.total_requests || 0;
                 uploadRateSeries = (options.summary || latestSummary)?.rateSeries || null;
-            } else {
-                filterOptions = uploadFilterOptions;
             }
         }
+        const filterOptions = wholeLogOptions;
         const container = document.getElementById('nginx-dashboard');
         setNginxStandaloneView('results');
         container.style.display = 'block';
@@ -1374,16 +1355,7 @@ const Dashboard = (() => {
 
         // Floating Clear Active Filters Button
         document.getElementById('floating-clear-filters-btn')?.addEventListener('click', () => {
-            activeFilters = {
-                statusCategory: 'all',
-                method: 'all',
-                country: 'all',
-                asn: 'all',
-                bot: 'all',
-                ipSearch: '',
-                pathSearch: '',
-                uaSearch: ''
-            };
+            activeFilters = DashboardFilters.none();
             activeTimeMinutes = 0;
             sliderStartPct = 0;
             sliderEndPct = 100;
@@ -1977,196 +1949,37 @@ const Dashboard = (() => {
     let sliderEndPct = 100;
     let customHoursVal = 1;
 
-    // Choices for the status filter: the classes that occur, then the most
-    // frequent single codes.
-    function statusOptions(statusHits) {
-        const classes = new Map();
-        const codes = [];
-        let other = 0;
-        for (const item of statusHits || []) {
-            const code = Number(item.code);
-            const count = Number(item.count) || 0;
-            if (count <= 0) continue;
-            if (!(code >= 100 && code <= 599)) { other += count; continue; }
-            const cls = `${Math.floor(code / 100)}xx`;
-            classes.set(cls, (classes.get(cls) || 0) + count);
-            codes.push({ value: String(code), count });
-        }
-        return {
-            classes: [...classes.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, count }))
-                .concat(other > 0 ? [{ value: 'other', label: 'No status', count: other }] : []),
-            codes: codes.sort((a, b) => b.count - a.count || Number(a.value) - Number(b.value)).slice(0, 12),
-        };
-    }
 
-    function getFilterOptions(entries, data) {
-        if (!entries || entries.length === 0) {
-            return {
-                methods: (data?.http_metrics?.method_hits || []).map(m => m.method).sort(),
-                statuses: statusOptions(data?.http_metrics?.status_hits),
-                countries: (data?.country_hits || []).map(c => ({ country: c.country, count: c.hits })),
-                asns: (data?.asn_hits || []).map(a => ({
-                    asn: /^AS/i.test(String(a.asn)) ? String(a.asn) : 'AS' + a.asn,
-                    count: a.hits,
-                    label: `${/^AS/i.test(String(a.asn)) ? String(a.asn) : 'AS' + a.asn} - ${(a.asn_org || '').slice(0, 20)}`
-                })),
-                paths: (data?.http_metrics?.path_sections || []).slice(0, 25).map(p => ({ path: p.path, count: p.count })),
-                trafficStats: {
-                    human: data?.human_requests || 0,
-                    verified: data?.verified_bots_count || 0,
-                    fake: data?.spoofed_bots_count || 0,
-                    unverified: data?.unverified_bots_count || 0,
-                    automated: data?.automated_count || 0,
-                    suspected: data?.suspected_count || 0
-                }
-            };
-        }
-        const methods = new Set();
-        const countries = new Map();
-        const asns = new Map();
-        const paths = new Map();
-        const classCounts = { human: 0, verified: 0, spoofed: 0, unverified: 0, automated: 0, suspected: 0 };
-        const statusCounts = new Map();
-
-        entries.forEach(e => {
-            if (e.method) methods.add(e.method);
-            statusCounts.set(e.status_code || 0, (statusCounts.get(e.status_code || 0) || 0) + 1);
-            if (e.country) countries.set(e.country, (countries.get(e.country) || 0) + 1);
-            // e.asn is ALREADY prefixed ('AS15169', see Analyzer.enrichLogEntries),
-            // so the label must not add a second 'AS'.
-            if (e.asn) {
-                const rec = asns.get(e.asn) || { asn: e.asn, count: 0, label: `${e.asn} - ${(e.asn_org || '').slice(0, 20)}` };
-                rec.count++;
-                asns.set(e.asn, rec);
-            }
-            // The dropdown lists sections (first level of the path); choosing
-            // one filters with `^/section`, which counts exactly these requests.
-            if (e.url) {
-                const seg = RequestPaths.sectionOf(e.url);
-                if (seg) paths.set(seg, (paths.get(seg) || 0) + 1);
-            }
-            classCounts[trafficClassOf(e)]++;
-        });
-
-        const topPathsSorted = [...paths.entries()]
-            .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0)))
-            .slice(0, 25)
-            .map(([path, count]) => ({ path, count }));
-
-        return {
-            methods: [...methods].sort(),
-            statuses: statusOptions([...statusCounts.entries()].map(([code, count]) => ({ code, count }))),
-            // Highest-hit country first, matching the ASN and Path dropdowns.
-            countries: [...countries.entries()]
-                .map(([country, count]) => ({ country, count }))
-                .sort((a, b) => b.count - a.count),
-            asns: [...asns.values()].sort((a, b) => b.count - a.count),
-            paths: topPathsSorted,
-            trafficStats: {
-                human: classCounts.human,
-                verified: classCounts.verified,
-                fake: classCounts.spoofed,
-                unverified: classCounts.unverified,
-                automated: classCounts.automated,
-                suspected: classCounts.suspected
-            }
-        };
-    }
 
     // Traffic class of a log entry. Entries enriched before the classifier
     // existed only carry bot_status.
-    function trafficClassOf(e) {
-        if (e.traffic_class) return e.traffic_class;
-        if (e.bot_status === 'human' || (!e.is_bot && !e.bot_name)) return 'human';
-        if (e.bot_status === 'verified' || e.bot_status === 'spoofed') return e.bot_status;
-        return 'unverified';
-    }
 
-    const TRAFFIC_CLASS_FILTERS = ['human', 'verified', 'spoofed', 'unverified', 'automated', 'suspected'];
-
-    function hasActiveFilters() {
-        return activeFilters.statusCategory !== 'all' ||
-            activeFilters.method !== 'all' ||
-            activeFilters.country !== 'all' ||
-            activeFilters.asn !== 'all' ||
-            activeFilters.bot !== 'all' ||
-            Boolean(activeFilters.pathSearch) ||
-            Boolean(activeFilters.ipSearch) ||
-            Boolean(activeFilters.uaSearch) ||
-            activeTimeMinutes > 0 ||
-            sliderStartPct > 0 ||
-            sliderEndPct < 100;
-    }
-
-    function applyFilters(entries, filters, timeMinutes) {
-        let result = entries;
-
-        // Use the exact same second-aligned bounds as the handles and readout.
+    // The chosen stretch of the log, or null for all of it (see DashboardFilters.apply).
+    function currentTimeWindow() {
         if (sliderStartPct > 0 || sliderEndPct < 100) {
             const window = getSelectedTimeRange();
-            if (window) {
-                result = result.filter(e => {
-                    const t = e.timestamp;
-                    if (t == null) return false;
-                    const ms = t instanceof Date ? t.getTime() : (typeof t === 'number' ? t : new Date(t).getTime());
-                    return Number.isFinite(ms) && ms >= window.startMs && ms <= window.endMs;
-                });
-            }
-        } else if (timeMinutes > 0 && maxLogTimestamp > 0) {
-            const cutoff = maxLogTimestamp - (timeMinutes * 60 * 1000);
-            result = result.filter(e => {
-                const t = e.timestamp;
-                if (!t) return true;
-                const ms = t instanceof Date ? t.getTime() : (typeof t === 'number' ? t : new Date(t).getTime());
-                return !isNaN(ms) && ms >= cutoff;
-            });
+            return window ? { startMs: window.startMs, endMs: window.endMs, keepUntimed: false } : null;
         }
-
-        if (filters.statusCategory !== 'all') {
-            result = result.filter(e => {
-                const s = e.status_code || 0;
-                if (/^[1-5]xx$/.test(filters.statusCategory)) return Math.floor(s / 100) === Number(filters.statusCategory[0]);
-                if (filters.statusCategory === 'other') return !(s >= 100 && s <= 599);
-                const code = Number(filters.statusCategory);
-                return code > 0 ? s === code : true;
-            });
+        if (activeTimeMinutes > 0 && maxLogTimestamp > 0) {
+            return { startMs: maxLogTimestamp - activeTimeMinutes * 60 * 1000, endMs: null, keepUntimed: true };
         }
-
-        if (filters.method !== 'all') result = result.filter(e => (e.method || '').toUpperCase() === filters.method.toUpperCase());
-        if (filters.country !== 'all') result = result.filter(e => e.country === filters.country);
-        // e.asn is stored prefixed ('AS15169'); the ASN table rows carry the
-        // BARE number (data.asn="15169") because asn_hits is keyed on
-        // GeoIP.lookupIP().asn. Normalise both before comparing.
-        if (filters.asn !== 'all') {
-            const want = String(filters.asn).replace(/^AS/i, '');
-            result = result.filter(e => String(e.asn ?? '').replace(/^AS/i, '') === want);
-        }
-        
-        if (filters.bot !== 'all') {
-            if (filters.bot === 'all_bots') result = result.filter(e => trafficClassOf(e) !== 'human');
-            else if (TRAFFIC_CLASS_FILTERS.includes(filters.bot)) result = result.filter(e => trafficClassOf(e) === filters.bot);
-            else result = result.filter(e => e.bot_group === filters.bot);
-            if (filters.botGroup) result = result.filter(e => e.bot_group === filters.botGroup);
-        }
-
-        if (filters.pathSearch) {
-            const matchesPath = RequestPaths.pathMatcher(filters.pathSearch);
-            result = result.filter(e => e.url && matchesPath(e.url));
-        }
-
-        if (filters.ipSearch && filters.ipSearch.trim()) {
-            // A full address, the start of one, or a CIDR block (see LogParser.ipFilterMatcher).
-            const matchesIp = LogParser.ipFilterMatcher(filters.ipSearch);
-            result = result.filter(e => e.ip && matchesIp(e.ip));
-        }
-
-        if (filters.uaSearch && filters.uaSearch.trim()) {
-            const term = filters.uaSearch.trim().toLowerCase();
-            result = result.filter(e => (e.user_agent || '').toLowerCase().includes(term));
-        }
-
-        return result;
+        return null;
     }
+
+    function hasActiveFilters() {
+        return DashboardFilters.isActive(activeFilters) || activeTimeMinutes > 0 || sliderStartPct > 0 || sliderEndPct < 100;
+    }
+
+    function getActiveFilterCount() {
+        return DashboardFilters.count(activeFilters) + (sliderStartPct > 0 || sliderEndPct < 100 ? 1 : 0);
+    }
+
+    // The active filters in the form the worker takes.
+    function currentWorkerFilters() {
+        return DashboardFilters.forWorker(activeFilters, currentTimeWindow());
+    }
+
+
 
     function getGlobalTimeRange() {
         if (originalTimeRange) return originalTimeRange;
@@ -2348,20 +2161,6 @@ const Dashboard = (() => {
         }
     }
 
-    // The active filters in the form the worker takes: the time window as seconds.
-    function currentWorkerFilters() {
-        const workerFilters = Object.assign({}, activeFilters);
-        if (sliderStartPct > 0 || sliderEndPct < 100) {
-            const window = getSelectedTimeRange();
-            if (window) {
-                workerFilters.startTimeSec = Math.floor(window.startMs / 1000);
-                workerFilters.endTimeSec = Math.floor(window.endMs / 1000);
-            }
-        } else if (activeTimeMinutes > 0 && maxLogTimestamp > 0) {
-            workerFilters.startTimeSec = Math.floor((maxLogTimestamp - activeTimeMinutes * 60 * 1000) / 1000);
-        }
-        return workerFilters;
-    }
 
     function requestExplorerPage(pageNumber) {
         explorerPage = pageNumber;
@@ -2446,16 +2245,7 @@ const Dashboard = (() => {
 
         // Clear All Filters
         document.getElementById('filter-clear-btn')?.addEventListener('click', () => {
-            activeFilters = {
-                statusCategory: 'all',
-                method: 'all',
-                country: 'all',
-                asn: 'all',
-                bot: 'all',
-                ipSearch: '',
-                pathSearch: '',
-                uaSearch: ''
-            };
+            activeFilters = DashboardFilters.none();
             activeTimeMinutes = 0;
             sliderStartPct = 0;
             sliderEndPct = 100;
@@ -2676,7 +2466,7 @@ const Dashboard = (() => {
             });
             return;
         }
-        currentFilteredEntries = applyFilters(originalEnrichedEntries, activeFilters, activeTimeMinutes);
+        currentFilteredEntries = DashboardFilters.apply(originalEnrichedEntries, activeFilters, currentTimeWindow());
         sortExplorerEntries();
         explorerPage = 1;
 
@@ -2685,19 +2475,6 @@ const Dashboard = (() => {
     }
 
     
-    function getActiveFilterCount() {
-        let count = 0;
-        if (activeFilters.method && activeFilters.method !== 'all') count++;
-        if (activeFilters.statusCategory && activeFilters.statusCategory !== 'all') count++;
-        if (activeFilters.country && activeFilters.country !== 'all') count++;
-        if (activeFilters.pathSearch) count++;
-        if (activeFilters.uaSearch && activeFilters.uaSearch.trim()) count++;
-        if (activeFilters.asn && activeFilters.asn !== 'all') count++;
-        if (activeFilters.bot && activeFilters.bot !== 'all') count++;
-        if (activeFilters.ipSearch) count++;
-        if (sliderStartPct > 0 || sliderEndPct < 100) count++;
-        return count;
-    }
 
     let scannedAbuseData = new Map(); // ip -> { abuse_score, total_reports, country_code }
     let isScanningAbuse = false;

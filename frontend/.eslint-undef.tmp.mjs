@@ -1,0 +1,1 @@
+export default [{ files: ['**/*.js'], languageOptions: { sourceType: 'script', globals: { document: 'readonly', window: 'readonly', GeoIP: 'readonly', BotDetector: 'readonly', LogParser: 'readonly', RequestPaths: 'readonly', Analyzer: 'readonly', console: 'readonly' } }, rules: { 'no-undef': 'error' } }];

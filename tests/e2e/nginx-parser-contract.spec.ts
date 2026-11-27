@@ -39,7 +39,8 @@ test('malformed HTTP methods are displayed as text in summary and filter control
   await page.getByRole('tab', { name: 'Paste logs' }).click();
   await page.locator('#nginx-logtext').fill('8.8.8.8 - - [01/Oct/2026:00:00:00 +0000] "<b> /invalid HTTP/1.1" 400 1 "-" "Mozilla/5.0"');
   await page.locator('#nginx-analyze-btn').click();
-  await expect(page.locator('.methods-bandwidth-ribbon')).toContainText('<B>');
+  // Shown as it was sent, the same in the summary and in the filter.
+  await expect(page.locator('.methods-bandwidth-ribbon')).toContainText('<b>');
   await expect(page.locator('.methods-bandwidth-ribbon b')).toHaveCount(0);
   await expect(page.locator('#filter-method option').nth(1)).toHaveText('<b>');
   watcher.assertClean();

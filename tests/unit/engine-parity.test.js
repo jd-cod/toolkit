@@ -87,6 +87,17 @@ test('requests without an HTTP status are a class of their own in both engines',
     assert.equal(filter({ statusCategory: '103' }).total_requests, 3);
 });
 
+test('text in the method position is counted as sent by both engines', () => {
+    const rows = ['GET', 'get', 'Get', '<b>', 'POST', 'PROPFIND'].map((method, i) => line(i, '/x', 200).replace('"GET ', `"${method} `));
+    const { paste, upload, filter } = engines(rows.join('\n') + '\n');
+    const hits = data => data.http_metrics.method_hits.map(m => [m.method, m.count]);
+    assert.deepEqual(hits(paste), [['GET', 3], ['<b>', 1], ['POST', 1], ['PROPFIND', 1]]);
+    assert.deepEqual(hits(upload), hits(paste));
+    assert.equal(filter({ method: '<b>' }).total_requests, 1);
+    assert.equal(filter({ method: '<B>' }).total_requests, 1);
+    assert.equal(filter({ method: 'get' }).total_requests, 3);
+});
+
 test('a log where every request has a status has no "other" class', () => {
     const { paste, upload } = engines(mixedLog());
     assert.deepEqual(Object.keys(paste.http_metrics.status_categories), ['1xx', '2xx', '3xx', '4xx', '5xx']);
@@ -97,6 +108,7 @@ test('a log where every request has a status has no "other" class', () => {
 // Countries and networks come from a small table here, so the test needs no
 // GeoIP database. 81.2.69.x has no country and no network on purpose.
 const { streamChunksToWorker } = require('../../frontend/public/js/stream-line-splitter.js');
+const DashboardFilters = require('../../frontend/public/js/dashboard-filters.js');
 const PLACES = {
     '66.249': { country: 'United States', country_code: 'US', asn: 15169, asn_org: 'GOOGLE' },
     '40.77': { country: 'United States', country_code: 'US', asn: 8075, asn_org: 'MICROSOFT' },
@@ -202,6 +214,8 @@ test('the whole result is the same in both engines', async () => {
         ]) {
             const kept = run.entries.filter(keep);
             assert.ok(kept.length > 0 && kept.length < run.entries.length, `${name}: the filter keeps a part of the log`);
+            // The page's own filter for pasted logs names the same requests.
+            assert.deepEqual(DashboardFilters.apply(run.entries, { ...DashboardFilters.none(), ...filters }), kept, `${name}: paste filter`);
             assert.deepEqual(await run.filter(filters), run.paste(kept), name);
         }
     } finally {
