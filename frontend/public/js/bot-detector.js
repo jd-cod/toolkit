@@ -25,6 +25,12 @@ const BotDetector = (() => {
     // carry the app name (`[Pinterest/iOS]`, `Viber/21.5`, `SogouMobileBrowser`),
     // so those crawlers are matched by their crawler token only.
     const KNOWN_BOT_PATTERNS = [
+        // ── Names that contain another crawler's name come first ──
+        ['LINE', /line-poker/i, 'LINE'],
+        ['AdIdxBot', /adidxbot/i, 'Microsoft'],
+        ['BingPreview', /BingPreview/i, 'Microsoft'],
+        ['Feed reader', /Feedly|Feedbin|NewsBlur|Inoreader|Tiny Tiny RSS|FreshRSS|FeedBurner|Feedspot/i, 'Feed readers'],
+
         // ── Google ──
         ['Googlebot', /Googlebot/i, 'Google'],
         ['AdsBot-Google', /AdsBot-Google/i, 'Google'],
@@ -39,12 +45,11 @@ const BotDetector = (() => {
         ['Google-Site-Verification', /Google-Site-Verification/i, 'Google'],
         ['Google Favicon', /Google Favicon/i, 'Google'],
         ['GoogleImageProxy', /GoogleImageProxy/i, 'Google'],
+        ['Google-PageRenderer', /Google-PageRenderer/i, 'Google'],
 
         // ── Microsoft / Bing ──
         ['Bingbot', /bingbot/i, 'Microsoft'],
         ['MSNBot', /msnbot/i, 'Microsoft'],
-        ['BingPreview', /BingPreview/i, 'Microsoft'],
-        ['AdIdxBot', /adidxbot/i, 'Microsoft'],
         ['MicrosoftPreview', /MicrosoftPreview/i, 'Microsoft'],
 
         // ── OpenAI ──
@@ -77,6 +82,7 @@ const BotDetector = (() => {
         ['YandexBot', /Yandex(?:Bot|[A-Z][A-Za-z]*Bot|Video|Media|Blogs|Favicons|Webmaster|Pagechecker|ImageResizer|Metrika|Market|Direct|AccessibilityBot|RenderResourcesBot|Turbo)/, 'Yandex'],
         ['Baidu Spider', /Baiduspider/i, 'Baidu'],
         ['Sogou', /Sogou[\w ]*spider|Sogou[- ]head/i, 'Sogou'],
+        ['360Spider', /360Spider|HaosouSpider/i, 'Qihoo 360'],
         ['PetalBot', /PetalBot/i, 'Huawei'],
         ['AspiegelBot', /AspiegelBot/i, 'Huawei'],
         ['Yahoo! Slurp', /Yahoo!\s+Slurp|\bSlurp\b/i, 'Yahoo'],
@@ -157,16 +163,16 @@ const BotDetector = (() => {
         ['Nagios', /check_http|nagios-plugins/i, 'Monitoring'],
         ['HetrixTools', /HetrixTools/i, 'Monitoring'],
         ['Checkly', /Checkly/i, 'Monitoring'],
-        ['Health check', /kube-probe|ELB-HealthChecker|GoogleHC|Cloudflare-Healthchecks|Amazon-Route53-Health-Check-Service/i, 'Monitoring'],
+        ['Health check', /kube-probe|ELB-HealthChecker|GoogleHC|Cloudflare-Healthchecks|Cloudflare-Traffic-Manager|Amazon-Route53-Health-Check-Service|Consul Health Check|HAProxy|Prometheus\/|Blackbox Exporter/i, 'Monitoring'],
 
         // ── Webhooks and feed readers ──
         ['GitHub Hookshot', /GitHub-Hookshot/i, 'GitHub'],
         ['Stripe Webhooks', /^Stripe\/\d/, 'Stripe'],
-        ['Feed reader', /Feedly|Feedbin|NewsBlur|Inoreader|Tiny Tiny RSS|FreshRSS|FeedBurner|Feedspot/i, 'Feed readers'],
     ];
 
     const SCANNER_GROUP = 'Security scanners';
     const TOOL_GROUP = 'Scripts & HTTP libraries';
+    const APP_GROUP = 'Apps';
     const HEADLESS_GROUP = 'Headless browsers';
     const UNLISTED_GROUP = 'Unlisted crawlers';
     const NO_UA_GROUP = 'No user agent';
@@ -220,10 +226,18 @@ const BotDetector = (() => {
         ['PHP', /^PHP\/|GuzzleHttp|Symfony HttpClient/i],
         ['WordPress', /^WordPress\/\d/i],
         ['Rust / .NET client', /\breqwest\b|RestSharp|\.NET Framework|^Dart\/\d/i],
-        ['Android app (Dalvik)', /^Dalvik\//i],
-        ['Apple app (CFNetwork)', /CFNetwork\/[\d.]+ Darwin/i],
-        ['Microsoft Office', /Microsoft Office|Microsoft-WebDAV|Microsoft-CryptoAPI/i],
+        ['Microsoft CryptoAPI', /Microsoft-CryptoAPI/i],
     ].map(([name, re]) => [name, re, TOOL_GROUP, 'tool']);
+
+    // Programs a person uses that are not browsers: native apps, media
+    // players, office programs opening a link. Judged by behaviour, like browsers.
+    const APP_PATTERNS = [
+        ['Apple app (CFNetwork)', /CFNetwork\/[\d.]+ Darwin/i],
+        ['Android app (Dalvik)', /^Dalvik\//i],
+        ['Media player', /AppleCoreMedia|^VLC\/|^Lavf\/|stagefright|ExoPlayer|^iTunes\/|^Spotify\/|^Podcasts?\/|PocketCasts|^Overcast/i],
+        ['Microsoft Office', /Microsoft Office|Microsoft-WebDAV|Microsoft Outlook|ms-office/i],
+        ['Mobile app', /^(?!Mozilla\/|Opera\/)[\w .-]+\/[\d.]+ \((?:iPhone|iPad|iPod|iOS|Android|Linux; U; Android)[^)]*\)/i],
+    ].map(([name, re]) => [name, re, APP_GROUP, 'app']);
 
     const HEADLESS_PATTERNS = [
         ['Headless Chrome / Puppeteer', /HeadlessChrome|Puppeteer|Playwright|Selenium|PhantomJS|SlimerJS|CasperJS|\bjsdom\b|\bCypress\b/i],
@@ -241,6 +255,18 @@ const BotDetector = (() => {
     const BROWSER_PREFIX_RE = /^(?:Mozilla\/[45]\.0|Opera\/\d)/;
     const BROWSER_PLATFORM_RE = /Windows|Macintosh|Mac OS X|X11|Linux|Android|iPhone|iPad|iPod|CrOS|BSD|SunOS|Tizen|KaiOS|PlayStation|Nintendo|Xbox|Smart-?TV|Web0S|webOS|BlackBerry|BB10|Symbian|Mobile|Tablet|Fuchsia|HarmonyOS/i;
     const BROWSER_ENGINE_RE = /AppleWebKit|Gecko|Trident|Presto|MSIE|KHTML|Chrome|Safari|Firefox|Opera|Edge|Goanna/i;
+    const TEXT_BROWSER_RE = /^(?:Lynx|w3m|Links|ELinks)\b/;
+    // "like TwitterBot", "like FeedFetcher-Google": a client saying which
+    // crawler it resembles is not that crawler.
+    const LIKE_BOT_RE = /\blike\s+[\w.-]*(?:bot|fetcher|spider|google)[\w.-]*/gi;
+    // In a complete browser User-Agent a bot word only counts as a product
+    // with a version or inside a "compatible;" clause: phones and extensions
+    // have names like "Robot S23" and "Checker Plus".
+    const DECLARED_BOT_RE = /[A-Za-z0-9_.-]*(?:bot|crawler|crawl|spider|scraper|scanner|fetcher|checker|indexer|archiver|validator)(?![a-z])[A-Za-z0-9_-]*\/\d|compatible;[^)]*?(?:bot|crawler|crawl|spider|scraper|scanner|fetcher|checker|indexer|archiver|validator)(?![a-z])|\+https?:\/\//i;
+    // Text that belongs in an attack, not in a User-Agent.
+    const MALFORMED_UA_RE = /\$\{|<\s*script|\(\)\s*\{|'\s*(?:or|and)\s*'|\bunion\s+select\b|\\x[0-9a-f]{2}/i;
+    // Browser versions long out of use, which scripts still copy from old lists.
+    const LEGACY_DEVICE_RE = /SMART-?TV|Tizen|Web0S|webOS|\bTV\b|PlayStation|Nintendo|Xbox|KaiOS|CrKey|Kindle|Silk\//i;
 
     // Flat list kept for callers that iterate every named pattern.
     const BOT_PATTERNS = [
@@ -248,6 +274,7 @@ const BotDetector = (() => {
         ...SCANNER_PATTERNS,
         ...TOOL_PATTERNS,
         ...HEADLESS_PATTERNS,
+        ...APP_PATTERNS,
     ];
 
     // Networks a publisher crawls from. Used only when the publisher's IP
@@ -666,23 +693,42 @@ const BotDetector = (() => {
         return token.slice(0, 40) || 'Unknown client';
     }
 
+    function isLegacyBrowser(ua) {
+        if (LEGACY_DEVICE_RE.test(ua)) return false;
+        let m = /Chrome\/(\d+)/.exec(ua);
+        if (m && Number(m[1]) < 60) return true;
+        m = /Firefox\/(\d+)/.exec(ua);
+        if (m && Number(m[1]) < 50) return true;
+        return /MSIE (?:[1-9]|10)\.|Trident\/[1-6]\.|Windows NT [45]\.|Windows 9[58]|Android [1-4]\./.test(ua);
+    }
+
     function classifyUncached(userAgent) {
         const ua = typeof userAgent === 'string' ? userAgent.trim() : '';
         if (!ua || ua === '-') {
             return { kind: 'no_ua', name: NO_UA_GROUP, group: NO_UA_GROUP };
         }
-        for (const [name, pattern, group, kind] of BOT_PATTERNS) {
-            if (pattern.test(ua)) {
-                return { kind: kind || 'known_bot', name, group: group || name };
-            }
+        if (MALFORMED_UA_RE.test(ua) || (ua.match(/Mozilla\/\d\.\d/g) || []).length > 1) {
+            return { kind: 'unknown_client', name: 'Malformed User-Agent', group: UNIDENTIFIED_GROUP };
         }
-        const withoutDeviceNames = ua.replace(DEVICE_NAME_RE, '');
-        if (GENERIC_BOT_RE.test(withoutDeviceNames)) {
+        const browserLike = looksLikeBrowser(ua);
+        const text = ua.replace(LIKE_BOT_RE, ' ');
+        for (const [name, pattern, group, kind] of BOT_PATTERNS) {
+            const m = pattern.exec(text);
+            if (!m) continue;
+            // "NotGooglebot" is not Googlebot: the name must start a word.
+            if (m.index > 0 && /[A-Za-z]/.test(text[m.index - 1]) && /^[A-Za-z]/.test(m[0])) continue;
+            // A library name inside a complete browser User-Agent is part of
+            // an extension or app name, not the client.
+            if (kind === 'tool' && browserLike) continue;
+            return { kind: kind || 'known_bot', name, group: group || name };
+        }
+        const withoutDeviceNames = text.replace(DEVICE_NAME_RE, '');
+        if ((browserLike ? DECLARED_BOT_RE : GENERIC_BOT_RE).test(withoutDeviceNames)) {
             const token = (withoutDeviceNames.match(GENERIC_BOT_NAME_RE) || [''])[0].replace(/^[.!_-]+|[.!_-]+$/g, '');
             return { kind: 'unknown_bot', name: (token || firstProductToken(ua)).slice(0, 40), group: UNLISTED_GROUP };
         }
-        if (looksLikeBrowser(ua)) {
-            return { kind: 'browser', name: null, group: null };
+        if (browserLike || TEXT_BROWSER_RE.test(ua)) {
+            return { kind: 'browser', name: null, group: null, legacy: isLegacyBrowser(ua) };
         }
         return { kind: 'unknown_client', name: firstProductToken(ua), group: UNIDENTIFIED_GROUP };
     }
@@ -691,7 +737,7 @@ const BotDetector = (() => {
      * Sort a User-Agent into one kind of client.
      *
      * @param {string|null} userAgent
-     * @returns {{ kind: 'browser'|'known_bot'|'scanner'|'tool'|'headless'|'unknown_bot'|'unknown_client'|'no_ua',
+     * @returns {{ kind: 'browser'|'app'|'known_bot'|'scanner'|'tool'|'headless'|'unknown_bot'|'unknown_client'|'no_ua',
      *             name: string|null, group: string|null }}
      *   `known_bot` names a crawler whose IP can be checked; `unknown_bot`
      *   calls itself a bot but is not in the list; `unknown_client` is neither
@@ -719,7 +765,7 @@ const BotDetector = (() => {
      */
     function detectBot(userAgent) {
         const info = classifyUserAgent(userAgent);
-        if (info.kind === 'browser' || info.kind === 'no_ua' || info.kind === 'unknown_client') return null;
+        if (info.kind === 'browser' || info.kind === 'app' || info.kind === 'no_ua' || info.kind === 'unknown_client') return null;
         return { name: info.name, group: info.group || null, kind: info.kind };
     }
 
@@ -793,6 +839,13 @@ const BotDetector = (() => {
         // publisher publishes no CIDR feed would mask the spoof and be reported
         // as `unverified_publisher` — the same bucket as a legitimate bot.
         const nonPublic = classifyNonPublicIp(ip);
+        if (nonPublic && publisherOf(botName) === 'Monitoring') {
+            // Health checkers and monitors run inside the network; a private
+            // address is where they are expected, not a forgery.
+            const internal = { verified: null, status: 'unverified_publisher', reason: `${botName} from an internal address` };
+            verificationCache.set(cacheKey, internal);
+            return internal;
+        }
         if (nonPublic) {
             const spoofedResult = {
                 verified: false,

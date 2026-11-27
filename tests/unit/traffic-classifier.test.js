@@ -248,7 +248,7 @@ describe('TrafficClassifier: browsers that behave like bots', () => {
 
     test('mostly failed requests across many paths is path enumeration', () => {
         const lines = [];
-        for (let i = 0; i < 40; i++) lines.push(line('203.0.113.53', { url: `/backup-${i}.zip`, status: 404, at: clock + i * 90 }));
+        for (let i = 0; i < 40; i++) lines.push(line('203.0.113.53', { url: `/catalogue/item-${i}`, status: 404, at: clock + i * 90 }));
         clock += 3600;
         assert.equal(classOfOnlyClient(lines).name, 'Path enumeration');
     });
@@ -406,5 +406,174 @@ describe('Both analysis paths classify the same', () => {
         assert.ok(res.pageResult.rows.every(r => r.traffic_class === 'human' && r.status_code === 404 && r.user_agent === CHROME));
 
         assert.equal(filter({ bot: 'all_bots', statusCategory: '4xx' }).summary.matchingCount, 16);
+    });
+});
+
+describe('TrafficClassifier: attacks that used to pass as human', () => {
+    const counts = lines => {
+        const out = {};
+        for (const c of classify(lines)) out[c.cls] = (out[c.cls] || 0) + 1;
+        return out;
+    };
+    const labels = lines => [...new Set(classify(lines).filter(c => c.cls === 'suspected').map(c => c.name))];
+    const later = () => { clock += 7200; return clock; };
+
+    test('attack paths that are encoded, in the query string, or not on a fixed list', () => {
+        const sets = [
+            ['/%2eenv', '/.%67it/config', '/wp%2dconfig.php'],
+            ['/?file=../../../../etc/passwd', '/index.php?page=/etc/passwd', '/download?f=../.env'],
+            ["/item?id=1'+UNION+SELECT+1,2,3--", '/search?q=<script>alert(1)</script>', '/p?x=${jndi:ldap://e.x/a}'],
+            ['/backup.sql', '/db.sql.gz', '/server-status', '/web.config'],
+        ];
+        for (const urls of sets) {
+            const start = later();
+            const lines = urls.map((url, i) => line('45.1.1.1', { url, status: 404, at: start + i }));
+            assert.equal(classOfOnlyClient(lines).name, 'Vulnerability probing', urls[0]);
+        }
+    });
+
+    test('script files that do not exist', () => {
+        const start = later();
+        const lines = Array.from({ length: 12 }, (_, i) => line('45.1.1.2', { url: `/wp-content/plugins/p${i}/x${i}.php`, status: 404, at: start + i }));
+        assert.equal(classOfOnlyClient(lines).name, 'Vulnerability probing');
+    });
+
+    test('slow password guessing, below ten attempts a minute', () => {
+        const start = later();
+        const lines = Array.from({ length: 120 }, (_, i) => line('45.1.1.3', { method: 'POST', url: '/login', status: 200, ref: 'https://site.test/login', at: start + i * 10 }));
+        assert.equal(classOfOnlyClient(lines).name, 'Login brute force');
+    });
+
+    test('a person who logs in a few times while browsing stays human', () => {
+        const start = later();
+        const lines = [];
+        for (let i = 0; i < 60; i++) {
+            lines.push(line('81.2.69.142', { url: i % 3 ? `/static/a${i % 5}.css` : `/account/page${i}`, ref: 'https://site.test/', at: start + i * 20 }));
+            if (i % 20 === 0) lines.push(line('81.2.69.142', { method: 'POST', url: '/login', status: 302, ref: 'https://site.test/login', at: start + i * 20 + 1 }));
+        }
+        assert.deepEqual(counts(lines), { human: lines.length });
+    });
+
+    test('one address that sends a new User-Agent with every request', () => {
+        const start = later();
+        const lines = Array.from({ length: 300 }, (_, i) => line('45.1.1.4', { url: `/product/${i}`, ua: CHROME.replace(/Chrome\/[\d.]+/, `Chrome/${100 + (i % 30)}.0.${i}.0`), at: start + Math.floor(i / 5) }));
+        assert.deepEqual(counts(lines), { suspected: 300 });
+    });
+
+    test('one IPv6 network that sends every request from a new address', () => {
+        const start = later();
+        const lines = Array.from({ length: 200 }, (_, i) => line(`2a01:4f8:c0c:1234::${(i + 1).toString(16)}`, { url: `/product/${i}`, at: start + Math.floor(i / 5) }));
+        assert.deepEqual(counts(lines), { suspected: 200 });
+    });
+
+    test('an office behind one address, many browsers, stays human', () => {
+        const start = later();
+        const lines = [];
+        for (let i = 0; i < 1200; i++) {
+            const ua = CHROME.replace(/Chrome\/[\d.]+/, `Chrome/${110 + (i % 20)}.0.0.0`);
+            lines.push(line('81.2.69.160', { url: i % 4 ? `/img/${i % 50}.png` : `/page/${i % 80}`, ref: 'https://site.test/', ua, at: start + Math.floor(i / 4) }));
+        }
+        assert.deepEqual(counts(lines), { human: 1200 });
+    });
+
+    test('password guessing spread over many addresses', () => {
+        const start = later();
+        const lines = Array.from({ length: 300 }, (_, i) => line(`45.${2 + (i % 100)}.7.9`, { method: 'POST', url: '/wp-login.php', status: 200, ref: 'https://site.test/wp-login.php', at: start + i }));
+        assert.deepEqual(counts(lines), { suspected: 300 });
+        assert.deepEqual(labels(lines), ['Distributed login attempts']);
+    });
+
+    test('a scraper that sends a referrer but never loads an asset', () => {
+        const start = later();
+        const people = Array.from({ length: 120 }, (_, i) => line('81.2.69.150', { url: i % 3 ? `/static/app${i % 6}.js` : `/page${i}`, ref: 'https://site.test/', at: start + i * 5 }));
+        const scraper = Array.from({ length: 300 }, (_, i) => line('45.1.1.5', { url: `/product/${i}`, ref: 'https://site.test/', at: start + Math.floor(i * 0.6) }));
+        assert.deepEqual(counts([...people, ...scraper]), { human: 120, suspected: 300 });
+    });
+
+    test('when assets are not in the log at all, their absence is not held against anyone', () => {
+        const start = later();
+        const lines = [];
+        for (let u = 0; u < 20; u++) {
+            for (let i = 0; i < 120; i++) lines.push(line(`81.2.70.${u + 1}`, { url: `/article/${u}-${i}`, ref: 'https://site.test/', at: start + u + i * 30 }));
+        }
+        assert.deepEqual(counts(lines), { human: 2400 });
+    });
+
+    test('downloads and video segments are not page views', () => {
+        let start = later();
+        const pdfs = Array.from({ length: 40 }, (_, i) => line('81.2.69.170', { url: `/docs/file${i}.pdf`, at: start + i * 20 }));
+        assert.equal(classOfOnlyClient(pdfs).cls, 'human');
+        start = later();
+        const video = Array.from({ length: 500 }, (_, i) => line('81.2.69.171', { url: `/video/seg${i}.ts`, at: start + i * 2 }));
+        assert.equal(classOfOnlyClient(video).cls, 'human');
+    });
+
+    test('failed lookups made from a page are not path enumeration', () => {
+        const start = later();
+        const lines = [line('81.2.69.172', { url: '/app', at: start }), line('81.2.69.172', { url: '/static/app.js', ref: 'https://site.test/app', at: start + 1 })];
+        for (let i = 0; i < 40; i++) lines.push(line('81.2.69.172', { url: `/api/lookup/${i}`, status: 404, ref: 'https://site.test/app', at: start + 2 + i * 3 }));
+        assert.equal(classOfOnlyClient(lines).cls, 'human');
+    });
+
+    test('a native app is traffic from a person, unless it attacks', () => {
+        let start = later();
+        const app = 'MyShopApp/5.2.1 CFNetwork/1485 Darwin/23.1.0';
+        const calls = Array.from({ length: 80 }, (_, i) => line('81.2.69.180', { url: `/api/v2/items/${i}`, ua: app, at: start + i * 4 }));
+        const c = classOfOnlyClient(calls);
+        assert.equal(c.cls, 'human');
+        assert.match(c.reason, /App traffic/);
+        start = later();
+        const probes = ['/.env', '/.git/config', '/backup.sql'].map((url, i) => line('45.1.1.6', { url, status: 404, ua: app, at: start + i }));
+        assert.equal(classOfOnlyClient(probes).name, 'Vulnerability probing');
+    });
+
+    test('an out-of-date browser version counts as one weak signal', () => {
+        const start = later();
+        const old = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.36';
+        const people = Array.from({ length: 90 }, (_, i) => line('81.2.69.151', { url: i % 3 ? `/static/app${i % 6}.js` : `/page${i}`, ref: 'https://site.test/', at: start + i * 5 }));
+        const bot = Array.from({ length: 25 }, (_, i) => line('45.1.1.7', { url: '/', ua: old, at: start + i * 30 }));
+        assert.deepEqual(counts([...people, ...bot]), { human: 90, suspected: 25 });
+    });
+});
+
+describe('BotDetector: names and internal monitors', () => {
+    const name = ua => BotDetector.classifyUserAgent(ua).name;
+    const kind = ua => BotDetector.classifyUserAgent(ua).kind;
+
+    test('a crawler that says which other crawler it resembles keeps its own name', () => {
+        assert.equal(name('TelegramBot (like TwitterBot)'), 'TelegramBot');
+        assert.equal(name('Feedly/1.0 (+http://www.feedly.com/fetcher.html; like FeedFetcher-Google)'), 'Feed reader');
+        assert.equal(name('facebookexternalhit/1.1;line-poker/1.0'), 'LINE');
+        assert.equal(name('Mozilla/5.0 (compatible; adidxbot/2.0; +http://www.bing.com/bingbot.htm)'), 'AdIdxBot');
+        assert.equal(kind('Mozilla/5.0 (compatible; NotGooglebot/1.0; +http://x.test)'), 'unknown_bot');
+        assert.equal(name('Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'), 'Googlebot');
+    });
+
+    test('bot words in device and extension names do not make a browser a bot', () => {
+        const tail = 'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+        assert.equal(kind(`Mozilla/5.0 (Linux; Android 12; Robot S23) ${tail}`), 'browser');
+        assert.equal(kind(`Mozilla/5.0 (Linux; Android 11; Spider X5 Build/RP1A) ${tail}`), 'browser');
+        assert.equal(kind(`Mozilla/5.0 (Windows NT 10.0; Win64; x64) ${tail} (Checker Plus for Gmail)`), 'browser');
+        assert.equal(kind(`Mozilla/5.0 (Windows NT 10.0; Win64; x64) ${tail} Python-Tutor-Extension/1.0`), 'browser');
+        assert.equal(kind(`Mozilla/5.0 (X11; Linux x86_64) ${tail} FooBot/1.0 (+https://foo.example/bot)`), 'unknown_bot');
+        assert.equal(kind('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36 (compatible; FooCrawler; +http://x)'), 'unknown_bot');
+    });
+
+    test('apps, text browsers and malformed User-Agents', () => {
+        assert.equal(kind('MyShopApp/5.2.1 (iPhone; iOS 17.1; Scale/3.00)'), 'app');
+        assert.equal(kind('Dalvik/2.1.0 (Linux; U; Android 13; Pixel 7 Build/TQ3A)'), 'app');
+        assert.equal(kind('AppleCoreMedia/1.0.0.21A329 (iPhone; U; CPU OS 17_0 like Mac OS X; en_us)'), 'app');
+        assert.equal(kind('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'), 'browser');
+        assert.equal(kind('Lynx/2.9.0dev.12 libwww-FM/2.14'), 'browser');
+        assert.equal(kind("Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/120 Safari/537.36' OR '1'='1"), 'unknown_client');
+        assert.equal(kind(`${CHROME} ${CHROME}`), 'unknown_client');
+        assert.equal(BotDetector.classifyUserAgent('Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1)').legacy, true);
+        assert.equal(BotDetector.classifyUserAgent(CHROME).legacy, false);
+    });
+
+    test('a health checker on a private address is not a spoofed bot', () => {
+        assert.equal(BotDetector.verifyBot('Health check', '10.0.1.5', 0).status, 'unverified_publisher');
+        assert.equal(BotDetector.verifyBot('UptimeRobot', '192.168.1.20', 0).status, 'unverified_publisher');
+        assert.equal(BotDetector.verifyBot('Googlebot', '10.0.0.9', 0).status, 'spoofed');
     });
 });
