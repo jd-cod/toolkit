@@ -85,14 +85,187 @@ class ChunkedLineSplitter {
     }
 }
 
+const GZIP_UNSUPPORTED = 'This browser cannot open gzip files. Extract the .gz file first.';
+const GZIP_UNREADABLE = 'The file is not a readable gzip archive.';
+const GZIP_INCOMPLETE = 'The gzip archive is incomplete or damaged at the end. Everything readable before that point was analysed.';
+
+// Raised for input that cannot be read, as opposed to a fault in the analysis.
+function inputError(message) {
+    const error = new Error(message);
+    error.inputError = true;
+    return error;
+}
+
+function isGzipStart(bytes) {
+    return Boolean(bytes && bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b);
+}
+
+function streamFromGenerator(generator) {
+    return new ReadableStream({
+        async pull(controller) {
+            try {
+                const { done, value } = await generator.next();
+                if (done) controller.close();
+                else controller.enqueue(value);
+            } catch (err) {
+                controller.error(err);
+            }
+        },
+        cancel() {
+            return generator.return();
+        },
+    });
+}
+
 /**
- * Detects gzip magic bytes (0x1f 0x8b) from the first chunk of a ReadableStream
- * and pipes through DecompressionStream('gzip') if compressed, or returns the
- * stream uncompressed without buffering the entire body.
- * @param {ReadableStream} readableStream
+ * Offsets after the start of the file where a gzip member may begin: the
+ * bytes 1f 8b 08 followed by a flag byte without reserved bits. Compressed
+ * data can contain the same bytes by chance, so these are candidates only.
+ */
+async function findGzipMemberStarts(blob) {
+    const STEP = 4 * 1024 * 1024;
+    const starts = [];
+    for (let base = 0; base < blob.size; base += STEP) {
+        // Three bytes of overlap, so a header across two steps is seen once.
+        const bytes = new Uint8Array(await blob.slice(base, Math.min(blob.size, base + STEP + 3)).arrayBuffer());
+        const last = Math.min(bytes.length - 3, STEP);
+        for (let i = bytes.indexOf(0x1f); i !== -1 && i < last; i = bytes.indexOf(0x1f, i + 1)) {
+            if (bytes[i + 1] === 0x8b && bytes[i + 2] === 0x08 && (bytes[i + 3] & 0xe0) === 0 && base + i > 0) starts.push(base + i);
+        }
+    }
+    return starts;
+}
+
+/** Offset where the run of zero bytes at the end of the file begins. */
+async function zeroPaddingStart(blob, from) {
+    const STEP = 65536;
+    let end = blob.size;
+    while (end > from) {
+        const begin = Math.max(from, end - STEP);
+        const bytes = new Uint8Array(await blob.slice(begin, end).arrayBuffer());
+        for (let i = bytes.length - 1; i >= 0; i--) {
+            if (bytes[i] !== 0) return begin + i + 1;
+        }
+        end = begin;
+    }
+    return from;
+}
+
+/**
+ * Decompress a gzip file that may hold several members (`cat a.gz b.gz`, an
+ * appending compressor), which the browser's own decompressor rejects after
+ * the first one.
+ *
+ * The browser does not say where a member ends, so each member is found by
+ * trying: decompress up to the next place a member could begin. A wrong guess
+ * ends in an error after a correct prefix of the output, and the next, longer
+ * attempt skips what was already passed on. A file that ends early or is
+ * damaged gives everything readable and a warning instead of nothing.
+ */
+async function* gunzipMembers(blob, onWarning) {
+    const size = blob.size;
+    let start = 0;
+    let memberStarts = null; // looked for only after an attempt fails
+    let padding = size;      // where zero padding at the end of the file begins
+    let total = 0;
+
+    // Places where the member that begins at `from` may end, nearest first.
+    const possibleEnds = (from) => {
+        const ends = memberStarts.filter(offset => offset > from);
+        // A member ends where the padding begins; its last eight bytes
+        // (checksum and length) may be zero themselves.
+        for (let k = 0; k <= 8 && padding < size; k++) {
+            if (padding + k > from && padding + k < size) ends.push(padding + k);
+        }
+        return [...new Set(ends)].sort((x, y) => x - y);
+    };
+
+    while (start < size) {
+        if (!isGzipStart(new Uint8Array(await blob.slice(start, start + 2).arrayBuffer()))) {
+            // Zero padding after the last member is common and harmless.
+            const tail = new Uint8Array(await blob.slice(start, Math.min(size, start + 65536)).arrayBuffer());
+            if (tail.some(byte => byte !== 0) && onWarning) onWarning('Data after the end of the gzip archive was ignored.');
+            return;
+        }
+
+        // The first attempt takes the rest of the file: right for the usual
+        // archive with one member, at no extra cost.
+        let ends = memberStarts ? [...possibleEnds(start), size] : [size];
+        let emitted = 0;
+        let finished = false;
+        for (let i = 0; i < ends.length; i++) {
+            let skip = emitted;
+            try {
+                const reader = blob.slice(start, ends[i]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
+                for (;;) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    if (skip >= value.length) { skip -= value.length; continue; }
+                    const chunk = skip > 0 ? value.subarray(skip) : value;
+                    skip = 0;
+                    emitted += chunk.length;
+                    total += chunk.length;
+                    yield chunk;
+                }
+                finished = true;
+                start = ends[i];
+                break;
+            } catch {
+                if (!memberStarts) {
+                    memberStarts = await findGzipMemberStarts(blob);
+                    padding = await zeroPaddingStart(blob, start);
+                    ends = possibleEnds(start); // the whole rest was just tried
+                    i = -1;
+                }
+            }
+        }
+        if (!finished) {
+            if (total === 0) throw inputError(GZIP_UNREADABLE);
+            if (onWarning) onWarning(GZIP_INCOMPLETE);
+            return;
+        }
+    }
+}
+
+/** A stream cannot be read twice, so only the first member can be recovered. */
+async function* gunzipStreamOnce(stream, onWarning) {
+    let total = 0;
+    try {
+        const reader = stream.pipeThrough(new DecompressionStream('gzip')).getReader();
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) return;
+            total += value.length;
+            yield value;
+        }
+    } catch {
+        if (total === 0) throw inputError(GZIP_UNREADABLE);
+        if (onWarning) onWarning(GZIP_INCOMPLETE);
+    }
+}
+
+/**
+ * Returns the content of a file or stream as a byte stream, decompressed when
+ * it starts with the gzip magic bytes (0x1f 0x8b), whatever its name says.
+ *
+ * Pass the File or Blob itself where there is one: only then can an archive
+ * with several members be read completely.
+ *
+ * @param {Blob|ReadableStream} input
+ * @param {{ onWarning?: (message: string) => void }} [options] - Called when
+ *   part of the input could not be read; the stream then ends normally.
  * @returns {Promise<ReadableStream>}
  */
-async function peekAndDecompressStream(readableStream) {
+async function peekAndDecompressStream(input, options = {}) {
+    const onWarning = typeof options.onWarning === 'function' ? options.onWarning : null;
+
+    if (typeof Blob !== 'undefined' && input instanceof Blob) {
+        if (!isGzipStart(new Uint8Array(await input.slice(0, 2).arrayBuffer()))) return input.stream();
+        if (typeof DecompressionStream === 'undefined') throw inputError(GZIP_UNSUPPORTED);
+        return streamFromGenerator(gunzipMembers(input, onWarning));
+    }
+
+    const readableStream = input;
     if (!readableStream || typeof readableStream.getReader !== 'function') {
         return readableStream;
     }
@@ -102,11 +275,6 @@ async function peekAndDecompressStream(readableStream) {
         return new ReadableStream({
             start(controller) { controller.close(); }
         });
-    }
-
-    let isGzip = false;
-    if (value && value.length >= 2 && value[0] === 0x1f && value[1] === 0x8b) {
-        isGzip = true;
     }
 
     const reconstructedStream = new ReadableStream({
@@ -126,10 +294,43 @@ async function peekAndDecompressStream(readableStream) {
         }
     });
 
-    if (isGzip && typeof DecompressionStream !== 'undefined') {
-        return reconstructedStream.pipeThrough(new DecompressionStream('gzip'));
+    if (!isGzipStart(value)) return reconstructedStream;
+    if (typeof DecompressionStream === 'undefined') throw inputError(GZIP_UNSUPPORTED);
+    return streamFromGenerator(gunzipStreamOnce(reconstructedStream, onWarning));
+}
+
+/**
+ * The whole stream as text. `new Response(stream).text()` reports any error
+ * in the stream as "Failed to fetch"; this keeps the real reason.
+ */
+async function readStreamAsText(stream) {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let text = '';
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        text += typeof value === 'string' ? value : decoder.decode(value, { stream: true });
     }
-    return reconstructedStream;
+    return text + decoder.decode();
+}
+
+/** A worker 'error' event carries no readable text of its own. */
+function workerUnavailableError(event) {
+    const detail = event && typeof event.message === 'string' && event.message ? ` (${event.message})` : '';
+    const error = new Error(`The log parser could not be started${detail}. Reload the page and try again.`);
+    error.workerUnavailable = true;
+    return error;
+}
+
+// One loaded database is enough: lookups against the other answer "Unknown".
+function geoUsable(geoip) {
+    if (!geoip || typeof geoip.lookupCountry !== 'function') return false;
+    if (typeof geoip.status === 'function') {
+        const state = geoip.status();
+        return state.country === 'ready' || state.asn === 'ready';
+    }
+    return typeof geoip.isReady === 'function' && geoip.isReady();
 }
 
 /**
@@ -142,13 +343,14 @@ async function peekAndDecompressStream(readableStream) {
  */
 function streamChunksToWorker(stream, worker, options = {}, onProgress = null) {
     return new Promise((resolve, reject) => {
+        let stopped = false;
         const messageHandler = (e) => {
             const data = e.data || {};
             if (data.type === 'progress') {
                 if (typeof onProgress === 'function') onProgress(data);
             } else if (data.type === 'complete') {
                 const geoipObj = (typeof window !== 'undefined' ? window.GeoIP : null) || (typeof globalThis !== 'undefined' ? globalThis.GeoIP : null);
-                if (data.ipDict && geoipObj && typeof geoipObj.lookupCountry === 'function' && typeof geoipObj.isReady === 'function' && geoipObj.isReady()) {
+                if (data.ipDict && geoUsable(geoipObj)) {
                     (async () => {
                         try {
                             const ipCount = data.ipDict.length;
@@ -238,9 +440,10 @@ function streamChunksToWorker(stream, worker, options = {}, onProgress = null) {
             }
         };
 
-        const errorHandler = (err) => {
+        const errorHandler = (event) => {
+            stopped = true;
             cleanup();
-            reject(err);
+            reject(workerUnavailableError(event));
         };
 
         function cleanup() {
@@ -272,6 +475,7 @@ function streamChunksToWorker(stream, worker, options = {}, onProgress = null) {
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
+                    if (stopped) { reader.cancel().catch(() => {}); return; }
                     worker.postMessage({
                         action: 'parse_stream_chunk',
                         chunk: value,
@@ -305,13 +509,14 @@ function streamChunksToWorker(stream, worker, options = {}, onProgress = null) {
  */
 function appendStreamToWorker(stream, worker, options = {}, onProgress = null) {
     return new Promise((resolve, reject) => {
+        let stopped = false;
         const messageHandler = (e) => {
             const data = e.data || {};
             if (data.type === 'progress') {
                 if (typeof onProgress === 'function') onProgress(data);
             } else if (data.type === 'append_complete') {
                 const geoipObj = (typeof window !== 'undefined' ? window.GeoIP : null) || (typeof globalThis !== 'undefined' ? globalThis.GeoIP : null);
-                if (data.ipDict && geoipObj && typeof geoipObj.lookupCountry === 'function' && typeof geoipObj.isReady === 'function' && geoipObj.isReady()) {
+                if (data.ipDict && geoUsable(geoipObj)) {
                     (async () => {
                         try {
                             const ipCount = data.ipDict.length;
@@ -397,9 +602,10 @@ function appendStreamToWorker(stream, worker, options = {}, onProgress = null) {
             }
         };
 
-        const errorHandler = (err) => {
+        const errorHandler = (event) => {
+            stopped = true;
             cleanup();
-            reject(err);
+            reject(workerUnavailableError(event));
         };
 
         function cleanup() {
@@ -425,6 +631,7 @@ function appendStreamToWorker(stream, worker, options = {}, onProgress = null) {
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
+                    if (stopped) { reader.cancel().catch(() => {}); return; }
                     worker.postMessage({
                         action: 'append_stream_chunk',
                         chunk: value,
@@ -448,17 +655,19 @@ function appendStreamToWorker(stream, worker, options = {}, onProgress = null) {
 
 // Universal export: CommonJS (Node.js tests) and Worker/Browser global (importScripts / <script>)
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { ChunkedLineSplitter, peekAndDecompressStream, streamChunksToWorker, appendStreamToWorker };
+    module.exports = { ChunkedLineSplitter, peekAndDecompressStream, readStreamAsText, streamChunksToWorker, appendStreamToWorker };
 }
 if (typeof self !== 'undefined') {
     self.ChunkedLineSplitter = ChunkedLineSplitter;
     self.peekAndDecompressStream = peekAndDecompressStream;
+    self.readStreamAsText = readStreamAsText;
     self.streamChunksToWorker = streamChunksToWorker;
     self.appendStreamToWorker = appendStreamToWorker;
 }
 if (typeof window !== 'undefined') {
     window.ChunkedLineSplitter = ChunkedLineSplitter;
     window.peekAndDecompressStream = peekAndDecompressStream;
+    window.readStreamAsText = readStreamAsText;
     window.streamChunksToWorker = streamChunksToWorker;
     window.appendStreamToWorker = appendStreamToWorker;
 }

@@ -63,6 +63,7 @@ const TrafficClassifier = (() => {
         scrapePaths: 50,        // ... across this many different pages
         scoreRequests: 20,      // requests needed before the weak signals are added up
         scoreSignals: 3,
+        scoreReferrerShare: 0.8, // with referrers on this share of requests, one more signal is needed
         scoreBreadthPaths: 30,
         rotationClients: 8,     // browser clients from one address before they are judged together
         rotationRequests: 50,
@@ -190,7 +191,12 @@ const TrafficClassifier = (() => {
         }
 
         if (d.path === '/robots.txt') client.robots = 1;
-        if (d.signature) {
+        // A path that is an attack on any site always counts. A path that is
+        // only suspicious (wp-login.php, xmlrpc.php, phpMyAdmin) counts when
+        // the server did not serve it: where it exists and answers, people
+        // and their browsers use it.
+        const served = (row.status >= 200 && row.status < 300) || row.status === 304;
+        if (d.signature && (d.signature.strong || !served)) {
             client.probeHits++;
             client.probeBits |= (1 << ((d.hash >>> 6) & 31));
             if (d.signature.strong) client.strongBits |= (1 << ((d.hash >>> 11) & 31));
@@ -251,7 +257,10 @@ const TrafficClassifier = (() => {
             if (c.http10 / c.n >= 0.9) signals.push('HTTP/1.0');
             if (paths >= T.scoreBreadthPaths && c.pages / c.n >= 0.9) signals.push(`about ${paths} different pages`);
             if (c.info && c.info.legacy) signals.push('a browser version long out of use');
-            if (signals.length >= T.scoreSignals) {
+            // Requests that nearly all name the page they came from are what a
+            // page's own script sends (search-as-you-type, polling an API).
+            const needed = refShare >= T.scoreReferrerShare ? T.scoreSignals + 1 : T.scoreSignals;
+            if (signals.length >= needed) {
                 return { label: 'Crawler-like browsing', reason: `${c.n} requests with ${signals.join(', ')}` };
             }
         }

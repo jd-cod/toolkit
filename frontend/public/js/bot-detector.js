@@ -608,6 +608,7 @@ const BotDetector = (() => {
         verificationCache.clear();
         if (!data || !data.bots) return;
 
+        let unreadable = 0;
         for (const [botKey, botObj] of Object.entries(data.bots)) {
             const ipv4Rules = [];
             const ipv6Rules = [];
@@ -616,6 +617,7 @@ const BotDetector = (() => {
                 for (const cidr of botObj.ipv4) {
                     const rule = parseIpv4Cidr(cidr);
                     if (rule) ipv4Rules.push(rule);
+                    else unreadable++;
                 }
             }
 
@@ -623,6 +625,7 @@ const BotDetector = (() => {
                 for (const cidr of botObj.ipv6) {
                     const rule = parseIpv6Cidr(cidr);
                     if (rule) ipv6Rules.push(rule);
+                    else unreadable++;
                 }
             }
 
@@ -635,6 +638,8 @@ const BotDetector = (() => {
                 totalCidrs: ipv4Rules.length + ipv6Rules.length,
             });
         }
+        // An address checked against a list with holes is called spoofed.
+        if (unreadable > 0) console.warn(`BotDetector: ${unreadable} IP ranges in the feed could not be read and were left out.`);
     }
 
     // ─── Initialization ───
@@ -651,7 +656,8 @@ const BotDetector = (() => {
                     if (data && data.bots) {
                         verifiedBotsData = data;
                         compileIndices(data);
-                        await setIdbData('verified_bots_data', data);
+                        // The copy in IndexedDB is only a fallback for the next visit.
+                        try { await setIdbData('verified_bots_data', data); } catch { /* no storage */ }
                         return true;
                     }
                 }
@@ -660,17 +666,25 @@ const BotDetector = (() => {
             }
 
             // 2. Fallback to IndexedDB
-            const cached = await getIdbData('verified_bots_data');
-            if (cached && cached.bots) {
-                verifiedBotsData = cached;
-                compileIndices(cached);
-                return true;
+            try {
+                const cached = await getIdbData('verified_bots_data');
+                if (cached && cached.bots) {
+                    verifiedBotsData = cached;
+                    compileIndices(cached);
+                    return true;
+                }
+            } catch (err) {
+                console.warn('BotDetector: IndexedDB cache unavailable:', err && err.message);
             }
 
             console.warn('BotDetector: No verified bots data available.');
             return false;
         })();
 
+        // A failed load is tried again by the next caller instead of being
+        // remembered for the life of the page.
+        const attempt = initPromise;
+        attempt.then(ok => { if (!ok && initPromise === attempt) initPromise = null; }, () => { if (initPromise === attempt) initPromise = null; });
         return initPromise;
     }
 
@@ -973,6 +987,17 @@ const BotDetector = (() => {
     }
 
     /**
+     * Can addresses of this bot be checked against its publisher's ranges?
+     * 'loaded' - ranges are available; 'missing' - the publisher has a feed
+     * but no ranges are loaded here; 'none' - the bot has no feed at all.
+     */
+    function rangeStatus(botName) {
+        const keys = getSourceKeysForBot(botName);
+        if (keys.length === 0) return 'none';
+        return keys.some(key => (compiledIndices.get(key)?.totalCidrs || 0) > 0) ? 'loaded' : 'missing';
+    }
+
+    /**
      * Load the verified-bot ranges from an object instead of fetching them.
      * The parser worker gets them from the page this way.
      */
@@ -998,6 +1023,7 @@ const BotDetector = (() => {
         verifyBot,
         isKnownBot,
         getBotStats,
+        rangeStatus,
     };
 })();
 

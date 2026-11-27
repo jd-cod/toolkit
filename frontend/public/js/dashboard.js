@@ -635,10 +635,14 @@ const Dashboard = (() => {
         renderToastNotification();
     }
 
-    async function appendLogStream(stream) {
+    /** @param {Blob|ReadableStream} input - A File where there is one, so a gzip archive can be read completely. */
+    async function appendLogStream(input) {
+        const warnings = [];
+        const isFile = typeof Blob !== 'undefined' && input instanceof Blob;
         const decompressed = typeof peekAndDecompressStream === 'function'
-            ? await peekAndDecompressStream(stream)
-            : stream;
+            ? await peekAndDecompressStream(input, { onWarning: message => warnings.push(isFile && input.name ? `${input.name}: ${message}` : message) })
+            : (isFile ? input.stream() : input);
+        const inputWarnings = () => [...(originalParseResult?.inputWarnings || []), ...warnings];
 
         if (activeWorker && typeof appendStreamToWorker === 'function') {
             const result = await appendStreamToWorker(decompressed, activeWorker, {
@@ -663,6 +667,7 @@ const Dashboard = (() => {
                     : 0,
                 logStart: result.summary.minTimeSec ? new Date(result.summary.minTimeSec * 1000).toUTCString() : '',
                 logEnd: result.summary.maxTimeSec ? new Date(result.summary.maxTimeSec * 1000).toUTCString() : '',
+                inputWarnings: inputWarnings(),
             };
             originalParseResult = mergedParseResult;
             render(mergedData, currentLogText, mergedParseResult, {
@@ -677,11 +682,11 @@ const Dashboard = (() => {
         }
 
         // In-memory fallback
-        const text = await new Response(decompressed).text();
-        await appendLogText(text);
+        const text = typeof readStreamAsText === 'function' ? await readStreamAsText(decompressed) : await new Response(decompressed).text();
+        await appendLogText(text, warnings);
     }
 
-    async function appendLogText(text) {
+    async function appendLogText(text, warnings = []) {
         if (activeWorker && typeof appendStreamToWorker === 'function') {
             const blob = new Blob([text]);
             await appendLogStream(blob.stream());
@@ -705,7 +710,8 @@ const Dashboard = (() => {
             logEntries: originalEnrichedEntries,
             parsedLines: new Array(mergedData.total_requests),
             validLines: mergedData.total_requests,
-            skippedLines: (originalParseResult?.skippedLines || []).concat(appendParse.skippedLines || [])
+            skippedLines: (originalParseResult?.skippedLines || []).concat(appendParse.skippedLines || []),
+            inputWarnings: [...(originalParseResult?.inputWarnings || []), ...warnings]
         };
         originalParseResult = mergedParseResult;
 
@@ -717,8 +723,7 @@ const Dashboard = (() => {
     }
 
     async function appendLogFile(file) {
-        const stream = file.stream();
-        await appendLogStream(stream);
+        await appendLogStream(file);
     }
 
     async function appendLogUrl(url) {
@@ -815,6 +820,7 @@ const Dashboard = (() => {
         currentGistUrl = options.gistUrl !== undefined ? options.gistUrl : currentGistUrl;
 
         if (options.worker) {
+            releaseWorker(options.worker);
             activeWorker = options.worker;
             activeWorker.onmessage = (e) => {
                 const msg = e.data || {};
@@ -843,6 +849,7 @@ const Dashboard = (() => {
             latestSummary = options.summary;
         }
         if (!options.preserveFilters && !options.worker) {
+            releaseWorker(null);
             activeWorker = null;
             latestPageResult = null;
             latestSummary = null;
@@ -1031,6 +1038,8 @@ const Dashboard = (() => {
                     ` : ''}
                 </div>
             </div>
+
+            ${renderDataNoticesHtml(data)}
 
             <div class="signal-dashboard-source">
                 <i class="bi bi-file-earmark-text" aria-hidden="true"></i>
@@ -1300,6 +1309,66 @@ const Dashboard = (() => {
         }
     }
 
+    /**
+     * What the numbers on this page could not take into account: a GeoIP
+     * database or crawler IP ranges that are not loaded. Without the notice,
+     * "0 verified, 0 spoofed" and a column of "Unknown" read as findings.
+     */
+    function dataNotices(data) {
+        const notices = [];
+        const geo = typeof GeoIP !== 'undefined' && GeoIP.status ? GeoIP.status() : null;
+        if (geo && (geo.country === 'failed' || geo.asn === 'failed')) {
+            const what = geo.country === 'failed' && geo.asn === 'failed' ? 'Country and network data are'
+                : (geo.country === 'failed' ? 'Country data is' : 'Network (ASN) data is');
+            notices.push({
+                id: 'geoip',
+                text: `${what} unavailable: the GeoIP database could not be loaded. The affected values show as "Unknown"; everything else is analysed as usual.`,
+                detail: [geo.errors.country, geo.errors.asn].filter(Boolean).join(' · '),
+            });
+        }
+
+        for (const warning of (originalParseResult && originalParseResult.inputWarnings) || []) {
+            notices.push({ id: 'input', text: warning, detail: '' });
+        }
+
+        const detector = typeof BotDetector !== 'undefined' ? BotDetector : null;
+        if (detector && detector.rangeStatus && detector.getBotStats) {
+            const missing = new Map();
+            for (const group of (data && data.bot_groups) || []) {
+                for (const bot of group.sub_bots || []) {
+                    const known = (bot.verified_requests || 0) + (bot.spoofed_requests || 0) + (bot.unverified_requests || 0);
+                    if (known > 0 && detector.rangeStatus(bot.bot_name) === 'missing') missing.set(bot.bot_name, (missing.get(bot.bot_name) || 0) + known);
+                }
+            }
+            if (missing.size > 0) {
+                const names = [...missing.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name);
+                const requests = [...missing.values()].reduce((a, b) => a + b, 0);
+                const shown = names.slice(0, 4).join(', ') + (names.length > 4 ? ` and ${names.length - 4} more` : '');
+                notices.push({
+                    id: 'bot-ranges',
+                    text: detector.getBotStats().isLoaded
+                        ? `Official IP ranges are not loaded for ${shown} (${numberWithCommas(requests)} requests). These crawlers cannot be confirmed as genuine here, so they are listed as unverified.`
+                        : `The crawler IP range file could not be loaded. ${shown} (${numberWithCommas(requests)} requests) cannot be confirmed as genuine, so they are listed as unverified.`,
+                    detail: '',
+                });
+            }
+        }
+        return notices;
+    }
+
+    function renderDataNoticesHtml(data) {
+        const notices = dataNotices(data);
+        if (!notices.length) return '';
+        return `
+            <div id="data-notices" role="status" style="margin-bottom:14px;display:flex;flex-direction:column;gap:8px;">
+                ${notices.map(n => `
+                <div class="data-notice" data-notice="${n.id}" ${n.detail ? `title="${escapeHtml(n.detail)}"` : ''} style="display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border:1px solid color-mix(in srgb, var(--accent-amber) 45%, transparent);background:color-mix(in srgb, var(--accent-amber) 9%, transparent);border-radius:9px;font-size:0.8rem;color:var(--text-secondary);">
+                    <i class="bi bi-exclamation-triangle-fill" aria-hidden="true" style="color:var(--accent-amber);margin-top:1px;"></i>
+                    <span>${escapeHtml(n.text)}</span>
+                </div>`).join('')}
+            </div>`;
+    }
+
     function renderExclusionsHtml(parseResult) {
         const counts = parseResult?.skipCounts || {};
         // An uploaded file is read once and not kept, so there is nothing to
@@ -1329,6 +1398,7 @@ const Dashboard = (() => {
         try {
             const parseResult = await LogParser.parseAsync(currentLogText, { skip403, skipInternal });
             if (revision !== exclusionRevision) return;
+            if (originalParseResult?.inputWarnings?.length) parseResult.inputWarnings = originalParseResult.inputWarnings;
             Analyzer.enrichLogEntries(parseResult.logEntries);
             const data = Analyzer.analyzeEnhancedLogs(parseResult.logEntries);
             for (const [id, value] of [['nginx-skip-403', skip403], ['nginx-skip-internal', skipInternal]]) {
@@ -3196,7 +3266,17 @@ const Dashboard = (() => {
         </div>
         `;
     }
+    // A parser worker holds the whole uploaded log. One that no dashboard
+    // uses any more is stopped, or each analysis would leave its copy behind.
+    function releaseWorker(next) {
+        if (activeWorker && activeWorker !== next) {
+            try { activeWorker.terminate(); } catch { /* already stopped */ }
+        }
+    }
+
     function dispose() {
+        releaseWorker(null);
+        activeWorker = null;
         stopAdaptiveQueuePoller();
         dismissToastNotification(false);
         isMultiNodeSession = false;

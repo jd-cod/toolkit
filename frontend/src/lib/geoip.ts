@@ -13,7 +13,7 @@ export interface GeoIPCountryResult {
 export interface GeoIPFullResult extends GeoIPLookupResult, GeoIPCountryResult {}
 
 export interface GeoIPRuntime {
-  init: (onProgress?: (pct: number, msg: string) => void) => Promise<void>;
+  init: (onProgress?: (pct: number, msg: string) => void) => Promise<unknown>;
   isReady: () => boolean;
   lookupASN: (ip: string) => GeoIPLookupResult | null;
   lookupCountry: (ip: string) => GeoIPCountryResult | null;
@@ -50,7 +50,7 @@ function injectGeoIpScript() {
     }
 
     const script = document.createElement('script');
-    script.src = '/js/geoip.js?v=3.8';
+    script.src = '/js/geoip.js?v=3.9';
     script.async = true;
     script.dataset.geoipScript = 'true';
     script.onload = () => resolve(window.GeoIP || null);
@@ -76,7 +76,11 @@ export async function ensureGeoIPReady() {
   if (geoIp.isReady()) return geoIp;
 
   if (!geoIpReadyPromise) {
-    geoIpReadyPromise = geoIp.init().then(() => geoIp).catch(() => null);
+    // init() resolves even when a database could not be loaded; lookups then
+    // answer "Unknown". A later call tries the missing database again.
+    geoIpReadyPromise = geoIp.init().then(() => geoIp).catch(() => null).finally(() => {
+      if (!geoIp.isReady()) geoIpReadyPromise = null;
+    });
   }
 
   return geoIpReadyPromise;

@@ -265,30 +265,24 @@ window.initNginxPage = function () {
     initGeoIP();
 
     // ─── Native Decompression & File Reading ───
-    async function readFileAsText(file) {
-        const isGzip = file.name.toLowerCase().endsWith('.gz') ||
-                       file.type === 'application/gzip' ||
-                       file.type === 'application/x-gzip';
-
-        if (isGzip) {
-            if (typeof DecompressionStream !== 'undefined') {
-                const ds = new DecompressionStream('gzip');
-                const decompressedStream = file.stream().pipeThrough(ds);
-                const response = new Response(decompressedStream);
-                return await response.text();
-            } else {
-                throw new Error('Your browser does not support native DecompressionStream. Please extract the .gz file before uploading.');
-            }
+    // Gzip is recognised by content, not by name: a plain file called .gz and
+    // a gzip file called .log both load, alone or among several files.
+    async function readFileAsText(file, warnings) {
+        try {
+            const stream = await peekAndDecompressStream(file, {
+                onWarning: message => { if (warnings) warnings.push(`${file.name}: ${message}`); },
+            });
+            return await readStreamAsText(stream);
+        } catch (err) {
+            throw new Error(`${file.name}: ${err && err.message ? err.message : 'the file could not be read'}`);
         }
-
-        return await file.text();
     }
 
-    async function readMultipleFilesAsText(fileList) {
+    async function readMultipleFilesAsText(fileList, warnings) {
         const texts = [];
         for (let i = 0; i < fileList.length; i++) {
             const file = fileList[i];
-            const content = await readFileAsText(file);
+            const content = await readFileAsText(file, warnings);
             texts.push(content);
         }
         return texts.join('\n');
@@ -466,6 +460,9 @@ window.initNginxPage = function () {
             ? Boolean(options.skipInternal)
             : (internalToggle ? internalToggle.checked : true);
         const parserOptions = { skip403, skipInternal };
+        // Parts of the input that could not be read (a damaged archive). The
+        // dashboard shows them; the analysis covers the rest.
+        const inputWarnings = Array.isArray(options?.inputWarnings) ? options.inputWarnings.slice() : [];
 
         const diagCtx = {
             source: inputSource,
@@ -484,10 +481,12 @@ window.initNginxPage = function () {
                     if (bar) bar.style.width = pct + '%';
                     if (status) status.textContent = msg;
                 });
-                if (window.BotDetector?.init) {
-                    await window.BotDetector.init();
-                }
                 if (loader) loader.classList.add('hidden');
+            }
+            // Returns at once when the ranges are loaded; tries again when an
+            // earlier load failed.
+            if (window.BotDetector?.init) {
+                await window.BotDetector.init();
             }
 
             // Stage 2: Parse via streaming Worker
@@ -497,14 +496,14 @@ window.initNginxPage = function () {
 
             GeoIP.clearCache();
 
-            // When input is already a string in-memory (e.g. pasted logs, small samples),
-            // run the in-memory parser for full bot verification and report compatibility.
-            if (typeof rawLogInput === 'string') {
+            // In-memory pipeline: pasted logs, small samples, several files, and the
+            // fallback when the streaming worker is not available.
+            const analyzeText = async (logText) => {
                 if (btn) btn.innerHTML = '<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Parsing logs...';
                 await sleep(40);
                 if (lifecycle.signal.aborted) return;
 
-                const parseResult = await LogParser.parseAsync(rawLogInput, parserOptions);
+                const parseResult = await LogParser.parseAsync(logText, parserOptions);
                 if (parseResult.validLines === 0) {
                     showAnalysisError('parse', new Error('No valid access-log lines found. Check the IP addresses and log format.'), diagCtx);
                     if (btn) {
@@ -518,56 +517,7 @@ window.initNginxPage = function () {
                 await sleep(40);
                 if (lifecycle.signal.aborted) return;
 
-                Analyzer.enrichLogEntries(parseResult.logEntries);
-                const data = Analyzer.analyzeEnhancedLogs(parseResult.logEntries);
-                Dashboard.render(data, rawLogInput, parseResult, {
-                    source: inputSource,
-                    gistUrl: currentUrl,
-                    sourceLabel: options?.sourceLabel || '',
-                    skip403,
-                    skipInternal,
-                });
-                return;
-            }
-
-            // Streaming path for files and sessions
-            const stream = (rawLogInput && typeof rawLogInput.getReader === 'function')
-                ? rawLogInput
-                : new Response(rawLogInput).body;
-
-            const decompressedStream = typeof peekAndDecompressStream === 'function'
-                ? await peekAndDecompressStream(stream)
-                : stream;
-
-            const worker = typeof Worker !== 'undefined' ? new Worker('/js/log-parser.worker.js?v=6.55') : null;
-
-            let result = null;
-            if (worker && typeof streamChunksToWorker === 'function') {
-                result = await streamChunksToWorker(decompressedStream, worker, parserOptions, (prog) => {
-                    const parsed = prog.parsedLines || prog.linesRead || 0;
-                    if (btn && parsed > 0) {
-                        btn.innerHTML = `<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Parsed ${parsed.toLocaleString()} lines...`;
-                    }
-                    const detail = document.getElementById('ingest-progress-detail');
-                    if (detail) {
-                        if (prog.type === 'geo_progress') {
-                            detail.textContent = `Enriching GeoIP: ${prog.current.toLocaleString()} / ${prog.total.toLocaleString()} unique IPs...`;
-                        } else if (parsed > 0) {
-                            detail.textContent = `Parsed ${parsed.toLocaleString()} lines...`;
-                        }
-                    }
-                });
-            } else {
-                const logText = await new Response(decompressedStream).text();
-                const parseResult = await LogParser.parseAsync(logText, parserOptions);
-                if (parseResult.validLines === 0) {
-                    showAnalysisError('parse', new Error('No valid access-log lines found. Check the IP addresses and log format.'), diagCtx);
-                    if (btn) {
-                        btn.disabled = false;
-                        btn.innerHTML = '<i class="bi bi-lightning-charge-fill" style="margin-right:6px;"></i> Analyze Logs';
-                    }
-                    return;
-                }
+                if (inputWarnings.length) parseResult.inputWarnings = inputWarnings.slice();
                 Analyzer.enrichLogEntries(parseResult.logEntries);
                 const data = Analyzer.analyzeEnhancedLogs(parseResult.logEntries);
                 Dashboard.render(data, logText, parseResult, {
@@ -577,6 +527,67 @@ window.initNginxPage = function () {
                     skip403,
                     skipInternal,
                 });
+            };
+
+            if (typeof rawLogInput === 'string') {
+                await analyzeText(rawLogInput);
+                return;
+            }
+
+            // Streaming path for files and sessions
+            const isFile = typeof Blob !== 'undefined' && rawLogInput instanceof Blob;
+            const openInput = async () => {
+                const source = (isFile || (rawLogInput && typeof rawLogInput.getReader === 'function'))
+                    ? rawLogInput
+                    : new Response(rawLogInput).body;
+                if (typeof peekAndDecompressStream !== 'function') return isFile ? source.stream() : source;
+                return peekAndDecompressStream(source, { onWarning: message => inputWarnings.push(message) });
+            };
+
+            let worker = null;
+            try {
+                worker = typeof Worker !== 'undefined' ? new Worker('/js/log-parser.worker.js?v=6.55') : null;
+            } catch (workerErr) {
+                console.warn('The parser worker could not be created:', workerErr);
+            }
+
+            if (worker && typeof streamChunksToWorker !== 'function') {
+                worker.terminate();
+                worker = null;
+            }
+
+            let result = null;
+            if (worker) {
+                try {
+                    result = await streamChunksToWorker(await openInput(), worker, parserOptions, (prog) => {
+                        const parsed = prog.parsedLines || prog.linesRead || 0;
+                        if (btn && parsed > 0) {
+                            btn.innerHTML = `<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Parsed ${parsed.toLocaleString()} lines...`;
+                        }
+                        const detail = document.getElementById('ingest-progress-detail');
+                        if (detail) {
+                            if (prog.type === 'geo_progress') {
+                                detail.textContent = `Enriching GeoIP: ${prog.current.toLocaleString()} / ${prog.total.toLocaleString()} unique IPs...`;
+                            } else if (parsed > 0) {
+                                detail.textContent = `Parsed ${parsed.toLocaleString()} lines...`;
+                            }
+                        }
+                    });
+                } catch (streamErr) {
+                    try { worker.terminate(); } catch { /* already gone */ }
+                    // A file can be read again; a stream cannot.
+                    if (!streamErr || !streamErr.workerUnavailable || !isFile) throw streamErr;
+                    console.warn('The parser worker is not available, analysing on the page instead:', streamErr);
+                    worker = null;
+                    inputWarnings.length = 0;
+                }
+            }
+            if (lifecycle.signal.aborted) {
+                if (worker) { try { worker.terminate(); } catch { /* already gone */ } }
+                return;
+            }
+            if (!worker) {
+                await analyzeText(await readStreamAsText(await openInput()));
                 return;
             }
 
@@ -611,6 +622,7 @@ window.initNginxPage = function () {
                 logStart: result.summary.minTimeSec ? new Date(result.summary.minTimeSec * 1000).toUTCString() : '',
                 logEnd: result.summary.maxTimeSec ? new Date(result.summary.maxTimeSec * 1000).toUTCString() : '',
             };
+            if (inputWarnings.length) parseResult.inputWarnings = inputWarnings.slice();
 
             // Stage 4: Render
             Dashboard.render(data, '', parseResult, {
@@ -626,7 +638,7 @@ window.initNginxPage = function () {
             });
 
         } catch (err) {
-            if (!lifecycle.signal.aborted) showAnalysisError('analyze', err, diagCtx);
+            if (!lifecycle.signal.aborted) showAnalysisError(err && err.inputError ? 'file_read' : 'analyze', err, diagCtx);
         } finally {
             if (btn) {
                 btn.disabled = false;
@@ -645,6 +657,7 @@ window.initNginxPage = function () {
         btn.innerHTML = '<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Reading inputs...';
 
         let logText = '';
+        const inputWarnings = [];
         let inputSource = 'text';
         let currentUrl = '';
         let sourceLabel = 'Pasted logs';
@@ -694,11 +707,13 @@ window.initNginxPage = function () {
                     sourceLabel = Array.from(fileInput.files).map(file => file.name).join(', ');
                     btn.innerHTML = '<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Streaming &amp; decompressing...';
                     if (fileInput.files.length === 1) {
-                        await executeAnalysis(fileInput.files[0].stream(), inputSource, currentUrl, { sourceLabel });
+                        // The File itself, not its stream: a gzip archive with
+                        // several members can only be read from a file.
+                        await executeAnalysis(fileInput.files[0], inputSource, currentUrl, { sourceLabel });
                         return;
                     }
                     try {
-                        logText = await readMultipleFilesAsText(fileInput.files);
+                        logText = await readMultipleFilesAsText(fileInput.files, inputWarnings);
                     } catch (readErr) {
                         showAnalysisError('file_read', readErr, { source: 'file' });
                         btn.disabled = false;
@@ -721,7 +736,7 @@ window.initNginxPage = function () {
                 return;
             }
 
-            await executeAnalysis(logText, inputSource, currentUrl, { sourceLabel });
+            await executeAnalysis(logText, inputSource, currentUrl, { sourceLabel, inputWarnings });
 
         } catch (e) {
             console.error('Error during log ingestion:', e);

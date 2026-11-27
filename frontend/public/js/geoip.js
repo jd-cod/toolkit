@@ -15,7 +15,6 @@ const GeoIP = (() => {
     let countryReader = null;
     let asnReader = null;
     let initialized = false;
-    let initializing = false;
 
     // ─── IndexedDB Helpers ───
 
@@ -48,6 +47,16 @@ const GeoIP = (() => {
         return new Promise((resolve, reject) => {
             const tx = db.transaction(STORE_NAME, 'readwrite');
             tx.objectStore(STORE_NAME).put(value, key);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        });
+    }
+
+    async function deleteCached(key) {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            tx.objectStore(STORE_NAME).delete(key);
             tx.oncomplete = () => resolve();
             tx.onerror = () => reject(tx.error);
         });
@@ -92,6 +101,9 @@ const GeoIP = (() => {
             this.nodeSize = (this.recordSize * 2) / 8;
             this.searchTreeSize = this.nodeCount * this.nodeSize;
             this.dataStart = this.searchTreeSize + 16; // 16 = data section separator
+            if (!(this.nodeCount > 0) || ![24, 28, 32].includes(this.recordSize) || this.dataStart > this.buf.length) {
+                throw new Error('Invalid MMDB: search tree does not fit the file');
+            }
             this.decoder = new MMDBDecoder(this.buf, this.dataStart);
         }
 
@@ -362,57 +374,121 @@ const GeoIP = (() => {
 
     // ─── Public API ───
 
-    async function init(onProgress) {
-        if (initialized) return;
-        if (initializing) {
-            // Wait for ongoing init
-            return new Promise(resolve => {
-                const check = setInterval(() => {
-                    if (initialized) { clearInterval(check); resolve(); }
-                }, 100);
+    const DATABASES = {
+        country: { name: 'GeoLite2-Country.mmdb', url: '/data/GeoLite2-Country.mmdb' },
+        asn: { name: 'GeoLite2-ASN.mmdb', url: '/data/GeoLite2-ASN.mmdb' },
+    };
+    const dbState = { country: 'pending', asn: 'pending' };
+    const dbError = { country: null, asn: null };
+    let initPromise = null;
+    const progressListeners = new Set();
+
+    /**
+     * Load the two databases. Always resolves: a database that cannot be
+     * loaded leaves its lookups at "Unknown" and is reported by status(), so
+     * the rest of the analysis still runs. Callers that arrive while a load is
+     * running share it, and a later call tries a failed database again.
+     *
+     * @returns {Promise<{ country: string, asn: string, errors: object }>}
+     */
+    function init(onProgress) {
+        if (countryReader && asnReader) return Promise.resolve(status());
+        if (onProgress) progressListeners.add(onProgress);
+        if (!initPromise) {
+            initPromise = doInit().finally(() => {
+                initPromise = null;
+                progressListeners.clear();
             });
         }
-        initializing = true;
+        return initPromise;
+    }
 
-        try {
-            // Fetch metadata with must-revalidate to discover current version without cache staleness
-            let meta = null;
-            try {
-                const metaResp = await fetch('/data/geoip-meta.json', { cache: 'no-cache' });
-                if (metaResp.ok) {
-                    meta = await metaResp.json();
-                }
-            } catch (err) {
-                console.warn('GeoIP: Failed to fetch metadata, falling back to conditional request', err);
-            }
-
-            const countryVersion = meta?.databases?.['GeoLite2-Country.mmdb']?.version || meta?.version || '';
-            const asnVersion = meta?.databases?.['GeoLite2-ASN.mmdb']?.version || meta?.version || '';
-
-            const countryBuf = await loadDatabase('GeoLite2-Country.mmdb', '/data/GeoLite2-Country.mmdb', onProgress, 0, countryVersion);
-            if (onProgress) onProgress(50, 'Loading ASN database...');
-            const asnBuf = await loadDatabase('GeoLite2-ASN.mmdb', '/data/GeoLite2-ASN.mmdb', onProgress, 50, asnVersion);
-
-            countryReader = new MMDBReader(countryBuf);
-            asnReader = new MMDBReader(asnBuf);
-            initialized = true;
-            if (onProgress) onProgress(100, 'Ready!');
-        } catch (e) {
-            console.error('GeoIP init failed:', e);
-            throw e;
-        } finally {
-            initializing = false;
+    function reportProgress(pct, msg) {
+        for (const listener of progressListeners) {
+            try { listener(pct, msg); } catch { /* a listener must not stop the load */ }
         }
     }
 
+    async function doInit() {
+        // Fetch metadata with must-revalidate to discover current version without cache staleness
+        let meta = null;
+        try {
+            const metaResp = await fetch('/data/geoip-meta.json', { cache: 'no-cache' });
+            if (metaResp.ok) {
+                meta = await metaResp.json();
+            }
+        } catch (err) {
+            console.warn('GeoIP: Failed to fetch metadata, falling back to conditional request', err);
+        }
+
+        if (!countryReader) countryReader = await loadReader('country', meta, 0);
+        reportProgress(50, 'Loading ASN database...');
+        if (!asnReader) asnReader = await loadReader('asn', meta, 50);
+
+        initialized = Boolean(countryReader && asnReader);
+        ipCache.clear();
+        reportProgress(100, initialized ? 'Ready!' : 'Location data is incomplete');
+        return status();
+    }
+
+    async function loadReader(key, meta, baseProgress) {
+        const { name, url } = DATABASES[key];
+        const version = meta?.databases?.[name]?.version || meta?.version || '';
+        try {
+            const reader = await loadDatabase(name, url, reportProgress, baseProgress, version);
+            dbState[key] = 'ready';
+            dbError[key] = null;
+            return reader;
+        } catch (e) {
+            console.error(`GeoIP: ${name} could not be loaded:`, e);
+            dbState[key] = 'failed';
+            dbError[key] = e && e.message ? e.message : String(e);
+            return null;
+        }
+    }
+
+    /** Which databases are usable: 'pending' (not tried yet), 'ready' or 'failed'. */
+    function status() {
+        return { country: dbState.country, asn: dbState.asn, errors: { ...dbError } };
+    }
+
+    /**
+     * @returns {Promise<MMDBReader>} A reader over a database that was parsed
+     *   successfully. Only such a database is ever written to the cache.
+     */
     async function loadDatabase(name, url, onProgress, baseProgress, expectedVersion = '') {
-        const cached = await getCached(name);
+        // The cache is an optimisation: a browser without IndexedDB still works.
+        let cached = null;
+        try {
+            cached = await getCached(name);
+        } catch (e) {
+            console.warn(`GeoIP: cache unavailable for ${name}.`, e);
+        }
+        // Backward compat: old cache format (raw ArrayBuffer without headers).
+        const legacy = cached instanceof ArrayBuffer;
+        if (legacy) cached = { data: cached };
+
+        let cachedReader = null;
+        if (cached && cached.data) {
+            try {
+                cachedReader = new MMDBReader(cached.data);
+            } catch (e) {
+                console.warn(`GeoIP: cached ${name} is unreadable, downloading it again.`, e);
+                try { await deleteCached(name); } catch { /* nothing to remove */ }
+                cached = null;
+            }
+        }
+
+        if (cachedReader && legacy) {
+            if (onProgress) onProgress(baseProgress + 25, `${name}: loaded from cache`);
+            return cachedReader;
+        }
 
         // Fast path: cached database version matches current metadata version (0 network bytes)
-        if (cached && cached.data) {
+        if (cachedReader) {
             if (expectedVersion && cached.version && cached.version === expectedVersion) {
                 if (onProgress) onProgress(baseProgress + 25, `${name}: up to date (cached)`);
-                return cached.data;
+                return cachedReader;
             }
 
             // Fallback path: if metadata version is unavailable, check freshness via conditional HEAD
@@ -426,7 +502,7 @@ const GeoIP = (() => {
 
                     if (checkResp.status === 304) {
                         if (onProgress) onProgress(baseProgress + 25, `${name}: up to date (cached)`);
-                        return cached.data;
+                        return cachedReader;
                     }
 
                     const serverLastModified = checkResp.headers.get('last-modified');
@@ -436,45 +512,55 @@ const GeoIP = (() => {
 
                     if (unchanged) {
                         if (onProgress) onProgress(baseProgress + 25, `${name}: up to date (cached)`);
-                        return cached.data;
+                        return cachedReader;
                     }
 
                     console.info(`GeoIP: ${name} updated on server, downloading new version...`);
                 } catch (e) {
                     console.warn(`GeoIP: Freshness check failed for ${name}, using cache.`, e);
                     if (onProgress) onProgress(baseProgress + 25, `${name}: loaded from cache (offline)`);
-                    return cached.data;
+                    return cachedReader;
                 }
             } else {
                 console.info(`GeoIP: ${name} version updated (${cached.version || 'none'} -> ${expectedVersion}), downloading new version...`);
             }
-        } else if (cached && cached instanceof ArrayBuffer) {
-            // Backward compat: old cache format (raw ArrayBuffer without headers).
-            if (onProgress) onProgress(baseProgress + 25, `${name}: loaded from cache`);
-            return cached;
         }
 
         // Append version query parameter so Cloudflare edge caches each database version cleanly
         const downloadUrl = expectedVersion ? `${url}?v=${encodeURIComponent(expectedVersion)}` : url;
         if (onProgress) onProgress(baseProgress + 5, `Downloading ${name}...`);
 
-        let response;
+        let buffer, lastModified, etag, reader;
         try {
-            response = await fetch(downloadUrl);
+            const response = await fetch(downloadUrl);
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+            // Capture freshness headers for future conditional requests
+            lastModified = response.headers.get('last-modified');
+            etag = response.headers.get('etag');
+            buffer = await readBody(response, name, onProgress, baseProgress);
+            // An error page or a cut-off file answers 200 too: only bytes that
+            // parse as a database are used, and only those are cached.
+            reader = new MMDBReader(buffer);
         } catch (downloadErr) {
-            if (cached && cached.data) {
+            if (cachedReader) {
                 console.warn(`GeoIP: Download failed for ${name}, falling back to cache:`, downloadErr);
                 if (onProgress) onProgress(baseProgress + 25, `${name}: loaded from cache (update failed)`);
-                return cached.data;
+                return cachedReader;
             }
             throw new Error(`Failed to download ${name}: ${downloadErr.message}`);
         }
 
-        // Capture freshness headers for future conditional requests
-        const lastModified = response.headers.get('last-modified');
-        const etag = response.headers.get('etag');
+        try {
+            await setCached(name, { data: buffer, lastModified, etag, version: expectedVersion || '' });
+            if (onProgress) onProgress(baseProgress + 50, `${name}: cached`);
+        } catch (e) {
+            console.warn(`GeoIP: ${name} could not be cached.`, e);
+        }
+        return reader;
+    }
 
+    async function readBody(response, name, onProgress, baseProgress) {
         const contentLength = response.headers.get('content-length');
         const total = contentLength ? parseInt(contentLength) : 0;
         let loaded = 0;
@@ -488,32 +574,19 @@ const GeoIP = (() => {
             chunks.push(value);
             loaded += value.length;
             if (total && onProgress) {
-                const filePct = Math.round((loaded / total) * 45);
+                const filePct = Math.min(45, Math.round((loaded / total) * 45));
                 onProgress(baseProgress + 5 + filePct, `${name}: ${Math.round(loaded / 1024)}KB / ${Math.round(total / 1024)}KB`);
             }
         }
 
         // Combine chunks into single ArrayBuffer
-        const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
-        const combined = new Uint8Array(totalLength);
+        const combined = new Uint8Array(loaded);
         let offset = 0;
         for (const chunk of chunks) {
             combined.set(chunk, offset);
             offset += chunk.length;
         }
-
-        const buffer = combined.buffer;
-
-        // Cache in IndexedDB with version and freshness headers
-        await setCached(name, {
-            data: buffer,
-            lastModified,
-            etag,
-            version: expectedVersion || '',
-        });
-        if (onProgress) onProgress(baseProgress + 50, `${name}: cached`);
-
-        return buffer;
+        return combined.buffer;
     }
 
     function lookupCountry(ip) {
@@ -568,6 +641,6 @@ const GeoIP = (() => {
         ipCache.clear();
     }
 
-    return { init, lookupCountry, lookupASN, lookupIP, isReady, clearCache };
+    return { init, status, lookupCountry, lookupASN, lookupIP, isReady, clearCache };
 })();
 window.GeoIP = GeoIP;

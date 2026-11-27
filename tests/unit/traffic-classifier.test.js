@@ -515,6 +515,36 @@ describe('TrafficClassifier: attacks that used to pass as human', () => {
         assert.equal(classOfOnlyClient(lines).cls, 'human');
     });
 
+    test('failed lookups from a page whose assets were served earlier or elsewhere stay human', () => {
+        const start = later();
+        const lookups = n => Array.from({ length: 40 }, (_, i) => line(`81.2.69.${n}`, { url: `/api/lookup/${i}`, status: 404, ref: n === 173 ? 'https://site.test/app' : '-', at: start + i * 3 }));
+        assert.equal(classOfOnlyClient(lookups(173)).cls, 'human');
+        // The same requests without a page behind them are a script walking paths.
+        assert.equal(classOfOnlyClient(lookups(174)).cls, 'suspected');
+    });
+
+    test('WordPress files count as probing only where the server does not serve them', () => {
+        const session = ['/wp-login.php', '/wp-admin/', '/wp-admin/admin-ajax.php', '/wp-admin/post.php?post=1', '/xmlrpc.php?rsd', '/wp-includes/wlwmanifest.xml'];
+        let start = later();
+        const owner = session.map((url, i) => line('81.2.69.175', { url, ref: 'https://site.test/wp-admin/', at: start + i * 30 }));
+        assert.equal(classOfOnlyClient(owner).cls, 'human');
+
+        // On a site without WordPress the same paths are a scanner looking for it.
+        start = later();
+        const scanner = session.map((url, i) => line('45.1.1.9', { url, status: 404, at: start + i }));
+        assert.equal(classOfOnlyClient(scanner).name, 'Vulnerability probing');
+
+        // Refused or redirected is not "served".
+        start = later();
+        const blocked = ['/wp-login.php', '/xmlrpc.php', '/phpmyadmin/'].map((url, i) => line('45.1.1.10', { url, status: [403, 301, 401][i], at: start + i }));
+        assert.equal(classOfOnlyClient(blocked).name, 'Vulnerability probing');
+
+        // A request that is an attack anywhere counts even when the server answers 200.
+        start = later();
+        const served = ['/.env', '/.git/config'].map((url, i) => line('45.1.1.11', { url, status: 200, at: start + i }));
+        assert.equal(classOfOnlyClient(served).name, 'Vulnerability probing');
+    });
+
     test('a native app is traffic from a person, unless it attacks', () => {
         let start = later();
         const app = 'MyShopApp/5.2.1 CFNetwork/1485 Darwin/23.1.0';
