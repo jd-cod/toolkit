@@ -20,6 +20,7 @@ import ActivitySection from '@/components/admin/ActivitySection';
 import BackupSection from '@/components/admin/BackupSection';
 import ChangePasswordSection from '@/components/admin/ChangePasswordSection';
 import BotSourcesSection from '@/components/admin/BotSourcesSection';
+import MonitorsSection from '@/components/admin/MonitorsSection';
 
 /* ─── Sidebar definition (matching CF admin.html structure) ─── */
 
@@ -28,6 +29,7 @@ const SIDEBAR_GROUPS = [
     title: 'Main',
     items: [
       { key: 'dashboard', label: 'Dashboard', icon: 'bi-grid-1x2-fill' },
+      { key: 'monitors', label: 'Monitors', icon: 'bi-activity' },
       { key: 'settings', label: 'Site Settings', icon: 'bi-gear-fill' },
     ],
   },
@@ -171,6 +173,7 @@ export default function AdminPage() {
 
           <div className="admin-content">
             {activeTab === 'dashboard'       && <DashboardSection />}
+            {activeTab === 'monitors'        && <MonitorsSection />}
             {activeTab === 'settings'        && <SettingsSection />}
             {activeTab === 'pages'           && <PagesSection />}
             {activeTab === 'menus'           && <MenusSection />}

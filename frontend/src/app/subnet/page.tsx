@@ -6,6 +6,8 @@ import Footer from '@/components/Footer';
 import ToolWorkspace, { ToolEmptyState } from '@/components/ToolWorkspace';
 import { exportToCSV } from '@/lib/csv-utils';
 import { useClipboard } from '@/hooks/useClipboard';
+import { CodeBlock, KeyValueTable, Panel, Stat, StatGrid } from '@/components/ToolUi';
+import { parseIpv6Cidr, splitIpv6, type Ipv6Subnet } from '@/lib/tools/ipv6-subnet';
 
 function ipToInt(ip: string): number | null {
   const parts = ip.split('.').map(Number);
@@ -78,11 +80,20 @@ export default function SubnetPage() {
   const [awsMode, setAwsMode] = useState(false);
   const [result, setResult] = useState<ReturnType<typeof parseCIDR>>(null);
   const [error, setError] = useState('');
+  const [ipv6, setIpv6] = useState<Ipv6Subnet | null>(null);
 
   function doCalculate() {
     if (!input.trim()) return;
+    if (input.includes(':')) {
+      const parsed6 = parseIpv6Cidr(input);
+      setResult(null);
+      setIpv6(parsed6);
+      setError(parsed6 ? '' : 'Invalid IPv6 network. Use a format such as 2001:db8::/48.');
+      return;
+    }
+    setIpv6(null);
     const parsed = parseCIDR(input);
-    if (!parsed) { setError('Invalid CIDR. Use format: 10.0.0.0/24'); setResult(null); return; }
+    if (!parsed) { setError('Invalid CIDR. Use a format such as 10.0.0.0/24 or 2001:db8::/48.'); setResult(null); return; }
     setError(''); setResult(parsed);
   }
 
@@ -96,13 +107,13 @@ export default function SubnetPage() {
         <div className="signal-tool-heading">
           <div style={{ width: 56, height: 56, borderRadius: 16, background: 'linear-gradient(135deg, #10b981, #10b981cc)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.6rem', color: '#fff', marginBottom: '1rem' }}><i className="bi bi-hdd-network-fill"></i></div>
           <h1 className="hero-title" style={{ fontSize: '2rem' }}>Subnet / CIDR Calculator</h1>
-          <p style={{ color: 'var(--text-secondary)' }}>Calculate network details, usable hosts, and AWS impact for CIDR blocks.</p>
+          <p style={{ color: 'var(--text-secondary)' }}>Calculate network details and host capacity for IPv4 and IPv6 CIDR blocks.</p>
         </div>
 
         <ToolWorkspace tool="subnet">
         <div className="glass" style={{ padding: '2rem', marginBottom: '2rem' }}>
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
-            <input type="text" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && doCalculate()} placeholder="10.0.0.0/24 or 192.168.1.0 255.255.255.0" style={{ flex: 1, minWidth: 200, padding: '0.75rem 1rem', background: 'var(--bg-input)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', fontSize: '0.95rem', fontFamily: 'var(--font-mono)' }} />
+            <input type="text" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && doCalculate()} placeholder="10.0.0.0/24, 192.168.1.0 255.255.255.0 or 2001:db8::/48" style={{ flex: 1, minWidth: 200, padding: '0.75rem 1rem', background: 'var(--bg-input)', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', fontSize: '0.95rem', fontFamily: 'var(--font-mono)' }} />
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
               <input type="checkbox" checked={awsMode} onChange={e => setAwsMode(e.target.checked)} style={{ accentColor: 'var(--accent-amber)' }} /> AWS Mode
             </label>
@@ -112,7 +123,8 @@ export default function SubnetPage() {
 
         {error && <div className="glass" style={{ padding: '1rem 1.5rem', borderColor: 'rgba(239,68,68,0.3)', color: 'var(--accent-red)', marginBottom: '1.5rem' }}>⚠️ {error}</div>}
 
-        {!result && !error && <ToolEmptyState title="Size a subnet">Calculate a network to see its address boundaries, host capacity, and exportable details.</ToolEmptyState>}
+        {!result && !ipv6 && !error && <ToolEmptyState title="Size a subnet">Calculate a network to see its address boundaries, host capacity, and exportable details.</ToolEmptyState>}
+        {ipv6 && <Ipv6Result subnet={ipv6} />}
         {result && (
           <>
             <div className="glass" style={{ padding: '1rem', marginBottom: '1.5rem', display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
@@ -180,5 +192,45 @@ function StatCard({ value, label, color, mono }: { value: string; label: string;
       <div style={{ fontSize: mono ? '1rem' : '1.6rem', fontWeight: 800, color, fontFamily: mono ? 'var(--font-mono)' : 'var(--font-sans)' }}>{value}</div>
       <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', marginTop: '0.3rem' }}>{label}</div>
     </div>
+  );
+}
+
+function Ipv6Result({ subnet }: { subnet: Ipv6Subnet }) {
+  // Show how the block divides into the next common size down.
+  const childPrefix = [48, 56, 64].find(size => size > subnet.prefix);
+  const children = childPrefix ? splitIpv6(subnet.cidr, childPrefix, 8) : [];
+  return (
+    <>
+      <StatGrid>
+        <Stat label="Network" value={<span className="tk-mono" style={{ fontSize: '1rem' }}>{subnet.cidr}</span>} tone="info" />
+        <Stat label="Addresses" value={<span style={{ fontSize: '1.1rem' }}>{subnet.totalReadable}</span>} tone="ok" />
+        {subnet.subnets64 && <Stat label="/64 networks" value={<span style={{ fontSize: '1.1rem' }}>{subnet.subnets64}</span>} tone="ok" />}
+        <Stat label="Type" value={<span style={{ fontSize: '1rem' }}>{subnet.type}</span>} tone="warn" />
+      </StatGrid>
+
+      <Panel title="IPv6 network details" icon="bi-info-circle" flush>
+        <KeyValueTable rows={[
+          ['Network', subnet.cidr],
+          ['Expanded', subnet.networkExpanded],
+          ['First address', subnet.first],
+          ['Last address', subnet.last],
+          ['Total addresses', subnet.totalAddresses],
+          ['Address type', `${subnet.type}. ${subnet.typeNote}`],
+          ['Reverse DNS zone', subnet.reverseZone],
+        ]} />
+      </Panel>
+
+      {subnet.notes.length > 0 && (
+        <Panel title="Notes" icon="bi-lightbulb">
+          {subnet.notes.map(note => <p key={note} className="tk-note" style={{ marginBottom: '0.5rem' }}>{note}</p>)}
+        </Panel>
+      )}
+
+      {children.length > 0 && (
+        <Panel title={`First /${childPrefix} networks in this block`} icon="bi-diagram-3">
+          <CodeBlock label={`/${childPrefix} subnets`} code={children.join('\n')} />
+        </Panel>
+      )}
+    </>
   );
 }

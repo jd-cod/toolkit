@@ -142,10 +142,16 @@ test('SSL lookup renders returned fields and copies the actual issuer and expiry
 
 test('local utilities calculate a subnet and expose keyboard-operable permission controls', async ({ page, console: watcher }) => {
   await page.goto('/subnet');
-  await page.getByPlaceholder('10.0.0.0/24 or 192.168.1.0 255.255.255.0').fill('192.168.10.0/24');
+  const subnetInput = page.getByPlaceholder('10.0.0.0/24, 192.168.1.0 255.255.255.0 or 2001:db8::/48');
+  await subnetInput.fill('192.168.10.0/24');
   await page.getByRole('button', { name: 'Calculate', exact: true }).click();
   await expect(page.getByRole('row').filter({ hasText: 'Broadcast Address' })).toContainText('192.168.10.255');
   await expect(page.getByRole('row').filter({ hasText: 'Usable Hosts' })).toContainText('254');
+  await subnetInput.fill('2001:db8:abcd:12::5/48');
+  await page.getByRole('button', { name: 'Calculate', exact: true }).click();
+  await expect(page.getByRole('row').filter({ hasText: 'Last address' })).toContainText('2001:db8:abcd:ffff:ffff:ffff:ffff:ffff');
+  await expect(page.getByRole('row').filter({ hasText: 'Reverse DNS zone' })).toContainText('d.c.b.a.8.b.d.0.1.0.0.2.ip6.arpa');
+  await expect(page.getByRole('row').filter({ hasText: 'Broadcast Address' })).toHaveCount(0);
   await page.goto('/chmod');
   await expect(page.getByRole('button', { name: 'Owner Execute', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('code').filter({ hasText: 'chmod 755 filename' })).toBeVisible();

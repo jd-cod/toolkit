@@ -39,6 +39,12 @@ import adminRoutes from './routes/admin.js';
 import publicRoutes from './routes/public.js';
 import whoisRoutes from './routes/whois.js';
 import ingestRoutes from './routes/ingest.js';
+import emailToolRoutes from './routes/email-tools.js';
+import netToolRoutes from './routes/net-tools.js';
+import monitorRoutes from './routes/monitors.js';
+import { createCheckRunner } from './lib/monitoring/checks.js';
+import { createNotifier } from './lib/monitoring/alerts.js';
+import { createMonitorScheduler } from './lib/monitoring/scheduler.js';
 import { initGeoIPReaders } from './lib/geoip-city.js';
 
 // Create Fastify instance
@@ -135,6 +141,18 @@ await fastify.register(adminRoutes, { prefix: '/api' });
 await fastify.register(publicRoutes, { prefix: '/api' });
 await fastify.register(whoisRoutes, { prefix: '/api' });
 await fastify.register(ingestRoutes, { prefix: '/api' });
+await fastify.register(emailToolRoutes, { prefix: '/api' });
+await fastify.register(netToolRoutes, { prefix: '/api' });
+
+// Monitoring: the scheduler is created here so it can be started after listen.
+const monitorScheduler = createMonitorScheduler({
+  pool: fastify.mysql,
+  runCheck: createCheckRunner(),
+  notify: createNotifier({ pool: fastify.mysql, log: fastify.log }),
+  log: fastify.log,
+});
+await fastify.register(monitorRoutes, { prefix: '/api', scheduler: monitorScheduler });
+fastify.addHook('onClose', async () => monitorScheduler.stop());
 await fastify.register(ingestRoutes); // Also register at root so /ingest works directly
 
 fastify.get('/api/health', async (request, reply) => {
@@ -179,6 +197,7 @@ try {
   }
 
   await fastify.listen({ port: PORT, host: HOST });
+  if (monitorScheduler.start()) fastify.log.info('✅ Monitor scheduler started');
   fastify.log.info(`🚀 SysAdmin Toolkit API running on http://${HOST}:${PORT}`);
 } catch (err) {
   fastify.log.error(err);

@@ -11,6 +11,9 @@
 - Backend direct: `cd backend && npm run dev` (Port 4000)
 - Frontend direct: `cd frontend && npm run dev` (Port 3000)
 
+## Tools
+- Before adding or changing a tool, read `docs/TOOLS_ROADMAP.md`: what exists, why, how a tool is wired, and what is deferred.
+
 ## Code Standards
 - Keep changes minimal, clean, and well-tested.
 - Validate inputs at trust boundaries.

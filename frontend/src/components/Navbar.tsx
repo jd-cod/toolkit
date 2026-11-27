@@ -101,7 +101,9 @@ export default function Navbar(props: NavbarProps) {
           {[
             { label: 'Observability', categories: ['Observability'] },
             { label: 'Network & security', categories: ['Network', 'Security'] },
+            { label: 'Email', categories: ['Email'] },
             { label: 'Utilities', categories: ['Utilities'] },
+            { label: 'Windows', categories: ['Windows'] },
           ].map(group => {
             const members = tools.filter(tool => group.categories.includes(toolMetadata(tool).category));
             return members.length > 0 && (

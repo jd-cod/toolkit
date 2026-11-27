@@ -72,9 +72,9 @@ export const TOOL_SEO_DEFAULTS: Record<string, ToolSeoDefault> = {
     category: 'NetworkingApplication',
   },
   subnet: {
-    title: 'IPv4 Subnet & CIDR Calculator',
+    title: 'IPv4 & IPv6 Subnet Calculator',
     description:
-      'Calculate IPv4 subnets from CIDR notation or a subnet mask. View network and broadcast addresses, usable host ranges and wildcard masks.',
+      'Calculate IPv4 and IPv6 subnets from CIDR notation or a subnet mask. View network ranges, usable hosts, wildcard masks and /64 counts.',
     path: '/subnet',
     category: 'NetworkingApplication',
   },
@@ -98,6 +98,118 @@ export const TOOL_SEO_DEFAULTS: Record<string, ToolSeoDefault> = {
       'Generate random passwords, passphrases and PINs in your browser. Choose length and generation settings, inspect strength and manage local history.',
     path: '/password-generator',
     category: 'SecurityApplication',
+  },
+  'email-auth': {
+    title: 'SPF, DKIM & DMARC Checker',
+    description:
+      'Check a domain’s email authentication: MX records, SPF syntax and lookup count, DKIM selectors, DMARC policy, MTA-STS, TLS-RPT and BIMI, with clear findings.',
+    path: '/email-auth',
+    category: 'NetworkingApplication',
+  },
+  blacklist: {
+    title: 'Email Blacklist (DNSBL) Check',
+    description:
+      'Check whether an IP address or mail server is listed on common DNS blacklists such as Spamhaus, SpamCop and Barracuda, and see which lists could not be queried.',
+    path: '/blacklist',
+    category: 'SecurityApplication',
+  },
+  'email-headers': {
+    title: 'Email Header Analyzer',
+    description:
+      'Paste raw email headers to trace every relay hop and delay, and read SPF, DKIM and DMARC results. Headers are parsed in your browser and never uploaded.',
+    path: '/email-headers',
+    category: 'UtilitiesApplication',
+  },
+  'smtp-test': {
+    title: 'SMTP Server Test',
+    description:
+      'Connect to a mail server and review its banner, EHLO extensions, STARTTLS support, certificate and response times. No message is sent.',
+    path: '/smtp-test',
+    category: 'NetworkingApplication',
+  },
+  'http-headers': {
+    title: 'HTTP Headers & Redirect Checker',
+    description:
+      'Inspect HTTP response headers, follow the full redirect chain and audit security headers such as HSTS, CSP and cookie flags for any public URL.',
+    path: '/http-headers',
+    category: 'NetworkingApplication',
+  },
+  'port-check': {
+    title: 'Open Port Checker',
+    description:
+      'Test whether TCP ports are reachable from the internet on your server or public IP. Check common service ports or a custom list.',
+    path: '/port-check',
+    category: 'NetworkingApplication',
+  },
+  'cert-decoder': {
+    title: 'Certificate & CSR Decoder',
+    description:
+      'Decode PEM certificates and CSRs, and check that a private key matches a certificate. Everything is processed in your browser; keys are never uploaded.',
+    path: '/cert-decoder',
+    category: 'SecurityApplication',
+  },
+  'sshd-audit': {
+    title: 'SSH Server Config Auditor',
+    description:
+      'Paste an sshd_config to find risky settings such as root login, password authentication and weak algorithms, with a hardened snippet to copy.',
+    path: '/sshd-audit',
+    category: 'SecurityApplication',
+  },
+  'systemd-timer': {
+    title: 'systemd Timer Generator',
+    description:
+      'Convert a cron schedule to a systemd OnCalendar expression and generate matching .timer and .service unit files with install commands.',
+    path: '/systemd-timer',
+    category: 'UtilitiesApplication',
+  },
+  'firewall-rules': {
+    title: 'Firewall Rule Generator',
+    description:
+      'Generate matching firewall rules for ufw, firewalld, nftables, iptables and Windows Firewall from one form: action, protocol, ports and source.',
+    path: '/firewall-rules',
+    category: 'SecurityApplication',
+  },
+  rsync: {
+    title: 'rsync Command Builder',
+    description:
+      'Build an rsync command from options with every flag explained: archive mode, deletes, excludes, SSH port and key, bandwidth limits and dry runs.',
+    path: '/rsync',
+    category: 'UtilitiesApplication',
+  },
+  'auth-log': {
+    title: 'SSH Auth Log Analyzer',
+    description:
+      'Analyze auth.log or secure logs in your browser: failed SSH logins, attacking IPs, targeted usernames, successful logins and a block list to copy.',
+    path: '/auth-log',
+    category: 'SecurityApplication',
+  },
+  'mail-log': {
+    title: 'Postfix Mail Log Analyzer',
+    description:
+      'Analyze Postfix mail logs in your browser: delivered, deferred and bounced mail, reject reasons, top senders and failed SASL logins.',
+    path: '/mail-log',
+    category: 'UtilitiesApplication',
+  },
+  'windows-events': {
+    title: 'Windows Event ID Lookup',
+    description:
+      'Look up common Windows Event IDs for logons, account changes, services and system events, with logon types and failure codes explained.',
+    path: '/windows-events',
+    category: 'UtilitiesApplication',
+  },
+  'windows-errors': {
+    title: 'Windows Error Code Lookup',
+    description:
+      'Decode Windows error codes: Win32, HRESULT, NTSTATUS, Windows Update and stop codes, with the HRESULT fields broken down.',
+    path: '/windows-errors',
+    category: 'UtilitiesApplication',
+  },
+  robocopy: {
+    title: 'Robocopy Command Builder',
+    description:
+      'Build a robocopy command from options with every switch explained, warnings for destructive switches and the exit codes decoded.',
+    path: '/robocopy',
+    category: 'UtilitiesApplication',
   },
 };
 

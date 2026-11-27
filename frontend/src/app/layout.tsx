@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import './signal.css';
 import './signal-nginx.css';
+import './tool-kit.css';
 import localFont from 'next/font/local';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import WorkspaceShell from '@/components/WorkspaceShell';

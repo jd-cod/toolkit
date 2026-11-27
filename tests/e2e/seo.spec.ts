@@ -8,7 +8,7 @@ const TOOLS = [
   { path: '/asn', expectedTitle: 'ASN Lookup & IP Prefix Finder | SysAdmin Toolkit' },
   { path: '/abuse', expectedTitle: 'IP Reputation & Abuse Lookup | SysAdmin Toolkit' },
   { path: '/myip', expectedTitle: 'What Is My IP? Public IP Lookup | SysAdmin Toolkit' },
-  { path: '/subnet', expectedTitle: 'IPv4 Subnet & CIDR Calculator | SysAdmin Toolkit' },
+  { path: '/subnet', expectedTitle: 'IPv4 & IPv6 Subnet Calculator | SysAdmin Toolkit' },
   { path: '/chmod', expectedTitle: 'Chmod Calculator for Linux Permissions | SysAdmin Toolkit' },
   { path: '/cron', expectedTitle: 'Crontab Builder & Cron Expression Generator | SysAdmin Toolkit' },
   { path: '/password-generator', expectedTitle: 'Password & Passphrase Generator | SysAdmin Toolkit' },

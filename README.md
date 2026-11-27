@@ -15,6 +15,14 @@ A self-hosted, open-source web application providing essential sysadmin and netw
 - **Crontab Builder**: Visual schedule builder with human-readable preview.
 - **Password & Passphrase Generator**: Cryptographically secure credential generation.
 
+Added in the 2026-11 tools pack (see `docs/TOOLS_ROADMAP.md`):
+- **Email**: SPF, DKIM & DMARC checker, blacklist (DNSBL) check, email header analyzer, SMTP server test.
+- **Web and certificates**: HTTP headers and redirect checker, open port checker, certificate and CSR decoder.
+- **Linux**: SSH config auditor, systemd timer generator, firewall rule generator, rsync command builder, SSH auth log analyzer, Postfix mail log analyzer.
+- **Windows**: event ID lookup, error code lookup, robocopy command builder.
+- **Also**: IPv6 in the subnet calculator, IIS (W3C) logs in the Traffic Log Analyzer.
+- **Monitoring** (in `/admin`): certificate and domain expiry, blacklist listing, DNS record changes, HTTP and TCP uptime and cron job heartbeats, with webhook, Slack-style and email alerts.
+
 ---
 
 ## Quick Start (Docker)

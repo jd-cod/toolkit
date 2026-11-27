@@ -27,6 +27,23 @@ const TOOL_PAGES = [
   { path: '/chmod', label: 'chmod' },
   { path: '/cron', label: 'Cron Explainer' },
   { path: '/password-generator', label: 'Password Generator' },
+  // 2026-11 tools pack (docs/TOOLS_ROADMAP.md)
+  { path: '/email-auth', label: 'SPF, DKIM & DMARC Checker' },
+  { path: '/blacklist', label: 'Blacklist Check' },
+  { path: '/email-headers', label: 'Email Header Analyzer' },
+  { path: '/smtp-test', label: 'SMTP Server Test' },
+  { path: '/http-headers', label: 'HTTP Headers Checker' },
+  { path: '/port-check', label: 'Open Port Checker' },
+  { path: '/cert-decoder', label: 'Certificate Decoder' },
+  { path: '/sshd-audit', label: 'SSH Config Auditor' },
+  { path: '/systemd-timer', label: 'systemd Timer Generator' },
+  { path: '/firewall-rules', label: 'Firewall Rule Generator' },
+  { path: '/rsync', label: 'rsync Command Builder' },
+  { path: '/auth-log', label: 'SSH Auth Log Analyzer' },
+  { path: '/mail-log', label: 'Mail Log Analyzer' },
+  { path: '/windows-events', label: 'Windows Event ID Lookup' },
+  { path: '/windows-errors', label: 'Windows Error Code Lookup' },
+  { path: '/robocopy', label: 'Robocopy Command Builder' },
 ];
 
 /**

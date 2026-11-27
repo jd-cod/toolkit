@@ -662,6 +662,139 @@ const LogParser = (() => {
         return null;
     }
 
+    // ── W3C Extended Log File Format (IIS) ──────────────────────────────────
+    //
+    // IIS names its columns in a "#Fields:" directive instead of using a fixed
+    // layout, and replaces spaces inside values with "+", so a line splits on
+    // single spaces. Times are UTC.
+    const W3C_FIELDS_DIRECTIVE = /^#Fields:\s*/i;
+    const W3C_ROW = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} /;
+    // Layouts IIS writes when the "#Fields:" line is missing from a pasted excerpt.
+    const W3C_DEFAULT_FIELDS = {
+        15: 'date time s-ip cs-method cs-uri-stem cs-uri-query s-port cs-username c-ip cs(User-Agent) cs(Referer) sc-status sc-substatus sc-win32-status time-taken',
+        14: 'date time s-ip cs-method cs-uri-stem cs-uri-query s-port cs-username c-ip cs(User-Agent) sc-status sc-substatus sc-win32-status time-taken',
+    };
+
+    function compileW3cColumns(fields) {
+        const index = {};
+        fields.forEach((name, i) => { index[name.toLowerCase()] = i; });
+        const col = name => (index[name] === undefined ? -1 : index[name]);
+        const columns = {
+            count: fields.length,
+            date: col('date'), time: col('time'), ip: col('c-ip'), method: col('cs-method'),
+            stem: col('cs-uri-stem'), query: col('cs-uri-query'), status: col('sc-status'),
+            bytes: col('sc-bytes'), userAgent: col('cs(user-agent)'), referer: col('cs(referer)'),
+            version: col('cs-version'),
+        };
+        // Without a client address and a status there is nothing to analyse.
+        return columns.ip === -1 || columns.status === -1 ? null : columns;
+    }
+
+    function w3cValue(parts, index) {
+        if (index === -1) return null;
+        const value = parts[index];
+        return value === undefined || value === '-' ? null : value;
+    }
+
+    /**
+     * Returns a line parser for W3C logs. It keeps the current column layout
+     * and replaces it whenever another "#Fields:" directive goes by, because
+     * IIS writes a new header after every restart and the fields can change.
+     */
+    function createW3cLineParser(initialFields) {
+        let columns = compileW3cColumns(initialFields);
+
+        return function parseW3cLine(rawLine, options = {}) {
+            const skip403 = (options && options.skip403 !== undefined) ? Boolean(options.skip403) : true;
+            const skipInternal = (options && options.skipInternal !== undefined) ? Boolean(options.skipInternal) : true;
+
+            const line = rawLine ? rawLine.trim() : '';
+            if (!line) return { valid: false, reason: 'Empty line', reasonType: 'invalid' };
+
+            if (line.charCodeAt(0) === 35) {
+                if (W3C_FIELDS_DIRECTIVE.test(line)) {
+                    const next = compileW3cColumns(line.replace(W3C_FIELDS_DIRECTIVE, '').split(/\s+/));
+                    if (next) columns = next;
+                }
+                return { valid: false, reason: 'Log header line', reasonType: 'invalid', line };
+            }
+            if (!columns) return { valid: false, reason: 'Unparseable log format', reasonType: 'invalid', line };
+
+            const parts = line.split(' ');
+            if (parts.length < columns.count) return { valid: false, reason: 'Unparseable log format', reasonType: 'invalid', line };
+
+            const rawIp = w3cValue(parts, columns.ip);
+            if (!rawIp || !isValidIP(rawIp)) return { valid: false, reason: 'Invalid IP format', reasonType: 'invalid', line };
+            const normalizedAddr = unwrapV4Mapped(rawIp);
+
+            let timestamp = null;
+            let timeSec = 0;
+            const date = w3cValue(parts, columns.date);
+            const time = w3cValue(parts, columns.time);
+            if (date && time) {
+                timestamp = parseTimestamp(`${date}T${time.slice(0, 8)}Z`);
+                if (timestamp) timeSec = Math.floor(timestamp.getTime() / 1000);
+            }
+
+            const method = w3cValue(parts, columns.method);
+            const stem = w3cValue(parts, columns.stem);
+            const query = w3cValue(parts, columns.query);
+            const url = stem ? (query ? `${stem}?${query}` : stem) : null;
+            const httpVersion = w3cValue(parts, columns.version);
+
+            if (skipInternal && isPrivateIP(normalizedAddr)) {
+                return { valid: false, reason: 'Private/reserved IP', reasonType: 'privateIP', timestamp, timeSec, line };
+            }
+            if (skipInternal && isHealthCheckPath(url)) {
+                return { valid: false, reason: 'Health-check endpoint', reasonType: 'healthCheck', timestamp, timeSec, line };
+            }
+
+            const statusCode = parseInt(w3cValue(parts, columns.status) || '0', 10) || 0;
+            const responseSize = parseInt(w3cValue(parts, columns.bytes) || '0', 10) || 0;
+            const rawUserAgent = w3cValue(parts, columns.userAgent);
+            const userAgent = rawUserAgent ? rawUserAgent.replace(/\+/g, ' ') : null;
+            const referrer = w3cValue(parts, columns.referer);
+            const isCrawler = isBotUserAgent(userAgent);
+
+            if (skip403 && statusCode === 403 && !isCrawler) {
+                return { valid: false, reason: '403 Forbidden (blocked)', reasonType: 'forbidden', timestamp, timeSec, line };
+            }
+
+            let botName = 'None';
+            if (typeof BotDetector !== 'undefined' && BotDetector.detectBotName && userAgent) {
+                const detected = BotDetector.detectBotName(userAgent);
+                if (detected) botName = detected;
+                else if (isCrawler) botName = 'Scripted/Bot';
+            } else if (isCrawler) {
+                botName = 'Scripted/Bot';
+            }
+
+            return {
+                valid: true, ip: normalizedAddr, timestamp, timeSec, method, url, httpVersion,
+                statusCode, responseSize, referrer, userAgent, botName, isCrawler, line
+            };
+        };
+    }
+
+    /** Looks for a W3C log in the sample: a "#Fields:" header, or rows in a default IIS layout. */
+    function detectW3cFormat(rawLines, candidates) {
+        for (let i = 0; i < rawLines.length && i < 50; i++) {
+            const line = rawLines[i] ? rawLines[i].trim() : '';
+            if (!W3C_FIELDS_DIRECTIVE.test(line)) continue;
+            const fields = line.replace(W3C_FIELDS_DIRECTIVE, '').split(/\s+/).filter(Boolean);
+            if (compileW3cColumns(fields)) return { type: 'w3c', parseLine: createW3cLineParser(fields) };
+        }
+
+        if (candidates.length === 0 || !candidates.every(line => W3C_ROW.test(line))) return null;
+        const width = candidates[0].split(' ').length;
+        const layout = W3C_DEFAULT_FIELDS[width];
+        if (!layout || !candidates.every(line => line.split(' ').length === width)) return null;
+        const fields = layout.split(' ');
+        const ipColumn = fields.indexOf('c-ip');
+        if (!candidates.every(line => isValidIP(line.split(' ')[ipColumn]))) return null;
+        return { type: 'w3c', parseLine: createW3cLineParser(fields) };
+    }
+
     /**
      * Detect log format from a set of sample lines (3-15 lines).
      * Returns a schema object { type, parseLine(line, options) }.
@@ -671,10 +804,15 @@ const LogParser = (() => {
             return { type: 'standard', parseLine };
         }
 
-        const candidates = (Array.isArray(sampleLines) ? sampleLines : sampleLines.split('\n'))
-            .map(l => (l ? l.trim() : ''))
-            .filter(l => l.length > 0 && !l.startsWith('#'))
-            .slice(0, 15);
+        const rawLines = Array.isArray(sampleLines) ? sampleLines : sampleLines.split('\n');
+        const candidates = [];
+        for (let i = 0; i < rawLines.length && candidates.length < 15; i++) {
+            const l = rawLines[i] ? rawLines[i].trim() : '';
+            if (l.length > 0 && !l.startsWith('#')) candidates.push(l);
+        }
+
+        const w3c = detectW3cFormat(rawLines, candidates);
+        if (w3c) return w3c;
 
         if (candidates.length === 0) {
             return { type: 'standard', parseLine };

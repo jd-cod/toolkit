@@ -5,6 +5,7 @@
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || '/api').replace(/\/$/, '');
 import type { AbuseResult, GlobalDnsRegion, IPInfoEntry, SSLResult } from './tool-results';
+import type { BlacklistResult, EmailAuthResult, HttpCheckResult, PortCheckResult, SmtpTestResult } from './tools/net-types';
 
 interface RequestOptions extends Omit<RequestInit, 'body'> {
   body?: unknown;
@@ -225,6 +226,22 @@ export const api = {
 
   matchAsnIp: (asn: string, ip: string, prefixes: unknown[]) =>
     request<Record<string, unknown>>('/asn/match-ip', { method: 'POST', body: { asn, ip, prefixes } }),
+
+  // 2026-11 tools pack
+  checkEmailAuth: (domain: string, selectors: string[]) =>
+    request<EmailAuthResult>('/email/auth', { method: 'POST', body: { domain, selectors } }),
+
+  checkBlacklist: (target: string) =>
+    request<BlacklistResult>('/email/blacklist', { method: 'POST', body: { target } }),
+
+  testSmtp: (target: string, port: number, direct: boolean) =>
+    request<SmtpTestResult>('/email/smtp', { method: 'POST', body: { target, port, direct } }),
+
+  checkHttp: (url: string) =>
+    request<HttpCheckResult>('/http-check', { method: 'POST', body: { url } }),
+
+  checkPorts: (host: string, ports: string) =>
+    request<PortCheckResult>('/port-check', { method: 'POST', body: { host, ports } }),
 
   generateAsnRules: (data: {
     format: string;

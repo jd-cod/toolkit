@@ -1,7 +1,7 @@
 import type { Tool } from './api';
 
-export type ToolCategory = 'Observability' | 'Network' | 'Security' | 'Utilities';
-export const TOOL_CATEGORIES: ToolCategory[] = ['Observability', 'Network', 'Security', 'Utilities'];
+export type ToolCategory = 'Observability' | 'Network' | 'Email' | 'Security' | 'Utilities' | 'Windows';
+export const TOOL_CATEGORIES: ToolCategory[] = ['Observability', 'Network', 'Email', 'Security', 'Utilities', 'Windows'];
 
 const catalog: Record<string, { route: string; category: ToolCategory; processing: string; icon: string }> = {
   nginx: { route: '/nginx', category: 'Observability', processing: 'Local log analysis', icon: 'bi-bar-chart-line' },
@@ -15,6 +15,22 @@ const catalog: Record<string, { route: string; category: ToolCategory; processin
   password: { route: '/password-generator', category: 'Security', processing: 'Local processing', icon: 'bi-key' },
   subnet: { route: '/subnet', category: 'Utilities', processing: 'Local processing', icon: 'bi-hdd-network' },
   chmod: { route: '/chmod', category: 'Utilities', processing: 'Local processing', icon: 'bi-sliders' },
+  'email-auth': { route: '/email-auth', category: 'Email', processing: 'DNS lookup', icon: 'bi-envelope-check' },
+  blacklist: { route: '/blacklist', category: 'Email', processing: 'DNSBL lookup', icon: 'bi-slash-circle' },
+  'email-headers': { route: '/email-headers', category: 'Email', processing: 'Local processing', icon: 'bi-envelope-open' },
+  'smtp-test': { route: '/smtp-test', category: 'Email', processing: 'Remote connection', icon: 'bi-send-check' },
+  'http-headers': { route: '/http-headers', category: 'Network', processing: 'Remote request', icon: 'bi-arrow-left-right' },
+  'port-check': { route: '/port-check', category: 'Network', processing: 'Remote connection', icon: 'bi-door-open' },
+  'cert-decoder': { route: '/cert-decoder', category: 'Security', processing: 'Local processing', icon: 'bi-file-earmark-lock' },
+  'sshd-audit': { route: '/sshd-audit', category: 'Security', processing: 'Local processing', icon: 'bi-terminal' },
+  'systemd-timer': { route: '/systemd-timer', category: 'Utilities', processing: 'Local processing', icon: 'bi-stopwatch' },
+  'firewall-rules': { route: '/firewall-rules', category: 'Utilities', processing: 'Local processing', icon: 'bi-bricks' },
+  rsync: { route: '/rsync', category: 'Utilities', processing: 'Local processing', icon: 'bi-arrow-repeat' },
+  'auth-log': { route: '/auth-log', category: 'Observability', processing: 'Local log analysis', icon: 'bi-person-lock' },
+  'mail-log': { route: '/mail-log', category: 'Observability', processing: 'Local log analysis', icon: 'bi-mailbox' },
+  'windows-events': { route: '/windows-events', category: 'Windows', processing: 'Local reference', icon: 'bi-journal-text' },
+  'windows-errors': { route: '/windows-errors', category: 'Windows', processing: 'Local reference', icon: 'bi-bug' },
+  robocopy: { route: '/robocopy', category: 'Windows', processing: 'Local processing', icon: 'bi-copy' },
 };
 
 export function toolMetadata(tool: Pick<Tool, 'tool_key'>) {
