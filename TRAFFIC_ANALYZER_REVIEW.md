@@ -235,14 +235,20 @@ Status on 2026-11-27, after the fixes described in `PARSER_AND_IDENTIFICATION_RE
 | 1 | Fixed: the exclusion options re-read the uploaded file. They are switched off, with a note, once a second source was added or the input was a stream |
 | 2 | Fixed: method, path, address prefix and CIDR filters work on uploads |
 | 3 | Fixed: "Matching N / M", the entry count and the Skipped counts are right on uploads |
-| 4 | Fixed: uploads have paths, sections, referring sites and the same timeline as pasted logs (every interval, error line). The status split per path is still paste-only |
+| 4 | Fixed: uploads have paths, sections, referring sites, the status split per path and the same timeline as pasted logs (every interval, error line) |
 | 5 | Fixed in both engines: the box keeps focus and caret |
 | 6 | Fixed: a row click is an exact match; card, dropdown and filter count the same thing |
 | 7 | Fixed: the chart shows the whole log in both engines; filters narrow the numbers and tables |
 | 8 | Fixed: a status filter (class or code) and a User-Agent search box, in both engines |
 | 10 | Fixed: the dashboard names the crawlers whose IP ranges are not loaded, and says when the range file could not be loaded at all |
 | 12 | Fixed: one shared GeoIP load that always finishes; a database that cannot be loaded leaves "Unknown" and a notice; only bytes that parse as a database are cached |
-| 13 | Partly: Escape closes the address log window. F12 and F13 were not looked at again |
+| 13 | Fixed: Escape closes the address log window; Clear empties both pairs of search boxes (F12); the address window lists what the filters let through (F13); the path choices keep their order |
+| A1 | Partly: the engines give the same result object and are held to it by `tests/unit/engine-parity.test.js`; they are still two (see `PARSER_AND_IDENTIFICATION_REVIEW.md` section 1b) |
+| A2 | Fixed: one result shape |
+| A3 | Fixed: `dashboard.js` is split into state, filter logic (`dashboard-filters.js`) and markup (`dashboard-views.js`); the latter two are tested without a browser |
+| A4 | Fixed: the script version is made at build time |
+| A5 | Fixed: `upload-parity.spec.ts`; the golden and bot-intel specs run; sample logs are generated; CI workflow |
+| A6 | Fixed: removed |
 | 9 | Fixed: "Unknown" can be chosen in both engines, IPv6 is matched in any notation, `/33` matches nothing |
 | 11 | Fixed (PARSE-07, PARSE-04). PARSE-08: every notation now keeps the server's clock |
 
@@ -280,6 +286,10 @@ Status on 2026-11-27, after the fixes described in `PARSER_AND_IDENTIFICATION_RE
 A production build of the branch is running at http://127.0.0.1:3020/nginx (frontend only, using the
 review backend on port 4010). Stop it with `kill $(cat logs/classifier-frontend.pid)` in this folder.
 
-The bot IP data file on this machine has no ranges for Google, Bing or OpenAI (B7), so real Googlebot shows
-as "known bot, unverified" here. With a synced file it shows as verified: multi-vector-attack.log then gives
-16,732 verified and 2,681 spoofed.
+The crawler IP range file of this checkout (`frontend/public/data/verified-bots.json`, not tracked) was
+replaced on 2026-11-27 by one synced that day with the branch's own updater, so real Googlebot shows as
+verified here. The file it replaced had no ranges for Google, Bing or OpenAI (B7).
+
+Tests: `npm run test:unit`, `npm run test:backend` (needs `npm ci` in `backend/`), and
+`E2E_BASE_URL=http://127.0.0.1:3020 npx playwright test` from this folder. The sample logs the page and
+some specs need are written by `npm run samples` in `frontend/`.

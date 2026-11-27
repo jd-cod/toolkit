@@ -33,17 +33,17 @@ The ten that matter most:
 
 ## 1a. Status after the fixes (2026-11-27)
 
-The findings below were fixed on this branch after the review, in seven commits. 43 are fixed, 5 are partly fixed and none is open. Sections 3.1 to 3.6 describe the behaviour **before** the fixes; this table says what is true now. Outputs of the same probe scripts after the fixes are in `review2/out-after/`.
+The findings below were fixed on this branch after the review. 46 are fixed, 2 are partly fixed by decision (C4, B10) and none is open. The third round of work (time zones, one result shape, the split of `dashboard.js`, tests and CI) is summarised in section 1b. Sections 3.1 to 3.6 describe the behaviour **before** the fixes; this table says what is true now. Outputs of the same probe scripts after the fixes are in `review2/out-after/`.
 
 | # | Now | Note |
 |---|---|---|
 | F1, F2, F3, F5, F6, F8 | Fixed | Format chosen by majority over 200 lines; any status 100-599; mixed files read in any order; per-file detection in upload |
 | F4 | Fixed | Nothing is guessed from one line. Two lines glued together still parse as one request |
 | F7 | Fixed | Added AWS ALB and classic ELB, IIS W3C, Caddy, Traefik, Cloudflare Logpush, Docker wrapper, syslog prefix and HAProxy HTTP logs |
-| P1 | Changed | Both notations now keep the clock the server wrote (see decisions below) |
+| P1 | Fixed | A log is shown in its own clock, and lines written in another zone are moved to it (decision 1) |
 | P2 | Fixed | Fractions, epoch numbers, one-digit day, any letter case, `+02`, RFC 1123, and month names in German, French, Spanish, Italian, Portuguese and Dutch |
 | P3, P4, P5, P7 | Fixed | |
-| P6 | Partly | 999 becomes "unknown". Unknown statuses are still listed outside the 2xx-5xx categories |
+| P6 | Fixed | Requests without an HTTP status (none, 0, 999) are a class of their own, "No status", in the totals, the filter and the report |
 | P8 | Fixed | Lone CR line endings work for pasted text and for uploads. UTF-16 files are decoded, with or without a byte order mark |
 | C1 | Fixed | Client read from `X-Forwarded-For` behind a private proxy or a CDN; the page says how many requests |
 | C2, C3, C5, C6 | Fixed | Host names in place of addresses are still rejected |
@@ -54,15 +54,15 @@ The findings below were fixed on this branch after the review, in seven commits.
 | B10 | Partly | An out-of-date browser version is one weak signal; a malformed User-Agent is not a browser. An old version alone is still human |
 | B12 | Fixed | The one-minute windows for floods and login attempts move with each request |
 | U1, U2, U3, U4, U5, U7 | Fixed | |
-| U6 | Fixed | Upload has paths, sections and referring sites. The status split per path is still paste-only |
+| U6 | Fixed | Upload has paths, sections, referring sites and the status split per path; the Targeted Paths table shows the split |
 | A1, A3, A4 | Fixed | |
-| A5 | Partly | A tooltip on the time span says which clock is shown |
-| A2 | Partly | Both engines now give the same peak, average and burst label. The peak is still the average of the busiest chart bucket; the report names that window ("busiest 2m") |
+| A5 | Fixed | The page and the report name the time zone of the log ("time zone +02:00") and say how many requests were converted to it |
+| A2 | Fixed | Both engines give the same peak, average and burst label. The report also names the busiest second (or the shortest stretch kept for a long log), which does not depend on the chart interval |
 | A6 | Fixed | The dashboard lists referring sites, with requests that have no referrer on their own line. The full referrer list in the result data is unchanged |
 
 Decisions taken while fixing, each easy to reverse:
 
-1. **Time zone (P1).** An existing end-to-end test requires that `[07:23:05 -0700]` is shown as 07:23:05. So the rule is "show the log's own clock", and ISO timestamps were changed to follow it instead of being converted to UTC.
+1. **Time zone (P1).** An existing end-to-end test requires that `[07:23:05 -0700]` is shown as 07:23:05, so a log is shown in its own clock. Its clock is the zone most of its lines are written in; a line written in another zone (a second server, the hour after daylight-saving time ends, an epoch number) is converted to it. An added file is shown in the zone of the first one.
 2. **Which forwarded address is the client (C1).** The right-most public entry of `X-Forwarded-For`. The left-most is easier to read but can be written by the client, which would let anyone appear as a verified Googlebot.
 3. **When forwarded addresses are trusted (C1).** Always when the connecting address is private. Otherwise only when at least nine in ten lines carry one and they vary more than the connecting addresses do. `clientIp: 'remote' | 'forwarded'` overrides this in the parser options; there is no control for it on the page yet.
 4. **"Ignore 403" (B1).** The option stays on by default and still hides ordinary refusals, but never a request that looks like an attack or a login attempt.
@@ -87,11 +87,33 @@ Existing tests whose expectations were changed, because they described the old b
 
 | Test | Change |
 |---|---|
-| `tests/e2e/nginx-parser-contract.spec.ts`, ISO-8601 test | `2026-10-01T05:30:00+05:30` now reads 05:30:00 (decision 1); it read 00:00:00 UTC |
+| `tests/e2e/nginx-parser-contract.spec.ts`, ISO-8601 test | Back to its original form: its three lines are one instant in a UTC log, and read 00:00:00 again |
+| `tests/e2e/nginx-parser-contract.spec.ts`, malformed method | `<b>` in the method position is shown as sent in the summary too; the summary alone had it in capitals |
+| `tests/e2e/timeline-accuracy.spec.ts`, mobile test | The handle is scrolled into view before it is touched, and the selection is read after the frame that delivers the touch moves. The test had been touching a point below the screen |
 | `tests/e2e/cross-filter-rows.spec.ts`, two tests | Path rows carry `data-path="=/products"`, dropdown values are `^/products` |
-| `tests/e2e/nginx-golden-analysis.spec.ts` and `tests/fixtures/nginx-release-golden.json` | `top_paths` lists whole paths (it listed segments: `/api` 4, `/login` 1, `/42` 1); `unique_countries` 4 to 3 and `unique_asns` 7 to 6 (decision 7); dropdown value `^/products`. **Not run**: the log this test reads, `tests/fixtures/nginx-release-golden.log`, is not in the repository. The new values were derived from the entries listed in the manifest |
+| `tests/e2e/nginx-golden-analysis.spec.ts`, `tests/fixtures/nginx-release-golden.json`, `scripts/qa_nginx_oracle.py` | `top_paths` lists whole paths (it listed segments: `/api` 4, `/login` 1, `/42` 1); `unique_countries` 4 to 3 and `unique_asns` 7 to 6 (decision 7); dropdown value `^/products`; curl is class "automated" (it was an unverified crawler); the report heading is the one the report has. The log this test reads was never in the repository: `tests/fixtures/nginx-release-golden.log` is rebuilt from the manifest (user agents, referrers per line and the five excluded lines are a reconstruction). The spec passes 10 of 11 (one needs object storage) and the Python oracle passes |
 
 Three things the end-to-end tests caught in the first version of the fixes, now corrected: health-check paths are case-sensitive again (`/HealthCheck` is a normal page); a request line with a protocol version reports whatever stood in the method position (`<b>`), as text; an impossible time zone offset (`+0060`) marks the time as unreadable.
+
+## 1b. Third round (2026-11-27)
+
+What changed after the table above was first written, each with its tests:
+
+| Area | Change | Checked by |
+|---|---|---|
+| Time zones | One time line for logs written in several zones (decision 1) | `tests/unit/log-time-zone.test.js`, `upload-parity.spec.ts` |
+| Result object | Both engines give the same result. Uploads had no addresses per country or network, no median, minimum or maximum response size, no hours or weekdays, country codes instead of names. Only `referrers` (full addresses) and the lines per address exist for pasted logs alone | `tests/unit/engine-parity.test.js` compares the whole result, unfiltered and under nine filters |
+| Report | Could not be built after an upload; its country and network tables were empty for uploads | `upload-parity.spec.ts` compares the report's tables of both modes |
+| Filters | The address window follows the filters; the search boxes above the log table and in the filter bar are one filter; "No status" and 1xx can be filtered; AS0 can be filtered in uploads | `upload-parity.spec.ts`, `tests/unit/dashboard-filters.test.js` |
+| Code | `dashboard.js` (3,430 lines) is now `dashboard.js` (state, events, charts; 2,490), `dashboard-filters.js` (filter logic, no page access) and `dashboard-views.js` (markup, no page access) | `tests/unit/dashboard-filters.test.js`, `tests/unit/dashboard-views.test.js` |
+| Script cache | The `?v=` of every script is a hash of the scripts, made at build time | `asset-version.spec.ts`, `tests/unit/asset-version.test.js` |
+| Sample logs | Generated before each build (`npm run samples`); none was in the repository or the Docker image | `samples.spec.ts` |
+| Tests and CI | `npm run test:unit` passes completely; the golden and bot-intel specs run; `npx playwright test` needs no exclusions; `.github/workflows/ci.yml` | Each CI job was run in a Node container; the workflow has not run on GitHub |
+| Removed | The unused world map, the mitigation stage without markup, 670 lines of unused CSS | End-to-end suite |
+
+Not done: the two engines are still two. They now share the line parser, the path and classifier functions, the timeline function and the result shape, and tests hold them to the same output. What is still written twice is the counting (`analyzeEnhancedLogs` and `ColumnarStorage.query`) and the filtering (`DashboardFilters.apply` and `ColumnarStorage._parseFilters`). Making it one means deciding what pasted logs keep that uploads cannot afford to: every request with its raw line, the full referrer addresses, the lines per address in the report.
+
+Seen while generating sample logs and not changed: a flood spread over many addresses stays "human" as long as each address stays under 120 page requests a minute (`THRESHOLDS.floodPerMinute`).
 
 ## 2. How this was checked
 
