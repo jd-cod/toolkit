@@ -70,6 +70,24 @@ test('attack paths are recognised when encoded or in the query string', () => {
     }
 });
 
+test('WordPress entry points, and the dashboard pages that show a logged-in user', () => {
+    for (const url of ['/wp-login.php', '/wp-login.php?action=logout', '/blog/xmlrpc.php', '/xmlrpc.php?rsd', '/wp-includes/wlwmanifest.xml']) {
+        assert.ok(RequestPaths.isWordPressEntry(url), url);
+    }
+    for (const url of ['/wp-admin/', '/login.php', '/wlwmanifest.xml.bak', '/my-xmlrpc.php']) assert.ok(!RequestPaths.isWordPressEntry(url), url);
+
+    for (const url of ['/wp-admin/', '/wp-admin', '/wp-admin/index.php', '/blog/wp-admin/post.php?post=3&action=edit', '/wp-admin/network/sites.php']) {
+        assert.ok(RequestPaths.isWordPressDashboard(url), url);
+    }
+    // These answer anyone, logged in or not.
+    const open = [
+        '/wp-admin/admin-ajax.php', '/wp-admin/admin-post.php', '/wp-admin/install.php', '/wp-admin/setup-config.php', '/wp-admin/load-styles.php?c=1',
+        '/wp-admin/load-scripts.php', '/wp-admin/upgrade.php', '/wp-admin/maint/repair.php', '/wp-admin/css/login.min.css', '/wp-admin/js/common.js',
+        '/wp-administrator/', '/not-wp-admin/index.php', '/wp-login.php',
+    ];
+    for (const url of open) assert.ok(!RequestPaths.isWordPressDashboard(url), url);
+});
+
 test('ordinary requests are not attack paths', () => {
     const ordinary = [
         '/', '/products/shoes/42', '/search?q=union+jobs+select+committee', '/blog/how-to-select-from-a-table',

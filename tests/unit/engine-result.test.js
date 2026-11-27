@@ -275,6 +275,31 @@ test('questions asked at the same time each get their own answer', async () => {
     assert.equal(page.length, requests.filter(r => r.status === 404).length);
 });
 
+test('a flood spread over many addresses is counted as suspected, and its visitors are not', async () => {
+    const requests = [];
+    // 25 visitors who load a page with its assets.
+    for (let v = 0; v < 25; v++) {
+        for (let p = 0; p < 3; p++) {
+            requests.push(request(v * 10 + p * 45, `91.64.3.${v + 1}`, `/article/${p}`, 200, { ref: 'https://shop.test/' }));
+            requests.push(request(v * 10 + p * 45, `91.64.3.${v + 1}`, '/static/app.css', 200, { ref: 'https://shop.test/' }));
+        }
+    }
+    // 40 addresses ask for one page six times a minute, for three minutes.
+    const flood = [];
+    for (let i = 0; i < 18; i++) {
+        for (let c = 0; c < 40; c++) flood.push(request(200 + i * 10 + (c % 7), `45.142.${c >> 4}.${c + 1}`, `/search?q=${i}-${c}`, i > 6 ? 503 : 200));
+    }
+    const run = await analyze(text([...requests, ...flood].sort((a, b) => a.sec - b.sec)));
+    const classes = Object.fromEntries(run.data.traffic_classes.map(c => [c.key, [c.requests, c.unique_ips]]));
+    assert.deepEqual(classes.suspected, [flood.length, 40]);
+    assert.deepEqual(classes.human, [requests.length, 25]);
+    const group = run.data.bot_groups.find(g => g.group_name === 'Suspected automation');
+    assert.deepEqual(group.sub_bots.map(b => [b.bot_name, b.requests, b.unique_ips]), [['Distributed request flood', flood.length, 40]]);
+    assert.match(run.data.suspected_clients[0].reason, /^One of 40 clients that kept requesting \/search at the same time, about 24\d requests in one minute together/);
+    // The class is a filter like any other.
+    assert.equal((await run.filter({ bot: 'suspected' })).total_requests, flood.length);
+});
+
 test('the sources can be read back as one text, gzip opened', async () => {
     const { gzipSync } = await import('node:zlib');
     const first = text([request(0, '81.2.69.1', '/a', 200)]);

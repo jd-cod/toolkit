@@ -162,6 +162,7 @@ Human + verified + spoofed + other bots = total requests, always, with or withou
    | Vulnerability probing | 3 or more different sensitive paths (`/.env`, `/.git/`, `wp-config`, `phpmyadmin`, 31 in total) |
    | Login brute force | 10 or more POSTs to a login endpoint within one minute |
    | Request flood | 120 page requests in one minute with at most 20% assets and 20% referrers, or 600 with at most 10% assets |
+   | Distributed request flood | 20 or more clients that each sent 5 or more page requests in one minute for the same page (3 pages at most), none with an asset and at most 20% with a referrer, together 120 or more in one minute. See `PARSER_AND_IDENTIFICATION_REVIEW.md` section 1d |
    | Path enumeration | 30 or more requests, 80% of them 4xx, across about 15 or more paths |
 
    Weak signals count only when at least three occur together in 20 or more requests: no page assets, no

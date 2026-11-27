@@ -169,6 +169,17 @@ function ddosFlood() {
     const overloaded = at - floodStart > 20 && rnd.chance(0.65);
     rows.push(row(at, bot.ip, 'GET', target, overloaded ? 503 : 200, overloaded ? 197 : rnd.int(9000, 24000), '-', bot.agent));
   }
+  // Ten minutes later, a second wave from 240 other addresses for three minutes.
+  // Each sends about eight requests a minute: slow enough to pass for a visitor on its own.
+  const swarm = Array.from({ length: 240 }, (_, i) => ({ ip: `${networks[i % networks.length]}.${rnd.int(2, 250)}`, agent: rnd.pick(agents) }));
+  const swarmStart = 2220;
+  for (let i = 0; i < 6000; i++) {
+    const at = swarmStart + Math.floor(i / 6000 * 180);
+    const bot = rnd.pick(swarm);
+    const target = rnd.chance(0.7) ? `/search?q=${rnd.int(100000, 999999)}` : '/';
+    const overloaded = at - swarmStart > 30 && rnd.chance(0.4);
+    rows.push(row(at, bot.ip, 'GET', target, overloaded ? 503 : 200, overloaded ? 197 : rnd.int(9000, 24000), '-', bot.agent));
+  }
   return finish(rows);
 }
 

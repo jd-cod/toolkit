@@ -572,6 +572,137 @@ describe('TrafficClassifier: attacks that used to pass as human', () => {
         assert.equal(classOfOnlyClient(served).name, 'Vulnerability probing');
     });
 
+    test('a logged-in WordPress user whose own files answer with a redirect or an error stays human', () => {
+        const admin = 'https://blog.example/wp-admin/';
+        // Logging in and out redirects, xmlrpc.php refuses a GET, and a
+        // hardened site has removed wlwmanifest.xml: three "probe" paths.
+        const session = (ip, start, extra = []) => [
+            line(ip, { url: '/wp-login.php', at: start }),
+            line(ip, { method: 'POST', url: '/wp-login.php', status: 302, ref: 'https://blog.example/wp-login.php', at: start + 5 }),
+            line(ip, { url: '/wp-admin/', ref: 'https://blog.example/wp-login.php', at: start + 6 }),
+            line(ip, { url: '/wp-admin/css/common.min.css', ref: admin, at: start + 7 }),
+            line(ip, { method: 'POST', url: '/wp-admin/admin-ajax.php', ref: admin, at: start + 20 }),
+            line(ip, { url: '/wp-admin/post.php?post=12&action=edit', ref: admin, at: start + 40 }),
+            line(ip, { url: '/xmlrpc.php?rsd', status: 405, at: start + 60 }),
+            line(ip, { url: '/wp-includes/wlwmanifest.xml', status: 404, at: start + 61 }),
+            line(ip, { url: '/blog/xmlrpc.php', status: 403, at: start + 62 }),
+            ...extra.map((more, i) => line(ip, { ...more, at: start + 70 + i })),
+            line(ip, { url: '/wp-login.php?action=logout&_wpnonce=ab12', status: 302, ref: admin, at: start + 300 }),
+        ];
+        assert.equal(classOfOnlyClient(session('82.132.214.20', later())).cls, 'human');
+
+        // The same files from a client the dashboard never let in: /wp-admin/
+        // redirects it to the login page, and what answers anyone proves nothing.
+        const start = later();
+        const outsider = [
+            line('45.1.3.1', { url: '/wp-login.php', status: 302, at: start }),
+            line('45.1.3.1', { url: '/wp-admin/', status: 302, at: start + 1 }),
+            line('45.1.3.1', { url: '/wp-admin/admin-ajax.php', status: 200, at: start + 2 }),
+            line('45.1.3.1', { url: '/wp-admin/install.php', status: 200, at: start + 3 }),
+            line('45.1.3.1', { url: '/wp-admin/css/login.min.css', status: 200, at: start + 4 }),
+            line('45.1.3.1', { url: '/xmlrpc.php', status: 405, at: start + 5 }),
+            line('45.1.3.1', { url: '/wp-includes/wlwmanifest.xml', status: 404, at: start + 6 }),
+        ];
+        assert.equal(classOfOnlyClient(outsider).name, 'Vulnerability probing');
+
+        // Being logged in excuses WordPress's own files, nothing else.
+        const tools = [{ url: '/phpmyadmin/', status: 404 }, { url: '/pma/', status: 404 }, { url: '/adminer.php', status: 404 }];
+        assert.equal(classOfOnlyClient(session('82.132.214.21', later(), tools)).name, 'Vulnerability probing');
+        const attacks = [{ url: '/.env', status: 404 }, { url: '/.git/config', status: 404 }];
+        assert.equal(classOfOnlyClient(session('82.132.214.22', later(), attacks)).name, 'Vulnerability probing');
+    });
+
+    describe('a flood spread over many addresses', () => {
+        // 30 visitors who load pages with their assets, over ten minutes.
+        const visitors = start => {
+            const lines = [];
+            for (let v = 0; v < 30; v++) {
+                const ip = `81.2.80.${v + 1}`;
+                for (let p = 0; p < 4; p++) {
+                    const at = start + v * 15 + p * 40;
+                    lines.push(line(ip, { url: `/article/${(v + p) % 12}`, ref: p ? 'https://site.test/' : '-', at }));
+                    lines.push(line(ip, { url: '/static/app.css', ref: 'https://site.test/', at }));
+                    lines.push(line(ip, { url: `/img/${p}.jpg`, ref: 'https://site.test/', at: at + 1 }));
+                }
+            }
+            return lines;
+        };
+        // `clients` addresses, each asking for the same page `perMinute` times a minute for `minutes`.
+        const flood = (start, { clients = 60, perMinute = 10, minutes = 3, url = i => `/search?q=${i}`, ref = '-', net = 46 } = {}) => {
+            const lines = [];
+            for (let i = 0; i < perMinute * minutes; i++) {
+                for (let c = 0; c < clients; c++) {
+                    lines.push(line(`${net}.${10 + (c >> 6)}.${c & 63}.7`, { url: url(i * clients + c), ref, at: start + Math.floor(i * 60 / perMinute) + (c % 5) }));
+                }
+            }
+            return lines;
+        };
+        const flooders = lines => classify(lines).filter(c => /^46\./.test(c.ip));
+        const visitorsOf = lines => classify(lines).filter(c => c.ip.startsWith('81.2.80.'));
+
+        test('each address stays under the limit, together they are a flood', () => {
+            const start = later();
+            const lines = [...visitors(start), ...flood(start + 120)];
+            const bots = flooders(lines);
+            assert.equal(bots.length, 60 * 30);
+            assert.deepEqual([...new Set(bots.map(c => c.name))], ['Distributed request flood']);
+            assert.match(bots[0].reason, /^One of 60 clients that kept requesting \/search at the same time, about 6\d\d requests in one minute together, without the assets or referrers a browser sends$/);
+            assert.deepEqual([...new Set(visitorsOf(lines).map(c => c.cls))], ['human']);
+        });
+
+        test('too few addresses, or too few requests together, is not a flood', () => {
+            let start = later();
+            assert.deepEqual([...new Set(flooders([...visitors(start), ...flood(start + 120, { clients: 15, perMinute: 30 })]).map(c => c.cls))], ['human']);
+            start = later();
+            assert.deepEqual([...new Set(flooders([...visitors(start), ...flood(start + 120, { clients: 21, perMinute: 5 })]).map(c => c.cls))], ['human']);
+        });
+
+        test('returning visitors who open one page now and then are not a flood', () => {
+            const start = later();
+            const lines = visitors(start);
+            // 300 addresses open the home page twice within the same two minutes, assets from their cache.
+            for (let c = 0; c < 300; c++) {
+                for (let i = 0; i < 2; i++) lines.push(line(`46.20.${c >> 6}.${c & 63}`, { url: '/', at: start + 100 + (c % 60) + i * 50 }));
+            }
+            assert.deepEqual([...new Set(flooders(lines).map(c => c.cls))], ['human']);
+        });
+
+        test('a page script that polls one address is not a flood', () => {
+            const start = later();
+            const polling = flood(start + 120, { perMinute: 12, url: () => '/api/status', ref: 'https://site.test/board' });
+            assert.deepEqual([...new Set(flooders([...visitors(start), ...polling]).map(c => c.cls))], ['human']);
+        });
+
+        test('clients that loaded the page with its assets are not part of the flood', () => {
+            const start = later();
+            const lines = [...visitors(start), ...flood(start + 120, { url: () => '/tickets' })];
+            // Five visitors reload the same page as fast as the flood does.
+            const eager = [];
+            for (let v = 0; v < 5; v++) {
+                const ip = `81.2.81.${v + 1}`;
+                eager.push(line(ip, { url: '/static/app.css', ref: 'https://site.test/tickets', at: start + 119 }));
+                for (let i = 0; i < 30; i++) eager.push(line(ip, { url: '/tickets', at: start + 120 + i * 6 }));
+            }
+            const clients = classify([...lines, ...eager]);
+            assert.deepEqual([...new Set(clients.filter(c => c.ip.startsWith('81.2.81.')).map(c => c.cls))], ['human']);
+            assert.deepEqual([...new Set(clients.filter(c => /^46\./.test(c.ip)).map(c => c.name))], ['Distributed request flood']);
+        });
+
+        test('a log in which no client shows assets or referrers cannot tell a flood from its visitors', () => {
+            const start = later();
+            assert.deepEqual([...new Set(flooders(flood(start)).map(c => c.cls))], ['human']);
+        });
+
+        test('where assets are served from elsewhere, the missing referrers still count', () => {
+            const start = later();
+            // Visitors whose requests name the page they came from, but no asset is in the log.
+            const lines = visitors(start).filter(raw => !/\/static\/|\/img\//.test(raw));
+            const bots = flooders([...lines, ...flood(start + 120)]);
+            assert.deepEqual([...new Set(bots.map(c => c.name))], ['Distributed request flood']);
+            assert.match(bots[0].reason, /without the referrers a browser sends$/);
+        });
+    });
+
     test('a burst is counted whole wherever it falls on the clock', () => {
         // One request, then 70 a half-minute later and 70 more right after:
         // 140 within a minute, but never more than 71 in a minute counted from the first request.

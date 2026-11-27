@@ -149,6 +149,25 @@ const RequestPaths = (() => {
         return cached(signatureCache, url, computeSignature);
     }
 
+    // WordPress's own entry points. Scanners ask every site for them; on a
+    // WordPress site the browsers and tools of its users do too.
+    const WP_ENTRY_RE = /(?:^|\/)(?:wp-login\.php|xmlrpc\.php|wp-includes\/wlwmanifest\.xml)$/i;
+    // The dashboard, which WordPress serves to a logged-in user only ...
+    const WP_DASHBOARD_RE = /\/wp-admin(?:\/(?:[\w-]+\/)*[\w-]+\.php)?$/i;
+    // ... except these, which answer anyone.
+    const WP_DASHBOARD_OPEN_RE = /\/wp-admin\/(?:admin-ajax|admin-post|install|setup-config|load-styles|load-scripts|upgrade|maint\/repair)\.php$/i;
+
+    /** One of WordPress's own entry points: the login page, xmlrpc.php, wlwmanifest.xml. */
+    function isWordPressEntry(url) {
+        return WP_ENTRY_RE.test(normalizePath(url));
+    }
+
+    /** A WordPress dashboard page. Served (2xx), it shows a logged-in user. */
+    function isWordPressDashboard(url) {
+        const path = normalizePath(url);
+        return WP_DASHBOARD_RE.test(path) && !WP_DASHBOARD_OPEN_RE.test(path);
+    }
+
     const SCRIPT_RE = /\.(?:php\d?|phtml|aspx?|ashx|jspx?|cgi|pl|cfm|do|action)$/i;
 
     /** A server-side script file, the kind scanners try by name. */
@@ -275,6 +294,7 @@ const RequestPaths = (() => {
 
     return {
         splitTarget, normalizePath, sectionOf, resourceKind, isAuthRequest, attackSignature, isScriptPath,
+        isWordPressEntry, isWordPressDashboard,
         pathMatcher, describeFilter, summarize, summarizePaths, statusBreakdown, referrerSite,
     };
 })();

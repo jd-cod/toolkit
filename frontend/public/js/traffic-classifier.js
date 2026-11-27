@@ -67,6 +67,9 @@ const TrafficClassifier = (() => {
         rotationClients: 8,     // browser clients from one address before they are judged together
         rotationRequests: 50,
         stuffingClients: 30,    // clients that did nothing but try to log in at one endpoint
+        spreadClients: 20,      // clients that keep requesting the same page, before they are judged together
+        spreadPerMinute: 5,     // page requests in one minute from each of them
+        spreadPaths: 3,         // different pages each of them asked for, at most
     };
 
     // Assets served from another host never reach this log, and then "no
@@ -130,7 +133,8 @@ const TrafficClassifier = (() => {
             ip, ua, info,
             n: 0, pages: 0, assets: 0, media: 0, withRef: 0, err4: 0, heads: 0, http10: 0,
             robots: 0, probeBits: 0, probeHits: 0, strongBits: 0, scriptMissBits: 0, pathLo: 0, pathHi: 0,
-            pageTimes: null, peakMin: 0,
+            wpProbeBits: 0, wpProbeHits: 0, wpUser: 0,
+            pageTimes: null, peakMin: 0, firstPage: null, pageFirst: 0, pageLast: 0,
             authTimes: null, authPeak: 0, authAttempts: 0, authPath: null,
             cls: 'human', name: null, group: null, reason: 'Browser traffic', verified: null,
         };
@@ -141,12 +145,16 @@ const TrafficClassifier = (() => {
         const paths = requestPaths();
         const url = row.url || '';
         const path = paths.normalizePath(url);
+        const signature = url ? paths.attackSignature(url) : null;
         return {
             path,
             kind: paths.resourceKind(url),
-            signature: url ? paths.attackSignature(url) : null,
+            signature,
             auth: paths.isAuthRequest(row.method || '', url),
             script: paths.isScriptPath(url),
+            // WordPress's own entry points, where they are only suspicious.
+            wpEntry: Boolean(signature) && !signature.strong && paths.isWordPressEntry(url),
+            wpDashboard: path.indexOf('/wp-admin') !== -1 && paths.isWordPressDashboard(url),
             hash: hashPath(path),
         };
     }
@@ -184,6 +192,7 @@ const TrafficClassifier = (() => {
             client.media++;
         } else {
             client.pages++;
+            if (client.firstPage === null) client.firstPage = d.path;
             const bit = d.hash & 63;
             if (bit < 32) client.pathLo |= (1 << bit);
             else client.pathHi |= (1 << (bit - 32));
@@ -191,6 +200,8 @@ const TrafficClassifier = (() => {
                 if (!client.pageTimes) client.pageTimes = { times: [], head: 0 };
                 const inMinute = withinLastMinute(client.pageTimes, t);
                 if (inMinute > client.peakMin) client.peakMin = inMinute;
+                if (client.pageFirst === 0 || t < client.pageFirst) client.pageFirst = t;
+                if (t > client.pageLast) client.pageLast = t;
             }
         }
 
@@ -215,10 +226,17 @@ const TrafficClassifier = (() => {
         // the server did not serve it: where it exists and answers, people
         // and their browsers use it.
         const served = (row.status >= 200 && row.status < 300) || row.status === 304;
+        if (served && d.wpDashboard) client.wpUser = 1;
         if (d.signature && (d.signature.strong || !served)) {
-            client.probeHits++;
-            client.probeBits |= (1 << ((d.hash >>> 6) & 31));
-            if (d.signature.strong) client.strongBits |= (1 << ((d.hash >>> 11) & 31));
+            if (d.wpEntry) {
+                // Kept apart: from a logged-in WordPress user these are not probes.
+                client.wpProbeHits++;
+                client.wpProbeBits |= (1 << ((d.hash >>> 6) & 31));
+            } else {
+                client.probeHits++;
+                client.probeBits |= (1 << ((d.hash >>> 6) & 31));
+                if (d.signature.strong) client.strongBits |= (1 << ((d.hash >>> 11) & 31));
+            }
         }
         if (d.script && row.status === 404) client.scriptMissBits |= (1 << ((d.hash >>> 16) & 31));
     }
@@ -233,10 +251,15 @@ const TrafficClassifier = (() => {
      */
     function behaviourVerdict(c, cal) {
         const T = THRESHOLDS;
-        const probes = estimate(popcount(c.probeBits), 32);
+        // WordPress's login page, xmlrpc.php and wlwmanifest.xml redirect or
+        // refuse in normal use. Whoever the dashboard let in is a user of the
+        // site; from anyone else these are a scanner looking for WordPress.
+        const probeBits = c.wpUser ? c.probeBits : (c.probeBits | c.wpProbeBits);
+        const probeHits = c.wpUser ? c.probeHits : c.probeHits + c.wpProbeHits;
+        const probes = estimate(popcount(probeBits), 32);
         const strong = estimate(popcount(c.strongBits), 32);
         if (strong >= T.strongProbes || probes >= T.probePaths) {
-            return { label: 'Vulnerability probing', reason: `Requested ${Math.max(probes, strong)} different attack paths (${c.probeHits} requests)` };
+            return { label: 'Vulnerability probing', reason: `Requested ${Math.max(probes, strong)} different attack paths (${probeHits} requests)` };
         }
         const misses = estimate(popcount(c.scriptMissBits), 32);
         if (misses >= T.scriptMisses) {
@@ -284,6 +307,33 @@ const TrafficClassifier = (() => {
             }
         }
         return null;
+    }
+
+    /**
+     * The most page requests a group of clients sent within one minute.
+     * Only the first and last page request of a client are known, so its
+     * requests are taken as evenly spaced from the first to the last.
+     */
+    function busiestMinute(list) {
+        const HALF = 30;
+        const halves = new Map();
+        for (const c of list) {
+            // n requests, evenly spaced, fill n gaps: the last one counts too.
+            const length = Math.max(1, (c.pageLast - c.pageFirst) * c.pages / Math.max(1, c.pages - 1));
+            // Under one request a minute adds nothing to a flood.
+            if (length > c.pages * 60) continue;
+            const end = c.pageFirst + length;
+            for (let h = Math.floor(c.pageFirst / HALF); h * HALF < end; h++) {
+                const inside = Math.min(end, (h + 1) * HALF) - Math.max(c.pageFirst, h * HALF);
+                halves.set(h, (halves.get(h) || 0) + c.pages * inside / length);
+            }
+        }
+        let peak = 0;
+        for (const [h, count] of halves) {
+            const minute = count + (halves.get(h + 1) || 0);
+            if (minute > peak) peak = minute;
+        }
+        return Math.round(peak);
     }
 
     const AUTOMATED_REASONS = {
@@ -359,10 +409,12 @@ const TrafficClassifier = (() => {
             const T = THRESHOLDS;
             uaFieldMissing = rows >= UA_MISSING_MIN_ROWS && noUaRows / rows >= UA_MISSING_SHARE;
             let withAssets = 0;
+            let withReferrers = 0;
             let returning = 0;
             for (const c of clients) {
                 if (c.info.kind !== 'browser') continue;
                 if (c.assets > 0) withAssets++;
+                if (c.withRef > 0) withReferrers++;
                 if (c.n >= 5) returning++;
             }
             const assetsLogged = withAssets >= ASSET_CLIENTS || returning < ASSET_CHECK_CLIENTS;
@@ -435,6 +487,31 @@ const TrafficClassifier = (() => {
             for (const [path, list] of loginOnly) {
                 if (list.length < T.stuffingClients) continue;
                 for (const c of list) suspect(c, 'Distributed login attempts', `One of ${list.length} clients that did nothing but try to log in at ${path}`);
+            }
+
+            // A flood spread over many addresses: each client stays under the
+            // limits above, but they request the same page over and over at
+            // the same time, and none loads what a browser loads with a page.
+            // That can only be told where the log shows browsers doing so.
+            const assetsSeen = withAssets >= ASSET_CLIENTS;
+            const referrersSeen = withReferrers >= ASSET_CLIENTS;
+            if (assetsSeen || referrersSeen) {
+                const repeating = new Map();
+                for (const c of clients) {
+                    if (c.cls !== 'human' || c.info.kind !== 'browser' || c.peakMin < T.spreadPerMinute) continue;
+                    if ((assetsSeen && c.assets > 0) || c.withRef / c.n > 0.2) continue;
+                    if (popcount(c.pathLo) + popcount(c.pathHi) > T.spreadPaths) continue;
+                    let list = repeating.get(c.firstPage);
+                    if (!list) { list = []; repeating.set(c.firstPage, list); }
+                    list.push(c);
+                }
+                const missing = assetsSeen ? 'assets or referrers' : 'referrers';
+                for (const [path, list] of repeating) {
+                    if (list.length < T.spreadClients) continue;
+                    const together = busiestMinute(list);
+                    if (together < T.floodPerMinute) continue;
+                    for (const c of list) suspect(c, 'Distributed request flood', `One of ${list.length} clients that kept requesting ${path} at the same time, about ${together} requests in one minute together, without the ${missing} a browser sends`);
+                }
             }
         }
 

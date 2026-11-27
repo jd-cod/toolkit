@@ -69,7 +69,7 @@ Decisions taken while fixing, each easy to reverse:
 5. **Apps (B9).** Native apps and media players are judged by behaviour like browsers, so their users count as human unless the app probes, floods or guesses passwords. `okhttp` stays a script library.
 6. **Address filter.** A full address matches that address only; the start of one (`185.220.`) matches whole leading groups; CIDR works for IPv4 and IPv6. Text inside an address (`.3.4`) no longer matches.
 7. **Countries and networks (A3).** The two counters at the top no longer count "Unknown" as a country or AS0 as a network. The tables still list them.
-8. **Suspicious but ordinary paths (B2).** `wp-login.php`, `xmlrpc.php`, phpMyAdmin and the like count as probing only when the server did not serve them (any status outside 2xx and 304). Paths that are an attack on any site (`/.env`, traversal, injection) count whatever the status.
+8. **Suspicious but ordinary paths (B2).** `wp-login.php`, `xmlrpc.php`, phpMyAdmin and the like count as probing only when the server did not serve them (any status outside 2xx and 304). Paths that are an attack on any site (`/.env`, traversal, injection) count whatever the status. From a client the WordPress dashboard let in, WordPress's own files never count (section 1d).
 9. **Page scripts.** A client whose requests nearly all carry a referrer needs four weak signals instead of three before it is called crawler-like. This keeps search-as-you-type and polling from being flagged.
 10. **Missing data.** When a GeoIP database or the crawler range file cannot be loaded, the analysis runs anyway and the dashboard says what is missing, instead of refusing to start.
 11. **Feed ranges.** The backend refuses published ranges wider than a /8 (IPv4) or a /16 (IPv6), and the unspecified and loopback addresses. A feed entry such as `0.0.0.0/0` would otherwise verify every address.
@@ -142,7 +142,28 @@ Sharing: uploaded files are not held as text, so they are read when the share li
 
 The tests that compared the two engines with each other (`engine-parity.test.js`, parts of `request-rate.test.js`) now compare the engine with the log: each test log is generated from a list of requests, and every number is recounted from that list (`tests/unit/engine-result.test.js`).
 
-Seen while generating sample logs and not changed: a flood spread over many addresses stays "human" as long as each address stays under 120 page requests a minute (`THRESHOLDS.floodPerMinute`).
+Seen while generating sample logs: a flood spread over many addresses stayed "human" as long as each address stayed under 120 page requests a minute. Closed in section 1d.
+
+## 1d. Two classifier limits closed (2026-11-27)
+
+**A flood spread over many addresses.** Each address stays under the per-client limits, so each was "human". Now clients are also judged together, as "Distributed request flood", when all of this holds:
+
+- at least 20 clients (`spreadClients`) kept requesting the same page: each sent 5 or more page requests within one minute (`spreadPerMinute`) and asked for 3 different pages at most (`spreadPaths`);
+- none of them fetched an asset, and at most 20% of the requests of each carry a referrer;
+- together they sent 120 or more requests in one minute (`floodPerMinute`). Only the first and last page request of a client are kept, so its requests are taken as evenly spaced between the two.
+
+The sample "Layer-7 Flood" has a second wave of this kind: 240 addresses at about eight requests a minute each. Before, its 6,000 requests were human; now they are suspected, and the 3,213 requests of the sample's visitors are still human.
+
+What this rule does not catch, on purpose, because the same picture is also what real visitors look like:
+
+- A log in which no browser client fetched an asset or sent a referrer (fewer than three did). An excerpt that holds nothing but the flood, or the log of an API host whose pages send no referrer, gives nothing to compare with.
+- Clients that send a referrer with their requests. A page script that polls an address looks the same.
+- Fewer than five requests a minute from each address, or fewer than 20 addresses on one page.
+- A client that fetched even one asset during the log is taken for a browser.
+
+**A logged-in WordPress user.** Logging in and out answers with a redirect, `xmlrpc.php` refuses a GET, a hardened site has removed `wlwmanifest.xml`: three "sensitive paths that the server did not serve", which made an administrator a vulnerability scanner. Now a client that was served a dashboard page (`/wp-admin/` or a script in it, with 2xx or 304) is a user of the site, and WordPress's own entry points (`wp-login.php`, `xmlrpc.php`, `wlwmanifest.xml`) are not counted against it. The parts of `/wp-admin/` that answer anyone do not prove a login: `admin-ajax.php`, `admin-post.php`, `install.php`, `setup-config.php`, `load-styles.php`, `load-scripts.php`, `upgrade.php`, `maint/repair.php`, and the stylesheets and scripts. Everything else still counts for such a client: phpMyAdmin and other admin tools, and every path that is an attack on any site.
+
+Tests: `tests/unit/traffic-classifier.test.js` ("a flood spread over many addresses", "a logged-in WordPress user ..."), `tests/unit/engine-result.test.js`, `tests/e2e/samples.spec.ts`.
 
 ## 2. How this was checked
 
