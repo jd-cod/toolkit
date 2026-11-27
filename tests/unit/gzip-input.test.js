@@ -65,6 +65,22 @@ test('zero padding after the archive is ignored silently, other data with a warn
     assert.equal(r.warnings.length, 1);
 });
 
+test('a decompressor that reads several members itself does not give a member twice', async () => {
+    // Browsers stop with an error after the first member. zlib reads on into
+    // the next ones, and fails only at data that is not gzip.
+    const { Duplex } = await import('node:stream');
+    const strict = globalThis.DecompressionStream;
+    globalThis.DecompressionStream = class { constructor() { return Duplex.toWeb(zlib.createGunzip()); } };
+    try {
+        let r = await read(new Blob([zlib.gzipSync(A), zlib.gzipSync(B), zlib.gzipSync('last line\n')]));
+        assert.equal(r.text, A + B + 'last line\n');
+        r = await read(new Blob([zlib.gzipSync(A), zlib.gzipSync(B), Buffer.from('not gzip at all, and long enough to be read as a header')]));
+        assert.equal(r.text, A + B);
+    } finally {
+        globalThis.DecompressionStream = strict;
+    }
+});
+
 test('plain text is passed through whatever the file is called', async () => {
     const r = await read(new File([A], 'access.log.gz', { type: 'application/gzip' }));
     assert.equal(r.text, A);

@@ -1,4 +1,4 @@
-import { MyIPResult } from './api';
+import type { MyIPResult } from './api';
 
 export interface ConnectionInfo {
   type: string;

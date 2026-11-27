@@ -202,6 +202,7 @@ async function* gunzipMembers(blob, onWarning) {
     let memberStarts = null; // looked for only after an attempt fails
     let padding = size;      // where zero padding at the end of the file begins
     let total = 0;
+    let carried = 0;         // output of the next member that was passed on already
 
     // Places where the member that begins at `from` may end, nearest first.
     const possibleEnds = (from) => {
@@ -225,15 +226,17 @@ async function* gunzipMembers(blob, onWarning) {
         // The first attempt takes the rest of the file: right for the usual
         // archive with one member, at no extra cost.
         let ends = memberStarts ? [...possibleEnds(start), size] : [size];
-        let emitted = 0;
+        let emitted = carried;
         let finished = false;
         for (let i = 0; i < ends.length; i++) {
             let skip = emitted;
+            let produced = 0;
             try {
                 const reader = blob.slice(start, ends[i]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
                 for (;;) {
                     const { done, value } = await reader.read();
                     if (done) break;
+                    produced += value.length;
                     if (skip >= value.length) { skip -= value.length; continue; }
                     const chunk = skip > 0 ? value.subarray(skip) : value;
                     skip = 0;
@@ -243,6 +246,9 @@ async function* gunzipMembers(blob, onWarning) {
                 }
                 finished = true;
                 start = ends[i];
+                // A decompressor that reads on into the next member has
+                // already passed on the beginning of what follows.
+                carried = Math.max(0, emitted - produced);
                 break;
             } catch {
                 if (!memberStarts) {
