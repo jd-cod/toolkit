@@ -260,7 +260,7 @@ const Report = (() => {
                         Category: g.group_name || 'Bot Group',
                         Item: `Status: ${g.verification_status || 'unverified'}`,
                         Value: g.requests,
-                        Details: `${g.unique_ips} IPs (${g.pct}%) | Verified: ${g.verified_requests || 0}, Spoofed: ${g.spoofed_requests || 0}`,
+                        Details: `${g.unique_ips} IPs (${g.pct}%) | Verified: ${g.verified_requests || 0}, Spoofed: ${g.spoofed_requests || 0}, Unverified: ${g.unverified_requests || 0}, Automated: ${g.automated_requests || 0}, Suspected: ${g.suspected_requests || 0}`,
                     });
                 });
             }
@@ -643,6 +643,8 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
         const spoofedCount = data.spoofed_bots_count || 0;
         const verifiedPct = total ? Math.round(verifiedCount / total * 1000) / 10 : 0;
         const spoofedPct = total ? Math.round(spoofedCount / total * 1000) / 10 : 0;
+        const otherCount = data.other_bots_count ?? Math.max(0, total - (data.human_requests || 0) - verifiedCount - spoofedCount);
+        const otherPct = total ? Math.round(otherCount / total * 1000) / 10 : 0;
 
         return `<div class="stat-cards">
     <div class="stat-card sc-blue"><div class="stat-icon">⚡</div><div class="stat-value" style="color:#6366f1">${n(total)}</div><div class="stat-label">Total Requests</div></div>
@@ -652,6 +654,7 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
     <div class="stat-card sc-purple"><div class="stat-icon">👥</div><div class="stat-value" style="color:#a855f7">${humanPct}%</div><div class="stat-label">Human Traffic</div></div>
     <div class="stat-card" style="border-top:3px solid #10b981"><div class="stat-icon">🛡️</div><div class="stat-value" style="color:#10b981">${n(verifiedCount)}</div><div class="stat-label">Verified Bots (${verifiedPct}%)</div></div>
     <div class="stat-card" style="border-top:3px solid ${spoofedCount > 0 ? '#ef4444' : '#1e2235'}"><div class="stat-icon">🚨</div><div class="stat-value" style="color:${spoofedCount > 0 ? '#ef4444' : '#5a6478'}">${n(spoofedCount)}</div><div class="stat-label">Spoofed Bots (${spoofedPct}%)</div></div>
+    <div class="stat-card" style="border-top:3px solid #f59e0b"><div class="stat-icon">🤖</div><div class="stat-value" style="color:#f59e0b">${n(otherCount)}</div><div class="stat-label">Other Bots (${otherPct}%)</div></div>
 </div>`;
     }
 
@@ -780,6 +783,10 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
                 ? `<span style="font-size:0.72rem;padding:2px 6px;border-radius:4px;background:rgba(239,68,68,0.15);color:#f87171;font-weight:600">Fake / Spoofed (${n(g.spoofed_requests || 0)})</span>`
                 : g.verification_status === 'mixed'
                 ? `<span style="font-size:0.72rem;padding:2px 6px;border-radius:4px;background:rgba(245,158,11,0.15);color:#fbbf24;font-weight:600">Mixed</span>`
+                : g.verification_status === 'automated'
+                ? `<span style="font-size:0.72rem;padding:2px 6px;border-radius:4px;background:rgba(245,158,11,0.15);color:#fbbf24;font-weight:600">Automated</span>`
+                : g.verification_status === 'suspected'
+                ? `<span style="font-size:0.72rem;padding:2px 6px;border-radius:4px;background:rgba(245,158,11,0.15);color:#fbbf24;font-weight:600">Suspected</span>`
                 : `<span style="font-size:0.72rem;padding:2px 6px;border-radius:4px;background:rgba(100,116,139,0.15);color:#94a3b8;font-weight:600">Unverified</span>`;
 
             const subRows = g.has_sub_groups ? g.sub_bots.map(sb => {
@@ -787,6 +794,8 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
                     ? `<span style="font-size:0.68rem;color:#34d399">Verified</span>`
                     : sb.verification_status === 'spoofed'
                     ? `<span style="font-size:0.68rem;color:#f87171">Spoofed</span>`
+                    : (sb.verification_status === 'automated' || sb.verification_status === 'suspected')
+                    ? `<span style="font-size:0.68rem;color:#fbbf24">${sb.verification_status === 'automated' ? 'Automated' : 'Suspected'}</span>`
                     : `<span style="font-size:0.68rem;color:#94a3b8">Unverified</span>`;
                 return `<tr><td style="font-weight:500;font-size:0.85rem;color:#94a3b8">${esc(sb.bot_name)}</td><td>${subBadge}</td><td class="text-right"><span class="hits-badge">${n(sb.requests)}</span></td><td class="text-right" style="font-size:0.82rem">${sb.unique_ips} IPs</td><td class="text-right" style="font-size:0.82rem">${sb.pct}%</td></tr>`;
             }).join('') : '';

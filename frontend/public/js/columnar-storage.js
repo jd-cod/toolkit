@@ -21,6 +21,14 @@ class ColumnarStorage {
         this.col_country = new Uint16Array(this.capacity);
         this.col_asn = new Uint32Array(this.capacity);
         this.col_method = new Uint8Array(this.capacity);
+        // Client (IP + User-Agent) of each row, as numbered by the traffic
+        // classifier. Unused until a caller passes a client id to appendRow().
+        this.col_client = new Uint32Array(this.capacity);
+        this.hasClients = false;
+        this.clientClass = null;   // Uint8Array: class index per client
+        this.clientGroup = null;   // string per client: bot group, '' for humans
+        this.clientUa = null;      // (clientId) => User-Agent string
+        this.classNames = [];
 
         // String Dictionaries: Array for ID->String, Map for String->ID
         this.ipDict = [];
@@ -58,6 +66,7 @@ class ColumnarStorage {
         this.col_country = realloc(this.col_country, Uint16Array);
         this.col_asn = realloc(this.col_asn, Uint32Array);
         this.col_method = realloc(this.col_method, Uint8Array);
+        this.col_client = realloc(this.col_client, Uint32Array);
 
         this.capacity = newCap;
     }
@@ -73,7 +82,7 @@ class ColumnarStorage {
         return id;
     }
 
-    appendRow(ip, timeSec, status, bytes, url, bot, country, asn, method = 'GET') {
+    appendRow(ip, timeSec, status, bytes, url, bot, country, asn, method = 'GET', clientId) {
         this._ensureCapacity(this.rowCount + 1);
         const idx = this.rowCount;
 
@@ -86,8 +95,42 @@ class ColumnarStorage {
         this.col_country[idx] = this._getOrSetId(country, this.countryDict, this.countryMap);
         this.col_asn[idx] = (asn >>> 0) || 0;
         this.col_method[idx] = this._getOrSetId(method || 'GET', this.methodDict, this.methodMap);
+        if (clientId !== undefined) {
+            this.col_client[idx] = clientId;
+            this.hasClients = true;
+        }
 
         this.rowCount++;
+    }
+
+    /**
+     * Attach the traffic class of every client, so rows can be filtered and
+     * counted by class.
+     *
+     * @param {string[]} classNames - Class name for each class index.
+     * @param {Uint8Array} clientClass - Class index per client id.
+     * @param {string[]} clientGroup - Bot group per client id ('' for humans).
+     * @param {(clientId: number) => string} [clientUa] - User-Agent of a client.
+     */
+    setClientClasses(classNames, clientClass, clientGroup, clientUa) {
+        this.classNames = classNames;
+        this.clientClass = clientClass;
+        this.clientGroup = clientGroup;
+        this.clientUa = typeof clientUa === 'function' ? clientUa : null;
+    }
+
+    /** Country and network of an address, from the last GeoIP enrichment. */
+    ipGeo(ip) {
+        const id = this.ipMap.get(ip);
+        if (id === undefined || !this.ipCountryIds || !this.ipAsns) return null;
+        const code = this.countryDict[this.ipCountryIds[id]] || '--';
+        const asn = this.ipAsns[id] || 0;
+        return {
+            country: code,
+            country_code: code,
+            asn,
+            asn_org: (this.asnOrgMap && this.asnOrgMap[asn]) || 'Unknown',
+        };
     }
 
     enrichGeo(geoMap = {}) {
@@ -186,7 +229,10 @@ class ColumnarStorage {
     getTopIps(limit = 50, filters = {}) {
         const parsed = this._parseFilters(filters);
         if (parsed === null) return [];
-        const { targetIpId, targetBotId, targetCountryId, minStatus, maxStatus, targetAsn, minTime, maxTime } = parsed;
+        const { targetIpId, targetBotId, targetCountryId, minStatus, maxStatus, targetAsn, minTime, maxTime, classMask, groupName } = parsed;
+        const col_client = this.col_client;
+        const clientClass = this.clientClass;
+        const clientGroup = this.clientGroup;
 
         const counts = new Uint32Array(this.ipDict.length);
         const total = this.rowCount;
@@ -200,6 +246,8 @@ class ColumnarStorage {
         for (let i = 0; i < total; i++) {
             if (targetIpId !== undefined && col_ip[i] !== targetIpId) continue;
             if (targetBotId !== undefined && col_bot[i] !== targetBotId) continue;
+            if (classMask !== 0 && !((classMask >> clientClass[col_client[i]]) & 1)) continue;
+            if (groupName !== null && clientGroup[col_client[i]] !== groupName) continue;
             if (targetCountryId !== undefined && col_country[i] !== targetCountryId) continue;
             if (col_status[i] < minStatus || col_status[i] > maxStatus) continue;
             if (targetAsn !== 0 && col_asn[i] !== targetAsn) continue;
@@ -228,10 +276,29 @@ class ColumnarStorage {
             if (targetIpId === undefined) return null; // Filter string never seen -> 0 results
         }
 
+        // Traffic filter. With classified clients the value is a class
+        // ('human', 'verified', ...), 'all_bots', or a bot group name; an
+        // optional botGroup narrows a class to one group. Without them it is
+        // the bot name stored with each row.
         let targetBotId;
+        let classMask = 0;
+        let groupName = null;
         if (filters.bot && filters.bot !== 'all') {
-            targetBotId = this.botMap.get(filters.bot);
-            if (targetBotId === undefined) return null;
+            if (this.clientClass && this.hasClients) {
+                const classIndex = this.classNames.indexOf(filters.bot);
+                if (classIndex !== -1) {
+                    classMask = 1 << classIndex;
+                } else if (filters.bot === 'all_bots') {
+                    const humanIndex = this.classNames.indexOf('human');
+                    classMask = ((1 << this.classNames.length) - 1) & ~(humanIndex === -1 ? 0 : (1 << humanIndex));
+                } else {
+                    groupName = filters.bot;
+                }
+                if (filters.botGroup) groupName = filters.botGroup;
+            } else {
+                targetBotId = this.botMap.get(filters.bot);
+                if (targetBotId === undefined) return null;
+            }
         }
 
         let targetCountryId;
@@ -270,7 +337,7 @@ class ColumnarStorage {
             if (filters.endTimeSec) maxTime = filters.endTimeSec;
         }
 
-        return { targetIpId, targetBotId, targetCountryId, minStatus, maxStatus, targetAsn, minTime, maxTime };
+        return { targetIpId, targetBotId, targetCountryId, minStatus, maxStatus, targetAsn, minTime, maxTime, classMask, groupName };
     }
 
     query(filters = {}) {
@@ -288,7 +355,10 @@ class ColumnarStorage {
             };
         }
 
-        const { targetIpId, targetBotId, targetCountryId, minStatus, maxStatus, targetAsn, minTime, maxTime } = parsed;
+        const { targetIpId, targetBotId, targetCountryId, minStatus, maxStatus, targetAsn, minTime, maxTime, classMask, groupName } = parsed;
+        const col_client = this.col_client;
+        const clientClass = this.clientClass;
+        const clientGroup = this.clientGroup;
         const total = this.rowCount;
 
         let matchingCount = 0;
@@ -303,6 +373,8 @@ class ColumnarStorage {
         const asnHits = {};
         const methodHits = {};
         const timeBuckets = {};
+        // Requests per client, for the caller to turn into traffic classes.
+        const clientCounts = (clientClass && this.hasClients) ? new Uint32Array(clientClass.length) : null;
 
         const col_ip = this.col_ip;
         const col_time = this.col_time;
@@ -316,6 +388,8 @@ class ColumnarStorage {
         for (let i = 0; i < total; i++) {
             if (targetIpId !== undefined && col_ip[i] !== targetIpId) continue;
             if (targetBotId !== undefined && col_bot[i] !== targetBotId) continue;
+            if (classMask !== 0 && !((classMask >> clientClass[col_client[i]]) & 1)) continue;
+            if (groupName !== null && clientGroup[col_client[i]] !== groupName) continue;
             if (targetCountryId !== undefined && col_country[i] !== targetCountryId) continue;
             if (col_status[i] < minStatus || col_status[i] > maxStatus) continue;
             if (targetAsn !== 0 && col_asn[i] !== targetAsn) continue;
@@ -323,6 +397,7 @@ class ColumnarStorage {
 
             matchingCount++;
             totalBytes += col_bytes[i];
+            if (clientCounts) clientCounts[col_client[i]]++;
             const ipId = col_ip[i];
             if (ipSeen[ipId] === 0) {
                 ipSeen[ipId] = 1;
@@ -407,7 +482,8 @@ class ColumnarStorage {
             topIps,
             timeBuckets,
             minTimeSec,
-            maxTimeSec
+            maxTimeSec,
+            ...(clientCounts ? { clientCounts } : {})
         };
     }
 
@@ -420,7 +496,10 @@ class ColumnarStorage {
             return { rows: [], totalRows: 0, page, totalPages: 0, pageSize: size };
         }
 
-        const { targetIpId, targetBotId, targetCountryId, minStatus, maxStatus, targetAsn, minTime, maxTime } = parsed;
+        const { targetIpId, targetBotId, targetCountryId, minStatus, maxStatus, targetAsn, minTime, maxTime, classMask, groupName } = parsed;
+        const col_client = this.col_client;
+        const clientClass = this.clientClass;
+        const clientGroup = this.clientGroup;
         const total = this.rowCount;
         const startIndex = (page - 1) * size;
         const endIndex = startIndex + size;
@@ -442,13 +521,15 @@ class ColumnarStorage {
         for (let i = 0; i < total; i++) {
             if (targetIpId !== undefined && col_ip[i] !== targetIpId) continue;
             if (targetBotId !== undefined && col_bot[i] !== targetBotId) continue;
+            if (classMask !== 0 && !((classMask >> clientClass[col_client[i]]) & 1)) continue;
+            if (groupName !== null && clientGroup[col_client[i]] !== groupName) continue;
             if (targetCountryId !== undefined && col_country[i] !== targetCountryId) continue;
             if (col_status[i] < minStatus || col_status[i] > maxStatus) continue;
             if (targetAsn !== 0 && col_asn[i] !== targetAsn) continue;
             if (col_time[i] < minTime || col_time[i] > maxTime) continue;
 
             if (matchedCount >= startIndex && matchedCount < endIndex) {
-                rows.push({
+                const row = {
                     ip: this.ipDict[col_ip[i]],
                     timeSec: col_time[i],
                     status: col_status[i],
@@ -457,8 +538,18 @@ class ColumnarStorage {
                     url: this.urlDict[col_url[i]],
                     bot: this.botDict[col_bot[i]],
                     country: this.countryDict[col_country[i]],
-                    asn: col_asn[i]
-                });
+                    asn: col_asn[i],
+                    // Names the Log Explorer reads, shared with in-memory entries.
+                    timestamp: col_time[i] > 0 ? col_time[i] * 1000 : null,
+                    status_code: col_status[i]
+                };
+                if (clientClass && this.hasClients) {
+                    const clientId = col_client[i];
+                    row.traffic_class = this.classNames[clientClass[clientId]];
+                    row.bot_group = clientGroup[clientId] || null;
+                    if (this.clientUa) row.user_agent = this.clientUa(clientId) || '-';
+                }
+                rows.push(row);
                 if (rows.length >= size && knownTotal >= 0) {
                     matchedCount = knownTotal;
                     break;

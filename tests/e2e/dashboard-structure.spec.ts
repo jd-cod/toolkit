@@ -20,8 +20,23 @@ test.describe('Dashboard structure', () => {
     await expect(page.getByRole('button', { name: /share/i })).toBeVisible();
   });
 
-  test('renders all 7 micro KPI cards', async ({ page }) => {
-    await expect(page.locator('.kpi-micro-card')).toHaveCount(7);
+  test('renders all 8 micro KPI cards', async ({ page }) => {
+    await expect(page.locator('.kpi-micro-card')).toHaveCount(8);
+  });
+
+  test('the traffic KPI cards add up to the total', async ({ page }) => {
+    const number = async (selector: string) =>
+      Number(((await page.locator(selector).textContent()) || '').replace(/[^0-9]/g, ''));
+    const total = await number('.kpi-card-total .stat-value');
+    const human = Number(
+      ((await page.locator('.kpi-card-human').getAttribute('title')) || '').match(/^[\d,]+/)?.[0].replace(/,/g, ''),
+    );
+    const verified = await number('.kpi-card-verified .stat-value');
+    const spoofed = await number('.kpi-card-spoofed .stat-value');
+    const other = await number('.kpi-card-otherbots .stat-value');
+
+    expect(total).toBeGreaterThan(0);
+    expect(human + verified + spoofed + other).toBe(total);
   });
 
   test('renders the HTTP methods and bandwidth ribbon', async ({ page }) => {

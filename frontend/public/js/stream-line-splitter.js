@@ -248,6 +248,12 @@ function streamChunksToWorker(stream, worker, options = {}, onProgress = null) {
 
         (async () => {
             try {
+                // The worker checks bot addresses against the ranges the page
+                // already loaded.
+                const detector = (typeof window !== 'undefined' ? window.BotDetector : null) || (typeof globalThis !== 'undefined' ? globalThis.BotDetector : null);
+                const botFeed = detector && typeof detector.getData === 'function' ? detector.getData() : null;
+                if (botFeed) worker.postMessage({ action: 'configure', botFeed });
+
                 const reader = stream.getReader();
                 while (true) {
                     const { done, value } = await reader.read();

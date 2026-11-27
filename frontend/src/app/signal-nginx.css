@@ -139,12 +139,13 @@ body[data-nginx-view="results"] .signal-nginx-import-layout { display: none; }
 .signal-dashboard-errors { margin-left: auto; color: var(--accent-amber); font-size: 13px; text-align: right; flex-shrink: 0; }
 .signal-dashboard-errors small { display: block; color: var(--text-muted); font-size: 11px; }
 .signal-workspace #nginx-dashboard [id^="signal-"] { scroll-margin-top: 20px; }
-.signal-workspace .kpi-micro-cards-strip { gap: 12px; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.signal-workspace .kpi-micro-cards-strip { gap: 12px; grid-template-columns: repeat(8, minmax(0, 1fr)); }
 .signal-workspace .kpi-micro-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 9px; padding: 17px 14px; box-shadow: none; align-items: flex-start; text-align: left; }
 .signal-workspace .kpi-micro-card .stat-value { font-family: var(--font-sans); font-size: clamp(20px, 1.7vw, 28px); color: var(--text-primary); text-shadow: none; line-height: 1.3; }
 .signal-workspace .kpi-micro-card .stat-label { color: var(--text-secondary); font-size: 10px; letter-spacing: .02em; margin-top: 8px; white-space: normal; }
 .signal-workspace :is(.kpi-card-human, .kpi-card-verified) .stat-value { color: var(--accent-primary); }
 .signal-workspace .kpi-card-spoofed .stat-value { color: var(--accent-red); }
+.signal-workspace .kpi-card-otherbots .stat-value { color: var(--accent-amber); }
 .signal-workspace .kpi-micro-card::before, .signal-workspace .kpi-micro-card::after { display: none; }
 .signal-workspace .methods-bandwidth-ribbon { background: var(--bg-card); border-color: var(--border-color); padding: 12px 16px; box-shadow: none; }
 .signal-workspace :is(.table-card, .chart-card, .master-filter-box) { background: var(--bg-card); border: 1px solid var(--border-color); box-shadow: none; }
@@ -242,7 +243,6 @@ body[data-nginx-view="results"] .signal-nginx-import-layout { display: none; }
   .signal-dashboard-errors { margin-left: 0; text-align: left; }
   .signal-dashboard-errors small { display: inline; margin-left: 5px; }
   .signal-workspace .kpi-micro-cards-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .signal-workspace .kpi-micro-card:last-child { grid-column: 1 / -1; }
   .signal-workspace .kpi-micro-card .stat-value { font-size: 26px; }
   .signal-workspace .incident-3col-grid { grid-template-columns: 1fr; }
   .signal-workspace .filter-select { max-width: 100%; flex: 1 1 130px; }

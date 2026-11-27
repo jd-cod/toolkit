@@ -4,9 +4,57 @@
  * Port of Python analyze_logs() function.
  * Takes parsed IPs + user agents + GeoIP lookups and produces
  * country hits, ASN hits, top IPs, bot breakdown (with sub-groups), etc.
+ *
+ * Needs GeoIP, BotDetector and TrafficClassifier to be loaded first.
  */
 
 const Analyzer = (() => {
+    /**
+     * Group requests into clients (IP + User-Agent) with their traffic class.
+     *
+     * Entries carry their class from enrichLogEntries(), which judges each
+     * client over the whole log. Reading it back here keeps a request in the
+     * same class when only a filtered part of the log is analysed.
+     */
+    function classifiedClients(ips, userAgents, logEntries) {
+        let entries = logEntries;
+        if (!entries || entries.length !== ips.length) {
+            entries = ips.map((ip, i) => ({ ip, user_agent: userAgents[i] === '-' ? null : userAgents[i] }));
+        }
+        if (entries.some(e => e.traffic_class === undefined)) enrichLogEntries(entries);
+
+        const items = new Map();
+        for (const e of entries) {
+            const key = e.ip + '\u0000' + (e.user_agent || '');
+            let item = items.get(key);
+            if (!item) {
+                item = {
+                    client: {
+                        ip: e.ip,
+                        ua: e.user_agent || '',
+                        cls: e.traffic_class,
+                        name: e.bot_name,
+                        group: e.bot_group,
+                        reason: e.bot_reason,
+                        verified: e.bot_verified,
+                    },
+                    count: 0,
+                };
+                items.set(key, item);
+            }
+            item.count++;
+        }
+        return items.values();
+    }
+
+    // True when the log format has no User-Agent column (see TrafficClassifier).
+    function uaFieldMissing(userAgents) {
+        if (userAgents.length < 20) return false;
+        let missing = 0;
+        for (const ua of userAgents) if (!ua || ua === '-') missing++;
+        return missing / userAgents.length >= 0.9;
+    }
+
     /**
      * Analyze extracted IPs and produce security-focused metrics.
      */
@@ -53,109 +101,10 @@ const Analyzer = (() => {
             asnOrgMap.set(asnKey, info.asn_org);
         }
 
-        // Bot detection and verification with sub-grouping
-        const botGroupData = new Map();  // groupName -> { requests, ips: Set, verifiedReqs: 0, spoofedReqs: 0, unverifiedReqs: 0, subBots: Map }
-        const botCounter = new Map();
-        const botIPs = new Map();
-        const botIPHits = new Map();
-        const botIPUA = new Map();
-        let humanCount = 0;
-        let verifiedBotsCount = 0;
-        let spoofedBotsCount = 0;
-        let unverifiedBotsCount = 0;
-        const verifiedBotIPs = new Set();
-        const spoofedBotIPs = new Set();
-        const spoofedAttackersMap = new Map(); // "ip|botName" -> details
-
-        for (let i = 0; i < ips.length; i++) {
-            const ip = ips[i];
-            const ua = userAgents[i];
-            const botResult = BotDetector.detectBot(ua);
-            if (botResult) {
-                const { name, group } = botResult;
-                const groupName = group || name;
-                const verifyResult = BotDetector.verifyBot(name, ip);
-
-                if (verifyResult.status === 'verified') {
-                    verifiedBotsCount++;
-                    verifiedBotIPs.add(ip);
-                } else if (verifyResult.status === 'spoofed') {
-                    spoofedBotsCount++;
-                    spoofedBotIPs.add(ip);
-                    const spoofKey = `${ip}|${name}`;
-                    if (!spoofedAttackersMap.has(spoofKey)) {
-                        const info = GeoIP.lookupIP(ip);
-                        spoofedAttackersMap.set(spoofKey, {
-                            ip,
-                            bot_name: name,
-                            group_name: groupName,
-                            hits: 0,
-                            country: info.country || 'Unknown',
-                            country_code: info.country_code || '--',
-                            asn: info.asn ? `AS${info.asn}` : 'AS0',
-                            asn_org: info.asn_org || 'Unknown',
-                            user_agent: ua,
-                            reason: verifyResult.reason,
-                        });
-                    }
-                    spoofedAttackersMap.get(spoofKey).hits++;
-                } else {
-                    unverifiedBotsCount++;
-                }
-
-                // Track per-group
-                if (!botGroupData.has(groupName)) {
-                    botGroupData.set(groupName, {
-                        requests: 0,
-                        ips: new Set(),
-                        verifiedReqs: 0,
-                        spoofedReqs: 0,
-                        unverifiedReqs: 0,
-                        subBots: new Map(),
-                    });
-                }
-                const gd = botGroupData.get(groupName);
-                gd.requests++;
-                gd.ips.add(ip);
-                if (verifyResult.status === 'verified') gd.verifiedReqs++;
-                else if (verifyResult.status === 'spoofed') gd.spoofedReqs++;
-                else gd.unverifiedReqs++;
-
-                // Track sub-bot within group
-                if (!gd.subBots.has(name)) {
-                    gd.subBots.set(name, {
-                        requests: 0,
-                        ips: new Set(),
-                        ipHits: new Map(),
-                        ipUA: new Map(),
-                        ipVerify: new Map(),
-                        verifiedReqs: 0,
-                        spoofedReqs: 0,
-                        unverifiedReqs: 0,
-                    });
-                }
-                const sb = gd.subBots.get(name);
-                sb.requests++;
-                sb.ips.add(ip);
-                sb.ipHits.set(ip, (sb.ipHits.get(ip) || 0) + 1);
-                sb.ipUA.set(ip, ua);
-                sb.ipVerify.set(ip, verifyResult);
-                if (verifyResult.status === 'verified') sb.verifiedReqs++;
-                else if (verifyResult.status === 'spoofed') sb.spoofedReqs++;
-                else sb.unverifiedReqs++;
-
-                // Legacy flat tracking
-                botCounter.set(name, (botCounter.get(name) || 0) + 1);
-                if (!botIPs.has(name)) botIPs.set(name, new Set());
-                botIPs.get(name).add(ip);
-                if (!botIPHits.has(name)) botIPHits.set(name, new Map());
-                botIPHits.get(name).set(ip, (botIPHits.get(name).get(ip) || 0) + 1);
-                if (!botIPUA.has(name)) botIPUA.set(name, new Map());
-                botIPUA.get(name).set(ip, ua);
-            } else {
-                humanCount++;
-            }
-        }
+        // Traffic classes, bot groups and spoofed-bot lists
+        const traffic = TrafficClassifier.aggregate(classifiedClients(ips, userAgents, logEntries), {
+            geo: ip => GeoIP.lookupIP(ip),
+        });
 
         // Build sorted country hits
         const countryHits = [...countryCounter.entries()]
@@ -198,64 +147,7 @@ const Analyzer = (() => {
                 return { ip: ipStr, hits, country: info.country, country_code: info.country_code, asn: info.asn, asn_org: info.asn_org };
             });
 
-        // Bot hits grouped (top 20 groups) with verification statuses
         const totalRequests = ips.length;
-        const botGroups = [...botGroupData.entries()]
-            .sort((a, b) => b[1].requests - a[1].requests)
-            .slice(0, 20)
-            .map(([groupName, gd]) => {
-                const subBots = [...gd.subBots.entries()]
-                    .sort((a, b) => b[1].requests - a[1].requests)
-                    .map(([subName, sb]) => {
-                        let subStatus = 'unverified';
-                        if (sb.spoofedReqs > 0 && sb.verifiedReqs > 0) subStatus = 'mixed';
-                        else if (sb.spoofedReqs > 0) subStatus = 'spoofed';
-                        else if (sb.verifiedReqs > 0) subStatus = 'verified';
-
-                        return {
-                            bot_name: subName,
-                            requests: sb.requests,
-                            unique_ips: sb.ips.size,
-                            pct: totalRequests ? Math.round(sb.requests / totalRequests * 1000) / 10 : 0,
-                            verified_requests: sb.verifiedReqs,
-                            spoofed_requests: sb.spoofedReqs,
-                            unverified_requests: sb.unverifiedReqs,
-                            verification_status: subStatus,
-                            ip_details: [...sb.ips].map(ip => {
-                                const v = sb.ipVerify.get(ip) || { verified: null, status: 'unverified_publisher', reason: 'Unverified' };
-                                return {
-                                    ip,
-                                    hits: sb.ipHits.get(ip) || 0,
-                                    user_agent: sb.ipUA.get(ip) || '-',
-                                    verified: v.verified,
-                                    status: v.status,
-                                    reason: v.reason,
-                                };
-                            }).sort((a, b) => b.hits - a.hits),
-                        };
-                    });
-
-                let groupStatus = 'unverified';
-                if (gd.spoofedReqs > 0 && gd.verifiedReqs > 0) groupStatus = 'mixed';
-                else if (gd.spoofedReqs > 0) groupStatus = 'spoofed';
-                else if (gd.verifiedReqs > 0) groupStatus = 'verified';
-
-                return {
-                    group_name: groupName,
-                    requests: gd.requests,
-                    unique_ips: gd.ips.size,
-                    pct: totalRequests ? Math.round(gd.requests / totalRequests * 1000) / 10 : 0,
-                    verified_requests: gd.verifiedReqs,
-                    spoofed_requests: gd.spoofedReqs,
-                    unverified_requests: gd.unverifiedReqs,
-                    verification_status: groupStatus,
-                    sub_bots: subBots,
-                    has_sub_groups: subBots.length > 1,
-                };
-            });
-
-        const spoofedAttackers = [...spoofedAttackersMap.values()].sort((a, b) => b.hits - a.hits);
-        const uniqueSpoofedIPs = [...spoofedBotIPs];
 
         return {
             total_requests: totalRequests,
@@ -265,16 +157,22 @@ const Analyzer = (() => {
             country_hits: countryHits,
             asn_hits: asnHits,
             top_ips: topIPs,
-            bot_groups: botGroups,
-            bot_hits: botGroups, // backward compat alias
-            human_requests: humanCount,
-            verified_bots_count: verifiedBotsCount,
-            spoofed_bots_count: spoofedBotsCount,
-            unverified_bots_count: unverifiedBotsCount,
-            verified_bot_ips_count: verifiedBotIPs.size,
-            spoofed_bot_ips_count: spoofedBotIPs.size,
-            spoofed_bot_attackers: spoofedAttackers,
-            spoofed_bot_ips: uniqueSpoofedIPs,
+            bot_groups: traffic.bot_groups,
+            bot_hits: traffic.bot_groups, // backward compat alias
+            traffic_classes: traffic.traffic_classes,
+            human_requests: traffic.human_requests,
+            verified_bots_count: traffic.verified_bots_count,
+            spoofed_bots_count: traffic.spoofed_bots_count,
+            unverified_bots_count: traffic.unverified_bots_count,
+            automated_count: traffic.automated_count,
+            suspected_count: traffic.suspected_count,
+            other_bots_count: traffic.other_bots_count,
+            verified_bot_ips_count: traffic.verified_bot_ips_count,
+            spoofed_bot_ips_count: traffic.spoofed_bot_ips_count,
+            spoofed_bot_attackers: traffic.spoofed_bot_attackers,
+            spoofed_bot_ips: traffic.spoofed_bot_ips,
+            suspected_clients: traffic.suspected_clients,
+            ua_field_missing: uaFieldMissing(userAgents),
             ip_log_entries: ipLogEntries, // Map<ip, logEntry[]> for access log viewer
         };
     }
@@ -689,62 +587,68 @@ const Analyzer = (() => {
         return {
             total_requests: 0, unique_ips: 0, unique_countries: 0, unique_asns: 0,
             country_hits: [], asn_hits: [], top_ips: [], bot_groups: [], bot_hits: [], human_requests: 0,
+            traffic_classes: TrafficClassifier.aggregate([]).traffic_classes,
             verified_bots_count: 0, spoofed_bots_count: 0, unverified_bots_count: 0,
+            automated_count: 0, suspected_count: 0, other_bots_count: 0,
             verified_bot_ips_count: 0, spoofed_bot_ips_count: 0,
-            spoofed_bot_attackers: [], spoofed_bot_ips: [],
+            spoofed_bot_attackers: [], spoofed_bot_ips: [], suspected_clients: [],
             ip_log_entries: new Map(),
         };
     }
 
     /**
-     * Enrich raw parsed log entries with GeoIP and Bot detection data upfront.
-     * This avoids repeated lookups when filtering or exploring logs.
+     * Add GeoIP and traffic-class fields to parsed log entries, in place.
+     *
+     * Call it with the whole log: a client is judged by all of its requests,
+     * so enriching a filtered part would judge it on less evidence.
+     *
+     * Fields set: country, country_code, asn ('AS15169'), asn_num, asn_org,
+     * traffic_class (see TrafficClassifier.CLASSES), is_bot, bot_name,
+     * bot_group, bot_verified, bot_status, bot_reason.
      */
     function enrichLogEntries(logEntries) {
         if (!logEntries || !Array.isArray(logEntries)) return;
         const ipGeoCache = new Map();
-        const uaBotCache = new Map();
-        const verifyCache = new Map();
+        const session = TrafficClassifier.createSession();
+        const clientIds = new Array(logEntries.length);
 
-        for (const entry of logEntries) {
-            // GeoIP lookup & cache
-            if (!ipGeoCache.has(entry.ip)) {
-                ipGeoCache.set(entry.ip, GeoIP.lookupIP(entry.ip));
+        for (let i = 0; i < logEntries.length; i++) {
+            const entry = logEntries[i];
+            let geo = ipGeoCache.get(entry.ip);
+            if (!geo) {
+                geo = GeoIP.lookupIP(entry.ip);
+                ipGeoCache.set(entry.ip, geo);
             }
-            const geo = ipGeoCache.get(entry.ip);
             entry.country = geo.country || 'Unknown';
             entry.country_code = geo.country_code || '--';
             entry.asn = geo.asn ? `AS${geo.asn}` : 'AS0';
             entry.asn_num = geo.asn || 0;
             entry.asn_org = geo.asn_org || 'Unknown';
 
-            // Bot detection & verification cache
-            const ua = entry.user_agent || '-';
-            if (!uaBotCache.has(ua)) {
-                uaBotCache.set(ua, BotDetector.detectBot(ua));
-            }
-            const bot = uaBotCache.get(ua);
-            if (bot) {
-                const verifyKey = `${bot.name}|${entry.ip}`;
-                if (!verifyCache.has(verifyKey)) {
-                    verifyCache.set(verifyKey, BotDetector.verifyBot(bot.name, entry.ip));
-                }
-                const v = verifyCache.get(verifyKey);
+            const t = entry.timestamp;
+            const ms = t instanceof Date ? t.getTime() : (t ? new Date(t).getTime() : 0);
+            clientIds[i] = session.add(entry.ip, entry.user_agent, {
+                timeSec: Number.isFinite(ms) ? Math.floor(ms / 1000) : 0,
+                status: entry.status_code || 0,
+                method: entry.method ? String(entry.method).toUpperCase() : '',
+                url: entry.url || '',
+                hasReferrer: Boolean(entry.referrer && entry.referrer !== '-'),
+                httpVersion: entry.http_version || '',
+            });
+        }
 
-                entry.is_bot = true;
-                entry.bot_name = bot.name;
-                entry.bot_group = bot.group || bot.name;
-                entry.bot_verified = v.verified;
-                entry.bot_status = v.status;
-                entry.bot_reason = v.reason;
-            } else {
-                entry.is_bot = false;
-                entry.bot_name = null;
-                entry.bot_group = null;
-                entry.bot_verified = null;
-                entry.bot_status = 'human';
-                entry.bot_reason = 'Human traffic';
-            }
+        session.finalize(ip => (ipGeoCache.get(ip) || {}).asn || 0);
+
+        for (let i = 0; i < logEntries.length; i++) {
+            const entry = logEntries[i];
+            const client = session.client(clientIds[i]);
+            entry.traffic_class = client.cls;
+            entry.is_bot = client.cls !== 'human';
+            entry.bot_name = client.name;
+            entry.bot_group = client.group;
+            entry.bot_verified = client.verified;
+            entry.bot_status = TrafficClassifier.STATUS_BY_CLASS[client.cls];
+            entry.bot_reason = client.reason;
         }
     }
 
@@ -802,25 +706,33 @@ const Analyzer = (() => {
             })
             .sort((a, b) => b.hits - a.hits);
 
-        // Bot Groups
-        let botRequestsTotal = 0;
-        const botEntries = Object.entries(summary.botCounts || {}).map(([name, count]) => {
-            botRequestsTotal += count;
-            return {
-                group_name: name,
-                requests: count,
-                unique_ips: 0,
-                pct: totalRequests ? Math.round((count / totalRequests) * 1000) / 10 : 0,
-                verified_requests: count,
-                spoofed_requests: 0,
-                unverified_requests: 0,
-                verification_status: 'verified',
-                sub_bots: [{ name, count, verified: true, status: 'verified', reason: 'User-Agent / Signature' }],
-                has_sub_groups: false
-            };
-        }).sort((a, b) => b.requests - a.requests);
-
-        const humanRequests = Math.max(0, totalRequests - botRequestsTotal);
+        // Traffic classes and bot groups. The worker classifies every client
+        // and sends the result as `summary.traffic`. A summary without it
+        // (older worker, tests) only has bot names: those are listed as
+        // unverified, and the parser's "no bot" markers are not bots at all.
+        let traffic = summary.traffic;
+        if (!traffic) {
+            const NOT_A_BOT = new Set(['None', 'Human', '-', '']);
+            const items = [];
+            let named = 0;
+            for (const [name, count] of Object.entries(summary.botCounts || {})) {
+                if (NOT_A_BOT.has(name)) continue;
+                named += count;
+                items.push({
+                    client: { ip: name, ua: '', cls: 'unverified', name, group: name, reason: 'Named by User-Agent only', verified: null },
+                    count,
+                });
+            }
+            items.push({
+                client: { ip: '', ua: '', cls: 'human', name: null, group: null, reason: '', verified: null },
+                count: Math.max(0, totalRequests - named),
+            });
+            traffic = TrafficClassifier.aggregate(items);
+            for (const g of traffic.bot_groups) {
+                g.unique_ips = 0;
+                for (const sb of g.sub_bots) { sb.unique_ips = 0; sb.ip_details = []; }
+            }
+        }
 
         // HTTP Status categories
         const statusCategories = { '1xx': 0, '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 };
@@ -907,16 +819,22 @@ const Analyzer = (() => {
             country_hits: countryHits,
             asn_hits: asnHits,
             top_ips: topIps,
-            bot_groups: botEntries,
-            bot_hits: botEntries,
-            human_requests: humanRequests,
-            verified_bots_count: botRequestsTotal,
-            spoofed_bots_count: 0,
-            unverified_bots_count: 0,
-            verified_bot_ips_count: 0,
-            spoofed_bot_ips_count: 0,
-            spoofed_bot_attackers: [],
-            spoofed_bot_ips: [],
+            bot_groups: traffic.bot_groups,
+            bot_hits: traffic.bot_groups,
+            traffic_classes: traffic.traffic_classes,
+            human_requests: traffic.human_requests,
+            verified_bots_count: traffic.verified_bots_count,
+            spoofed_bots_count: traffic.spoofed_bots_count,
+            unverified_bots_count: traffic.unverified_bots_count,
+            automated_count: traffic.automated_count,
+            suspected_count: traffic.suspected_count,
+            other_bots_count: traffic.other_bots_count,
+            verified_bot_ips_count: traffic.verified_bot_ips_count,
+            spoofed_bot_ips_count: traffic.spoofed_bot_ips_count,
+            spoofed_bot_attackers: traffic.spoofed_bot_attackers,
+            spoofed_bot_ips: traffic.spoofed_bot_ips,
+            suspected_clients: traffic.suspected_clients,
+            ua_field_missing: Boolean(summary.uaFieldMissing),
             ip_log_entries: new Map(),
             http_metrics: {
                 total_bandwidth_bytes: summary.totalBytes || 0,

@@ -6,21 +6,24 @@
  * and serves paginated 50-row slices to the Log Explorer.
  */
 
-/* global importScripts, ChunkedLineSplitter, ColumnarStorage, BotDetector, LogParser */
+/* global importScripts, ChunkedLineSplitter, ColumnarStorage, BotDetector, TrafficClassifier, LogParser */
 
 function ensureDependencies() {
     if (typeof importScripts !== 'undefined') {
         if (typeof ChunkedLineSplitter === 'undefined') {
-            importScripts('/js/stream-line-splitter.js?v=6.52');
+            importScripts('/js/stream-line-splitter.js?v=6.54');
         }
         if (typeof ColumnarStorage === 'undefined') {
-            importScripts('/js/columnar-storage.js?v=6.52');
+            importScripts('/js/columnar-storage.js?v=6.54');
         }
         if (typeof BotDetector === 'undefined') {
-            importScripts('/js/bot-detector.js?v=6.52');
+            importScripts('/js/bot-detector.js?v=6.54');
+        }
+        if (typeof TrafficClassifier === 'undefined') {
+            importScripts('/js/traffic-classifier.js?v=6.54');
         }
         if (typeof LogParser === 'undefined') {
-            importScripts('/js/log-parser.js?v=6.52');
+            importScripts('/js/log-parser.js?v=6.54');
         }
     } else if (typeof require !== 'undefined') {
         if (typeof ChunkedLineSplitter === 'undefined') {
@@ -28,6 +31,12 @@ function ensureDependencies() {
         }
         if (typeof ColumnarStorage === 'undefined') {
             try { globalThis.ColumnarStorage = require('./columnar-storage.js').ColumnarStorage; } catch (_) {}
+        }
+        if (typeof BotDetector === 'undefined') {
+            try { globalThis.BotDetector = require('./bot-detector.js'); } catch (_) {}
+        }
+        if (typeof TrafficClassifier === 'undefined') {
+            try { globalThis.TrafficClassifier = require('./traffic-classifier.js'); } catch (_) {}
         }
         if (typeof LogParser === 'undefined') {
             try { globalThis.LogParser = require('./log-parser.js'); } catch (_) {}
@@ -51,6 +60,48 @@ function createWorkerHandler(postMessageFn) {
     let isAppending = false;
     let activeFormat = null;
 
+    const classifier = globalThis.TrafficClassifier || (typeof TrafficClassifier !== 'undefined' ? TrafficClassifier : null);
+    const session = classifier ? classifier.createSession() : null;
+
+    // Classify every client seen so far and hand the result to the store.
+    // Runs again after GeoIP enrichment, when each address has its network.
+    function classifyClients() {
+        if (!session) return;
+        session.finalize(ip => {
+            const id = columnarStorage.ipMap.get(ip);
+            return (id !== undefined && columnarStorage.ipAsns) ? columnarStorage.ipAsns[id] : 0;
+        });
+        const count = session.clientCount;
+        const classes = new Uint8Array(count);
+        const groups = new Array(count);
+        for (let id = 0; id < count; id++) {
+            const client = session.client(id);
+            classes[id] = classifier.CLASS_INDEX[client.cls];
+            groups[id] = client.group || '';
+        }
+        columnarStorage.setClientClasses(classifier.CLASSES, classes, groups, id => session.client(id).ua);
+    }
+
+    // Query the store and replace the raw per-client counts with the traffic
+    // classes and bot groups the dashboard shows.
+    function summarize(filters) {
+        const summary = columnarStorage.query(filters);
+        const counts = summary.clientCounts;
+        if (counts && session) {
+            delete summary.clientCounts;
+            const items = [];
+            for (let id = 0; id < counts.length; id++) {
+                if (counts[id]) items.push({ client: session.client(id), count: counts[id] });
+            }
+            summary.traffic = classifier.aggregate(items, {
+                geo: ip => columnarStorage.ipGeo(ip),
+                ipDetailLimit: 100,
+            });
+            summary.uaFieldMissing = session.uaFieldMissing;
+        }
+        return summary;
+    }
+
     function processLines(lines, options) {
         const parser = globalThis.LogParser || LogParser;
         if (!activeFormat && lines.length > 0 && parser && parser.detectFormat) {
@@ -61,6 +112,14 @@ function createWorkerHandler(postMessageFn) {
             const line = lines[i];
             const res = lineParser(line, options);
             if (res.valid) {
+                const clientId = session ? session.add(res.ip, res.userAgent, {
+                    timeSec: res.timeSec,
+                    status: res.statusCode,
+                    method: res.method ? String(res.method).toUpperCase() : '',
+                    url: res.url || '',
+                    hasReferrer: Boolean(res.referrer && res.referrer !== '-'),
+                    httpVersion: res.httpVersion || '',
+                }) : undefined;
                 columnarStorage.appendRow(
                     res.ip,
                     res.timeSec,
@@ -70,7 +129,8 @@ function createWorkerHandler(postMessageFn) {
                     res.botName,
                     '-',
                     0,
-                    res.method || 'GET'
+                    res.method || 'GET',
+                    clientId
                 );
                 totalLinesParsed++;
             } else {
@@ -86,7 +146,11 @@ function createWorkerHandler(postMessageFn) {
         try {
             ensureDependencies();
 
-            if (action === 'parse_stream_chunk') {
+            if (action === 'configure') {
+                // Verified-bot IP ranges, loaded by the page.
+                const detector = globalThis.BotDetector || (typeof BotDetector !== 'undefined' ? BotDetector : null);
+                if (data.botFeed && detector && detector.loadData) detector.loadData(data.botFeed);
+            } else if (action === 'parse_stream_chunk') {
                 const { chunk, isLast, options } = data;
 
                 if (chunk) {
@@ -110,7 +174,8 @@ function createWorkerHandler(postMessageFn) {
                         processLines(trailing, options);
                     }
 
-                    const summary = columnarStorage.query({});
+                    classifyClients();
+                    const summary = summarize({});
                     const pageResult = columnarStorage.getPage(1, 50, { totalRows: summary.matchingCount });
 
                     activeFormat = null;
@@ -158,7 +223,8 @@ function createWorkerHandler(postMessageFn) {
                     const emittedStartIp = startIpIndex;
                     isAppending = false;
 
-                    const summary = columnarStorage.query({});
+                    classifyClients();
+                    const summary = summarize({});
                     const pageResult = columnarStorage.getPage(1, 50, { totalRows: summary.matchingCount });
 
                     postMessageFn({
@@ -180,7 +246,8 @@ function createWorkerHandler(postMessageFn) {
                     const geoMap = data.geoMap || {};
                     columnarStorage.enrichGeo(geoMap);
                 }
-                const summary = columnarStorage.query(currentFilters);
+                classifyClients();
+                const summary = summarize(currentFilters);
                 const pageResult = columnarStorage.getPage(1, 50, { ...currentFilters, totalRows: summary.matchingCount });
 
                 postMessageFn({
@@ -202,7 +269,8 @@ function createWorkerHandler(postMessageFn) {
                         data.startRowIndex || 0
                     );
                 }
-                const summary = columnarStorage.query(currentFilters);
+                classifyClients();
+                const summary = summarize(currentFilters);
                 const pageResult = columnarStorage.getPage(1, 50, { ...currentFilters, totalRows: summary.matchingCount });
 
                 postMessageFn({
@@ -215,7 +283,7 @@ function createWorkerHandler(postMessageFn) {
                 });
             } else if (action === 'filter') {
                 currentFilters = data.filters || {};
-                const summary = columnarStorage.query(currentFilters);
+                const summary = summarize(currentFilters);
                 const pageResult = columnarStorage.getPage(1, 50, { ...currentFilters, totalRows: summary.matchingCount });
 
                 postMessageFn({

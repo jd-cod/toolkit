@@ -689,8 +689,9 @@ const Dashboard = (() => {
             skip403: currentSkip403,
             skipInternal: currentSkipInternal
         });
-        Analyzer.enrichLogEntries(appendParse.logEntries);
+        // A client is judged by all of its requests, so classify the merged log.
         originalEnrichedEntries = originalEnrichedEntries.concat(appendParse.logEntries);
+        Analyzer.enrichLogEntries(originalEnrichedEntries);
         const mergedData = Analyzer.analyzeEnhancedLogs(originalEnrichedEntries);
         currentNodeCount++;
 
@@ -940,6 +941,10 @@ const Dashboard = (() => {
         const spoofedCount = data.spoofed_bots_count || 0;
         const verifiedPct = totalRequests ? Math.round(verifiedCount / totalRequests * 1000) / 10 : 0;
         const spoofedPct = totalRequests ? Math.round(spoofedCount / totalRequests * 1000) / 10 : 0;
+        // Every request that is neither human, verified nor spoofed, so the
+        // four traffic cards add up to the total.
+        const otherBotsCount = data.other_bots_count ?? Math.max(0, totalRequests - (data.human_requests || 0) - verifiedCount - spoofedCount);
+        const otherBotsPct = totalRequests ? Math.round(otherBotsCount / totalRequests * 1000) / 10 : 0;
         const errorCount = (data.http_metrics?.status_categories?.['4xx'] || 0) + (data.http_metrics?.status_categories?.['5xx'] || 0);
         const errorPct = totalRequests ? (errorCount / totalRequests * 100).toFixed(1) : '0.0';
 
@@ -1042,7 +1047,7 @@ const Dashboard = (() => {
                 </div>
 
                 <!-- 5. Human Traffic -->
-                <div class="stat-card kpi-micro-card kpi-card-human">
+                <div class="stat-card kpi-micro-card kpi-card-human" title="${numberWithCommas(data.human_requests || 0)} requests from browsers with no sign of automation">
                     <div class="stat-value">${humanPct}%</div>
                     <div class="stat-label">HUMAN TRAFFIC</div>
                 </div>
@@ -1058,7 +1063,14 @@ const Dashboard = (() => {
                     <div class="stat-value">${numberWithCommas(spoofedCount)}</div>
                     <div class="stat-label">SPOOFED BOTS (${spoofedPct}%)</div>
                 </div>
+
+                <!-- 8. Other Bots -->
+                <div class="stat-card kpi-micro-card kpi-card-otherbots" title="Known bots that cannot be verified, scripts and tools, scanners, unlisted crawlers, requests without a User-Agent, and browsers that behave like bots">
+                    <div class="stat-value">${numberWithCommas(otherBotsCount)}</div>
+                    <div class="stat-label">OTHER BOTS (${otherBotsPct}%)</div>
+                </div>
             </div>
+            ${data.ua_field_missing ? '<p class="signal-traffic-note" id="traffic-ua-note"><i class="bi bi-info-circle" aria-hidden="true"></i> This log has no User-Agent field, so bots can only be recognised by how they behave.</p>' : ''}
 
             <!-- 3. HTTP Methods & Bandwidth Egress Ribbon (Same Line) -->
             ${data.http_metrics ? `
@@ -1887,7 +1899,9 @@ const Dashboard = (() => {
                     human: data?.human_requests || 0,
                     verified: data?.verified_bots_count || 0,
                     fake: data?.spoofed_bots_count || 0,
-                    unverified: data?.unverified_bots_count || 0
+                    unverified: data?.unverified_bots_count || 0,
+                    automated: data?.automated_count || 0,
+                    suspected: data?.suspected_count || 0
                 }
             };
         }
@@ -1895,10 +1909,7 @@ const Dashboard = (() => {
         const countries = new Map();
         const asns = new Map();
         const paths = new Map();
-        let humanCount = 0;
-        let verifiedBotCount = 0;
-        let fakeBotCount = 0;
-        let unverifiedBotCount = 0;
+        const classCounts = { human: 0, verified: 0, spoofed: 0, unverified: 0, automated: 0, suspected: 0 };
 
         entries.forEach(e => {
             if (e.method) methods.add(e.method);
@@ -1916,15 +1927,7 @@ const Dashboard = (() => {
                 const seg = (e.url.split('?')[0].match(/\/[a-zA-Z0-9_.-]+/) || [])[0];
                 if (seg) paths.set(seg, (paths.get(seg) || 0) + 1);
             }
-            if (e.bot_status === 'human' || (!e.is_bot && !e.bot_name)) {
-                humanCount++;
-            } else if (e.bot_status === 'verified') {
-                verifiedBotCount++;
-            } else if (e.bot_status === 'spoofed') {
-                fakeBotCount++;
-            } else {
-                unverifiedBotCount++;
-            }
+            classCounts[trafficClassOf(e)]++;
         });
 
         const topPathsSorted = [...paths.entries()]
@@ -1941,13 +1944,26 @@ const Dashboard = (() => {
             asns: [...asns.values()].sort((a, b) => b.count - a.count),
             paths: topPathsSorted,
             trafficStats: {
-                human: humanCount,
-                verified: verifiedBotCount,
-                fake: fakeBotCount,
-                unverified: unverifiedBotCount
+                human: classCounts.human,
+                verified: classCounts.verified,
+                fake: classCounts.spoofed,
+                unverified: classCounts.unverified,
+                automated: classCounts.automated,
+                suspected: classCounts.suspected
             }
         };
     }
+
+    // Traffic class of a log entry. Entries enriched before the classifier
+    // existed only carry bot_status.
+    function trafficClassOf(e) {
+        if (e.traffic_class) return e.traffic_class;
+        if (e.bot_status === 'human' || (!e.is_bot && !e.bot_name)) return 'human';
+        if (e.bot_status === 'verified' || e.bot_status === 'spoofed') return e.bot_status;
+        return 'unverified';
+    }
+
+    const TRAFFIC_CLASS_FILTERS = ['human', 'verified', 'spoofed', 'unverified', 'automated', 'suspected'];
 
     function hasActiveFilters() {
         return activeFilters.statusCategory !== 'all' ||
@@ -2009,11 +2025,8 @@ const Dashboard = (() => {
         }
         
         if (filters.bot !== 'all') {
-            if (filters.bot === 'human') result = result.filter(e => e.bot_status === 'human' || (!e.is_bot && !e.bot_name));
-            else if (filters.bot === 'all_bots') result = result.filter(e => e.is_bot || (e.bot_group && e.bot_group !== 'Human Traffic'));
-            else if (filters.bot === 'verified') result = result.filter(e => e.bot_status === 'verified');
-            else if (filters.bot === 'spoofed') result = result.filter(e => e.bot_status === 'spoofed');
-            else if (filters.bot === 'unverified') result = result.filter(e => e.bot_status === 'unverified' || e.bot_status === 'unverified_publisher');
+            if (filters.bot === 'all_bots') result = result.filter(e => trafficClassOf(e) !== 'human');
+            else if (TRAFFIC_CLASS_FILTERS.includes(filters.bot)) result = result.filter(e => trafficClassOf(e) === filters.bot);
             else result = result.filter(e => e.bot_group === filters.bot);
             if (filters.botGroup) result = result.filter(e => e.bot_group === filters.botGroup);
         }
@@ -2700,6 +2713,14 @@ const Dashboard = (() => {
         }).join('');
     }
 
+    // The three largest names inside a bot group, e.g. "curl, python-requests".
+    function botNamesHint(group) {
+        const names = (group.sub_bots || []).slice(0, 3).map(b => b.bot_name || b.name).filter(n => n && n !== group.group_name);
+        if (names.length === 0) return '';
+        const more = (group.sub_bots || []).length - names.length;
+        return ` <span style="font-size:0.68rem;color:var(--text-muted);">${escapeHtml(names.join(', '))}${more > 0 ? ` +${more}` : ''}</span>`;
+    }
+
     function render3ColumnIncidentMatrixHtml(data, totalRequests) {
         return `
         <!-- 3-Column Dense Incident Matrix -->
@@ -2779,6 +2800,22 @@ const Dashboard = (() => {
                                             <td style="padding:6px 8px;"><strong>${escapeHtml(b.group_name)}</strong></td>
                                             <td style="padding:6px 8px;text-align:right;font-weight:700;">${numberWithCommas(b.unverified_requests)}</td>
                                             <td style="padding:6px 8px;text-align:right;"><span class="pill pill-muted" style="font-size:0.68rem;">⚪ Bot</span></td>
+                                        </tr>`;
+                                    }
+                                    if (b.automated_requests > 0) {
+                                        rowsHtml += `
+                                        <tr class="cross-filter-bot-row" data-bot="automated" data-bot-group="${escapeHtml(b.group_name)}" style="border-bottom:1px solid rgba(255,255,255,0.03);cursor:pointer;">
+                                            <td style="padding:6px 8px;"><strong>${escapeHtml(b.group_name)}</strong>${botNamesHint(b)}</td>
+                                            <td style="padding:6px 8px;text-align:right;font-weight:700;">${numberWithCommas(b.automated_requests)}</td>
+                                            <td style="padding:6px 8px;text-align:right;"><span class="pill pill-amber" style="font-size:0.68rem;white-space:nowrap;">🟠 Automated</span></td>
+                                        </tr>`;
+                                    }
+                                    if (b.suspected_requests > 0) {
+                                        rowsHtml += `
+                                        <tr class="cross-filter-bot-row" data-bot="suspected" data-bot-group="${escapeHtml(b.group_name)}" style="border-bottom:1px solid rgba(255,255,255,0.03);cursor:pointer;">
+                                            <td style="padding:6px 8px;"><strong>${escapeHtml(b.group_name)}</strong>${botNamesHint(b)}</td>
+                                            <td style="padding:6px 8px;text-align:right;font-weight:700;">${numberWithCommas(b.suspected_requests)}</td>
+                                            <td style="padding:6px 8px;text-align:right;"><span class="pill pill-amber" style="font-size:0.68rem;white-space:nowrap;">🟡 Suspected</span></td>
                                         </tr>`;
                                     }
                                     return rowsHtml;
@@ -3105,6 +3142,8 @@ const Dashboard = (() => {
                         <option value="verified" ${activeFilters.bot === 'verified' ? 'selected' : ''}>🟢 Verified Bots${activeFilters.bot === 'verified' && activeFilters.botGroup ? ' · ' + escapeHtml(activeFilters.botGroup) : ''}</option>
                         <option value="spoofed" ${activeFilters.bot === 'spoofed' ? 'selected' : ''}>🔴 Fake / Spoofed Bots${activeFilters.bot === 'spoofed' && activeFilters.botGroup ? ' · ' + escapeHtml(activeFilters.botGroup) : ''}</option>
                         <option value="unverified" ${activeFilters.bot === 'unverified' ? 'selected' : ''}>⚪ Unverified Bots${activeFilters.bot === 'unverified' && activeFilters.botGroup ? ' · ' + escapeHtml(activeFilters.botGroup) : ''}</option>
+                        <option value="automated" ${activeFilters.bot === 'automated' ? 'selected' : ''}>🟠 Other Bots &amp; Tools${activeFilters.bot === 'automated' && activeFilters.botGroup ? ' · ' + escapeHtml(activeFilters.botGroup) : ''}</option>
+                        <option value="suspected" ${activeFilters.bot === 'suspected' ? 'selected' : ''}>🟡 Suspected Bots${activeFilters.bot === 'suspected' && activeFilters.botGroup ? ' · ' + escapeHtml(activeFilters.botGroup) : ''}</option>
                     </select>
 
                     <!-- Search Fields -->

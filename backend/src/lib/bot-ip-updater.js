@@ -713,6 +713,17 @@ export async function syncAllBotSources(pool) {
 }
 
 /**
+ * Read the source counts of the startup query as numbers.
+ * MySQL returns SUM() as a DECIMAL, which mysql2 hands over as a string.
+ */
+export function sourceSyncCounts(row) {
+  return {
+    total: Number(row?.total) || 0,
+    synced: Number(row?.synced) || 0,
+  };
+}
+
+/**
  * Initialize Bot IP Refresh cron and startup compiler
  */
 export async function initBotIpRefresh(fastify) {
@@ -725,8 +736,7 @@ export async function initBotIpRefresh(fastify) {
       `SELECT COUNT(*) as total, SUM(CASE WHEN last_synced_at IS NOT NULL THEN 1 ELSE 0 END) as synced FROM bot_sources WHERE is_enabled = 1`
     );
 
-    const total = rows[0]?.total || 0;
-    const synced = rows[0]?.synced || 0;
+    const { total, synced } = sourceSyncCounts(rows[0]);
 
     fastify.log.info(`🤖 Checking bot IP sources (total: ${total}, synced: ${synced})...`);
     if (total > 0 && synced === 0) {

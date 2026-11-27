@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 describe('Analyzer.analyzeFromWorkerSummary', () => {
     test('transforms columnar query summary into dashboard data object', async () => {
-        // Load Analyzer
+        // Load Analyzer and the scripts it expects as globals
+        await import('../../frontend/public/js/bot-detector.js');
+        await import('../../frontend/public/js/traffic-classifier.js');
         const Analyzer = (await import('../../frontend/public/js/analyzer.js')).default || (await import('../../frontend/public/js/analyzer.js'));
         assert.equal(typeof Analyzer.analyzeFromWorkerSummary, 'function');
 
@@ -49,5 +51,22 @@ describe('Analyzer.analyzeFromWorkerSummary', () => {
         assert.equal(data.http_metrics.status_categories['4xx'], 80);
         assert.equal(data.http_metrics.status_categories['5xx'], 20);
         assert.equal(data.request_rate.buckets.length, 2);
+    });
+
+    test('a summary without traffic classes does not count humans as a bot', async () => {
+        await import('../../frontend/public/js/bot-detector.js');
+        await import('../../frontend/public/js/traffic-classifier.js');
+        const Analyzer = (await import('../../frontend/public/js/analyzer.js')).default;
+
+        // "None" is what the parser stores for a request with no bot User-Agent.
+        const data = Analyzer.analyzeFromWorkerSummary({
+            matchingCount: 1000,
+            botCounts: { 'None': 700, 'Googlebot': 250, 'Bingbot': 50 },
+        });
+        assert.equal(data.human_requests, 700);
+        assert.equal(data.verified_bots_count, 0);
+        assert.equal(data.unverified_bots_count, 300);
+        assert.deepEqual(data.bot_groups.map(g => g.group_name), ['Googlebot', 'Bingbot']);
+        assert.equal(data.traffic_classes.reduce((sum, c) => sum + c.requests, 0), 1000);
     });
 });

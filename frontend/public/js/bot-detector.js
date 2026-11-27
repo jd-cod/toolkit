@@ -11,9 +11,20 @@
  */
 
 const BotDetector = (() => {
-    // ─── User-Agent Regex Patterns (85+ Comprehensive Crawlers) ───
-    // Each entry: [displayName, regex, parentGroup (optional)]
-    const BOT_PATTERNS = [
+    // ─── User-Agent taxonomy ───
+    // Each entry: [displayName, regex, group, kind]. First match wins, so a
+    // specific pattern must come before a general one for the same product.
+    //
+    // kind decides how the request is counted:
+    //   (omitted)  a crawler or service that names itself. Its IP is checked
+    //              against the publisher's ranges: verified, spoofed or unverified.
+    //   'scanner'  security scanners and exploit tools
+    //   'tool'     HTTP libraries, command-line clients and non-browser apps
+    //   'headless' automated browsers
+    // Patterns must not match what a person's browser sends. In-app browsers
+    // carry the app name (`[Pinterest/iOS]`, `Viber/21.5`, `SogouMobileBrowser`),
+    // so those crawlers are matched by their crawler token only.
+    const KNOWN_BOT_PATTERNS = [
         // ── Google ──
         ['Googlebot', /Googlebot/i, 'Google'],
         ['AdsBot-Google', /AdsBot-Google/i, 'Google'],
@@ -23,11 +34,18 @@ const BotDetector = (() => {
         ['Mediapartners-Google', /Mediapartners-Google/i, 'Google'],
         ['Feedfetcher-Google', /Feedfetcher-Google/i, 'Google'],
         ['APIs-Google', /APIs-Google/i, 'Google'],
+        ['Google-CloudVertexBot', /Google-CloudVertexBot/i, 'Google'],
+        ['Google-Read-Aloud', /Google-Read-Aloud/i, 'Google'],
+        ['Google-Site-Verification', /Google-Site-Verification/i, 'Google'],
+        ['Google Favicon', /Google Favicon/i, 'Google'],
+        ['GoogleImageProxy', /GoogleImageProxy/i, 'Google'],
 
         // ── Microsoft / Bing ──
         ['Bingbot', /bingbot/i, 'Microsoft'],
         ['MSNBot', /msnbot/i, 'Microsoft'],
         ['BingPreview', /BingPreview/i, 'Microsoft'],
+        ['AdIdxBot', /adidxbot/i, 'Microsoft'],
+        ['MicrosoftPreview', /MicrosoftPreview/i, 'Microsoft'],
 
         // ── OpenAI ──
         ['GPTBot', /GPTBot/i, 'OpenAI'],
@@ -36,107 +54,209 @@ const BotDetector = (() => {
 
         // ── Anthropic / Claude ──
         ['ClaudeBot', /ClaudeBot/i, 'Anthropic'],
+        ['Claude-User', /Claude-User/i, 'Anthropic'],
+        ['Claude-SearchBot', /Claude-SearchBot/i, 'Anthropic'],
         ['Claude-Web', /Claude-Web/i, 'Anthropic'],
-        ['Anthropic', /anthropic/i, 'Anthropic'],
+        ['Anthropic', /anthropic-ai|anthropic\.com/i, 'Anthropic'],
 
         // ── Perplexity AI ──
         ['PerplexityBot', /PerplexityBot/i, 'Perplexity'],
         ['Perplexity-User', /Perplexity-User/i, 'Perplexity'],
 
         // ── Apple ──
-        ['Applebot', /Applebot/i, 'Apple'],
         ['Applebot-Extended', /Applebot-Extended/i, 'Apple'],
+        ['Applebot', /Applebot/i, 'Apple'],
 
         // ── Amazon ──
         ['Amazonbot', /Amazonbot/i, 'Amazon'],
 
-        // ── Other Major Search Engines ──
-        ['DuckDuckBot', /DuckDuckBot/i, 'DuckDuckGo'],
+        // ── Other search engines ──
+        ['DuckDuckBot', /DuckDuckBot|DuckDuckGo-Favicons-Bot/i, 'DuckDuckGo'],
         ['DuckAssistBot', /DuckAssistBot/i, 'DuckDuckGo'],
-        ['YandexBot', /YandexBot/i, 'Yandex'],
         ['YandexImages', /YandexImages/i, 'Yandex'],
+        ['YandexBot', /Yandex(?:Bot|[A-Z][A-Za-z]*Bot|Video|Media|Blogs|Favicons|Webmaster|Pagechecker|ImageResizer|Metrika|Market|Direct|AccessibilityBot|RenderResourcesBot|Turbo)/, 'Yandex'],
         ['Baidu Spider', /Baiduspider/i, 'Baidu'],
-        ['Sogou', /Sogou/i, 'Sogou'],
+        ['Sogou', /Sogou[\w ]*spider|Sogou[- ]head/i, 'Sogou'],
         ['PetalBot', /PetalBot/i, 'Huawei'],
         ['AspiegelBot', /AspiegelBot/i, 'Huawei'],
-        ['Yahoo! Slurp', /Yahoo!\s+Slurp|Slurp/i, 'Yahoo'],
+        ['Yahoo! Slurp', /Yahoo!\s+Slurp|\bSlurp\b/i, 'Yahoo'],
         ['MojeekBot', /MojeekBot/i, 'Mojeek'],
         ['QwantBot', /Qwantify|QwantBot/i, 'Qwant'],
         ['CocCocBot', /CocCocBot/i, 'CocCoc'],
-        ['Naver Yeti', /Yeti/i, 'Naver'],
+        ['Naver Yeti', /\bYeti\/\d|NaverBot/, 'Naver'],
         ['SeznamBot', /SeznamBot/i, 'Seznam'],
-        ['ia_archiver', /ia_archiver/i, 'Internet Archive'],
+        ['ia_archiver', /ia_archiver|archive\.org_bot/i, 'Internet Archive'],
 
         // ── Meta / Facebook ──
         ['Facebook External Hit', /facebookexternalhit/i, 'Facebook/Meta'],
-        ['Facebot', /facebot/i, 'Facebook/Meta'],
+        ['Facebot', /\bfacebot\b/i, 'Facebook/Meta'],
         ['Meta External Agent', /meta-externalagent/i, 'Facebook/Meta'],
+        ['Meta External Fetcher', /meta-externalfetcher/i, 'Facebook/Meta'],
         ['Meta Web Indexer', /meta-webindexer/i, 'Facebook/Meta'],
         ['Meta External Ads', /meta-externalads/i, 'Facebook/Meta'],
+        ['FacebookBot', /FacebookBot|facebookcatalog/i, 'Facebook/Meta'],
 
-        // ── Social & Messaging Link Preview ──
+        // ── Social and messaging link previews ──
         ['Twitterbot', /Twitterbot/i, 'Twitter/X'],
         ['LinkedInBot', /LinkedInBot/i, 'LinkedIn'],
         ['TelegramBot', /TelegramBot/i, 'Telegram'],
-        ['WhatsApp', /WhatsApp/i, 'WhatsApp'],
+        ['WhatsApp', /^WhatsApp\//i, 'WhatsApp'],
         ['Slackbot', /Slackbot|Slack-ImgProxy/i, 'Slack'],
         ['Discordbot', /Discordbot/i, 'Discord'],
-        ['Pinterestbot', /Pinterestbot|Pinterest/i, 'Pinterest'],
+        ['Pinterestbot', /Pinterestbot|Pinterest\/0\.\d/i, 'Pinterest'],
         ['RedditBot', /RedditBot/i, 'Reddit'],
         ['SkypeUriPreview', /SkypeUriPreview/i, 'Skype'],
-        ['Viber', /Viber/i, 'Viber'],
+        ['Viber', /^Viber\b/i, 'Viber'],
         ['VKShare', /VKShare/i, 'VKontakte'],
-        ['Bluesky', /Bluesky/i, 'Bluesky'],
+        ['Bluesky', /Bluesky Cardyb/i, 'Bluesky'],
+        ['Mastodon', /Mastodon\/\d/i, 'Mastodon'],
+        ['Snap URL Preview', /Snap URL Preview/i, 'Snapchat'],
+        ['Iframely', /Iframely/i, 'Link preview'],
+        ['Embedly', /Embedly/i, 'Link preview'],
 
-        // ── AI & Other Crawlers ──
+        // ── AI and data crawlers ──
         ['Bytespider', /Bytespider/i, 'ByteDance'],
-        ['TikTokSpider', /TikTokSpider/i, 'ByteDance'],
-        ['cohere-ai', /cohere-ai/i, 'Cohere'],
+        ['TikTokSpider', /TikTokSpider|tiktok-spider/i, 'ByteDance'],
+        ['cohere-ai', /cohere-ai|cohere-training-data-crawler/i, 'Cohere'],
         ['Diffbot', /Diffbot/i, 'Diffbot'],
-        ['YouBot', /YouBot/i, 'You.com'],
+        ['YouBot', /\bYouBot\b/i, 'You.com'],
         ['DeepL_Bot', /DeepL_Bot/i, 'DeepL'],
-        ['MistralBot', /MistralBot/i, 'Mistral'],
+        ['MistralBot', /MistralBot|MistralAI-User/i, 'Mistral'],
+        ['Common Crawl', /CCBot/i, 'Common Crawl'],
 
-        // ── SEO & Audit Crawlers ──
+        // ── SEO and audit crawlers ──
         ['SemrushBot', /SemrushBot|SiteAuditBot|SplitSignalBot/i, 'Semrush'],
         ['AhrefsBot', /AhrefsBot|AhrefsSiteAudit/i, 'Ahrefs'],
         ['MJ12bot', /MJ12bot/i, 'Majestic'],
         ['DotBot', /DotBot/i, 'Moz'],
-        ['Common Crawl', /CCBot/i, 'Common Crawl'],
-        ['Barkrowler', /Barkrowler/i, 'Crawler'],
-        ['Screaming Frog', /Screaming\s+Frog\s+SEO\s+Spider/i, 'SEO Spider'],
+        ['rogerbot', /rogerbot/i, 'Moz'],
+        ['Barkrowler', /Barkrowler/i, 'Babbar'],
+        ['Screaming Frog', /Screaming\s+Frog\s+SEO\s+Spider/i, 'Screaming Frog'],
+        ['DataForSeoBot', /DataForSeoBot/i, 'DataForSEO'],
+        ['BLEXBot', /BLEXBot/i, 'WebMeUp'],
+        ['serpstatbot', /serpstatbot/i, 'Serpstat'],
+        ['SISTRIX', /SISTRIX/i, 'SISTRIX'],
         ['SeoViewer', /SeoViewer/i, 'SEO'],
         ['SEOkicks', /SEOkicks/i, 'SEO'],
         ['MegaIndex', /MegaIndex/i, 'SEO'],
         ['CriteoBot', /CriteoBot/i, 'Criteo'],
+        ['ImageSpider', /imageSpider/i, 'Scraper'],
+        ['GeedoProductSearch', /GeedoProductSearch/i, 'E-Commerce'],
 
-        // ── Uptime & Performance Monitors ──
+        // ── Uptime and performance monitors ──
         ['UptimeRobot', /UptimeRobot/i, 'Monitoring'],
         ['Pingdom', /Pingdom/i, 'Monitoring'],
         ['Site24x7', /Site24x7/i, 'Monitoring'],
         ['StatusCake', /StatusCake/i, 'Monitoring'],
         ['GTmetrix', /GTmetrix/i, 'Monitoring'],
         ['Datadog Agent', /Datadog/i, 'Monitoring'],
-        ['NewRelicPinger', /NewRelicPinger/i, 'Monitoring'],
-        ['BetterStack', /BetterStack|Better\s+Uptime/i, 'Monitoring'],
+        ['NewRelicPinger', /NewRelicPinger|NewRelicSynthetics/i, 'Monitoring'],
+        ['BetterStack', /BetterStack|Better\s+Uptime|Better\s+Stack/i, 'Monitoring'],
+        ['Uptime-Kuma', /Uptime-Kuma/i, 'Monitoring'],
+        ['Zabbix', /Zabbix/i, 'Monitoring'],
+        ['Nagios', /check_http|nagios-plugins/i, 'Monitoring'],
+        ['HetrixTools', /HetrixTools/i, 'Monitoring'],
+        ['Checkly', /Checkly/i, 'Monitoring'],
+        ['Health check', /kube-probe|ELB-HealthChecker|GoogleHC|Cloudflare-Healthchecks|Amazon-Route53-Health-Check-Service/i, 'Monitoring'],
 
-        // ── Automated HTTP Clients & Scrapers ──
-        ['Python-urllib', /Python-urllib/i, 'Scraper / Tool'],
-        ['python-requests', /python-requests/i, 'Scraper / Tool'],
-        ['aiohttp', /aiohttp/i, 'Scraper / Tool'],
-        ['httpx', /httpx/i, 'Scraper / Tool'],
-        ['Go-http-client', /Go-http-client/i, 'Scraper / Tool'],
-        ['Java / HttpClient', /Java\/|Apache-HttpClient/i, 'Scraper / Tool'],
-        ['libwww-perl', /libwww-perl/i, 'Scraper / Tool'],
-        ['cURL / Wget', /curl\/|[wW]get/i, 'Scraper / Tool'],
-        ['PostmanRuntime', /PostmanRuntime/i, 'Scraper / Tool'],
-        ['Scrapy', /Scrapy/i, 'Scraper'],
-        ['Headless Chrome / Puppeteer', /HeadlessChrome|Puppeteer|Playwright|Selenium/i, 'Automated Browser'],
-        ['ImageSpider', /imageSpider/i, 'Scraper'],
-        ['GeedoProductSearch', /GeedoProductSearch/i, 'E-Commerce'],
-        ['Trident', /Trident/i, 'Generic'],
-        ['Other Bot', /bot|crawl|spider|scraper|fetcher|checker|indexer|archive/i, 'Generic'],
+        // ── Webhooks and feed readers ──
+        ['GitHub Hookshot', /GitHub-Hookshot/i, 'GitHub'],
+        ['Stripe Webhooks', /^Stripe\/\d/, 'Stripe'],
+        ['Feed reader', /Feedly|Feedbin|NewsBlur|Inoreader|Tiny Tiny RSS|FreshRSS|FeedBurner|Feedspot/i, 'Feed readers'],
     ];
+
+    const SCANNER_GROUP = 'Security scanners';
+    const TOOL_GROUP = 'Scripts & HTTP libraries';
+    const HEADLESS_GROUP = 'Headless browsers';
+    const UNLISTED_GROUP = 'Unlisted crawlers';
+    const NO_UA_GROUP = 'No user agent';
+    const UNIDENTIFIED_GROUP = 'Unidentified clients';
+
+    const SCANNER_PATTERNS = [
+        ['zgrab', /zgrab/i],
+        ['masscan', /masscan/i],
+        ['Nmap', /\bnmap\b/i],
+        ['Nikto', /Nikto/i],
+        ['sqlmap', /sqlmap/i],
+        ['Nuclei', /Nuclei/i],
+        ['WPScan', /WPScan/i],
+        ['Directory brute-forcer', /dirbuster|gobuster|feroxbuster|\bffuf\b|Fuzz Faster U Fool|wfuzz|dirsearch/i],
+        ['Acunetix', /Acunetix/i],
+        ['Nessus', /Nessus/i],
+        ['OpenVAS', /OpenVAS/i],
+        ['Qualys', /Qualys/i],
+        ['Burp Suite', /BurpSuite|Burp Collaborator/i],
+        ['OWASP ZAP', /OWASP[ _]ZAP|\bZAP\/\d/i],
+        ['WhatWeb', /WhatWeb/i],
+        ['LeakIX', /l9scan|l9explore|l9tcpid/i],
+        ['CensysInspect', /CensysInspect/i],
+        ['Palo Alto Expanse', /Expanse, a Palo Alto|paloaltonetworks/i],
+        ['InternetMeasurement', /InternetMeasurement|internet-measurement/i],
+        ['NetSystemsResearch', /NetSystemsResearch/i],
+        ['Shodan', /Shodan/i],
+        ['BinaryEdge', /BinaryEdge/i],
+        ['Shadowserver', /shadowserver/i],
+        ['ZoomEye', /zoomeye/i],
+        ['ONYPHE', /onyphe/i],
+        ['Hello World probe', /^Hello,? ?World/i],
+    ].map(([name, re]) => [name, re, SCANNER_GROUP, 'scanner']);
+
+    const TOOL_PATTERNS = [
+        ['python-requests', /python-requests/i],
+        ['Python-urllib', /Python-urllib/i],
+        ['aiohttp', /aiohttp/i],
+        ['httpx', /\bhttpx\b/i],
+        ['Scrapy', /Scrapy/i],
+        ['Python', /^Python\/|\bpython\b/i],
+        ['Go-http-client', /Go-http-client|\bfasthttp\b|\bcolly\b/i],
+        ['Java / HttpClient', /^Java\/|Apache-HttpClient|Apache-HttpAsyncClient|Jakarta Commons-HttpClient/i],
+        ['okhttp', /okhttp/i],
+        ['libwww-perl', /libwww-perl|LWP::Simple/i],
+        ['cURL / Wget', /\bcurl\/|libcurl|\bwget\b/i],
+        ['PostmanRuntime', /PostmanRuntime|insomnia\/|HTTPie/i],
+        ['axios', /\baxios\b/i],
+        ['Node.js', /node-fetch|\bundici\b|^node$|node-superagent|\bgot \(/i],
+        ['Ruby', /^Ruby\b|Faraday|Typhoeus|HTTParty|rest-client/i],
+        ['PHP', /^PHP\/|GuzzleHttp|Symfony HttpClient/i],
+        ['WordPress', /^WordPress\/\d/i],
+        ['Rust / .NET client', /\breqwest\b|RestSharp|\.NET Framework|^Dart\/\d/i],
+        ['Android app (Dalvik)', /^Dalvik\//i],
+        ['Apple app (CFNetwork)', /CFNetwork\/[\d.]+ Darwin/i],
+        ['Microsoft Office', /Microsoft Office|Microsoft-WebDAV|Microsoft-CryptoAPI/i],
+    ].map(([name, re]) => [name, re, TOOL_GROUP, 'tool']);
+
+    const HEADLESS_PATTERNS = [
+        ['Headless Chrome / Puppeteer', /HeadlessChrome|Puppeteer|Playwright|Selenium|PhantomJS|SlimerJS|CasperJS|\bjsdom\b|\bCypress\b/i],
+        ['Lighthouse / WebPageTest', /Chrome-Lighthouse|Google Page Speed|\bPTST\b/i],
+    ].map(([name, re]) => [name, re, HEADLESS_GROUP, 'headless']);
+
+    // Used after every named pattern has failed: a product token that ends in
+    // one of these words, or the "+http://contact" convention crawlers follow.
+    // The keyword must end a run of letters, so "robots" and "Roboto" pass.
+    const GENERIC_BOT_RE = /(?:bot|crawler|crawl|spider|scraper|scanner|fetcher|checker|indexer|archiver|validator)(?![a-z])|\+https?:\/\//i;
+    const GENERIC_BOT_NAME_RE = /[A-Za-z0-9_.!-]*(?:bot|crawler|crawl|spider|scraper|scanner|fetcher|checker|indexer|archiver|validator)(?![a-z])[A-Za-z0-9_-]*/i;
+    // Phone models whose name ends in "bot".
+    const DEVICE_NAME_RE = /\bCUBOT[\w ]*/gi;
+
+    const BROWSER_PREFIX_RE = /^(?:Mozilla\/[45]\.0|Opera\/\d)/;
+    const BROWSER_PLATFORM_RE = /Windows|Macintosh|Mac OS X|X11|Linux|Android|iPhone|iPad|iPod|CrOS|BSD|SunOS|Tizen|KaiOS|PlayStation|Nintendo|Xbox|Smart-?TV|Web0S|webOS|BlackBerry|BB10|Symbian|Mobile|Tablet|Fuchsia|HarmonyOS/i;
+    const BROWSER_ENGINE_RE = /AppleWebKit|Gecko|Trident|Presto|MSIE|KHTML|Chrome|Safari|Firefox|Opera|Edge|Goanna/i;
+
+    // Flat list kept for callers that iterate every named pattern.
+    const BOT_PATTERNS = [
+        ...KNOWN_BOT_PATTERNS,
+        ...SCANNER_PATTERNS,
+        ...TOOL_PATTERNS,
+        ...HEADLESS_PATTERNS,
+    ];
+
+    // Networks a publisher crawls from. Used only when the publisher's IP
+    // ranges are not loaded: an address outside these networks cannot be the
+    // crawler, an address inside them is not proof (cloud customers share them).
+    const PUBLISHER_ASNS = {
+        'Google': [15169, 396982, 36040, 43515],
+        'Microsoft': [8075, 8068, 8069, 3598, 58593],
+    };
 
     // Alias and normalization map to link UA bot names to verified IP feed keys
     const BOT_NAME_TO_SOURCE_KEYS = {
@@ -226,6 +346,11 @@ const BotDetector = (() => {
         'betteruptime': ['betterstack'],
         'github': ['github'],
         'stripe': ['stripe'],
+        'stripewebhooks': ['stripe'],
+        'githubhookshot': ['github'],
+        'adidxbot': ['bingbot'],
+        'metaexternalfetcher': ['facebook_meta'],
+        'facebookbot': ['facebook_meta'],
     };
 
     // ─── IndexedDB Constants ───
@@ -529,18 +654,73 @@ const BotDetector = (() => {
 
     // ─── Core Bot Detection from User-Agent ───
 
-    /**
-     * Detect bot from user-agent string.
-     * @returns {{ name: string, group: string|null }} or null for human traffic
-     */
-    function detectBot(userAgent) {
-        if (!userAgent || userAgent === '-') return null;
-        for (const [name, pattern, group] of BOT_PATTERNS) {
-            if (pattern.test(userAgent)) {
-                return { name, group: group || null };
+    const uaClassCache = new Map();
+    const UA_CACHE_LIMIT = 50000;
+
+    function looksLikeBrowser(ua) {
+        return BROWSER_PREFIX_RE.test(ua) && BROWSER_PLATFORM_RE.test(ua) && BROWSER_ENGINE_RE.test(ua);
+    }
+
+    function firstProductToken(ua) {
+        const token = (ua.match(/^[^\s(;,]+/) || [''])[0];
+        return token.slice(0, 40) || 'Unknown client';
+    }
+
+    function classifyUncached(userAgent) {
+        const ua = typeof userAgent === 'string' ? userAgent.trim() : '';
+        if (!ua || ua === '-') {
+            return { kind: 'no_ua', name: NO_UA_GROUP, group: NO_UA_GROUP };
+        }
+        for (const [name, pattern, group, kind] of BOT_PATTERNS) {
+            if (pattern.test(ua)) {
+                return { kind: kind || 'known_bot', name, group: group || name };
             }
         }
-        return null;
+        const withoutDeviceNames = ua.replace(DEVICE_NAME_RE, '');
+        if (GENERIC_BOT_RE.test(withoutDeviceNames)) {
+            const token = (withoutDeviceNames.match(GENERIC_BOT_NAME_RE) || [''])[0].replace(/^[.!_-]+|[.!_-]+$/g, '');
+            return { kind: 'unknown_bot', name: (token || firstProductToken(ua)).slice(0, 40), group: UNLISTED_GROUP };
+        }
+        if (looksLikeBrowser(ua)) {
+            return { kind: 'browser', name: null, group: null };
+        }
+        return { kind: 'unknown_client', name: firstProductToken(ua), group: UNIDENTIFIED_GROUP };
+    }
+
+    /**
+     * Sort a User-Agent into one kind of client.
+     *
+     * @param {string|null} userAgent
+     * @returns {{ kind: 'browser'|'known_bot'|'scanner'|'tool'|'headless'|'unknown_bot'|'unknown_client'|'no_ua',
+     *             name: string|null, group: string|null }}
+     *   `known_bot` names a crawler whose IP can be checked; `unknown_bot`
+     *   calls itself a bot but is not in the list; `unknown_client` is neither
+     *   a browser nor anything recognisable; `no_ua` sent no User-Agent.
+     */
+    function classifyUserAgent(userAgent) {
+        const key = userAgent == null ? '' : String(userAgent);
+        let result = uaClassCache.get(key);
+        if (!result) {
+            result = classifyUncached(key);
+            if (uaClassCache.size >= UA_CACHE_LIMIT) uaClassCache.clear();
+            uaClassCache.set(key, result);
+        }
+        return result;
+    }
+
+    /**
+     * Detect a client that declares itself as automated.
+     *
+     * Returns null for browsers and also for a missing or unrecognisable
+     * User-Agent, because callers use this to mean "named bot or tool".
+     * Use classifyUserAgent() to tell those cases apart.
+     *
+     * @returns {{ name: string, group: string|null, kind: string }|null}
+     */
+    function detectBot(userAgent) {
+        const info = classifyUserAgent(userAgent);
+        if (info.kind === 'browser' || info.kind === 'no_ua' || info.kind === 'unknown_client') return null;
+        return { name: info.name, group: info.group || null, kind: info.kind };
     }
 
     /**
@@ -563,17 +743,18 @@ const BotDetector = (() => {
         if (BOT_NAME_TO_SOURCE_KEYS[norm]) {
             return BOT_NAME_TO_SOURCE_KEYS[norm];
         }
-        // Direct match in compiledIndices
+        // A feed key the alias table does not know yet still verifies its own name.
         if (compiledIndices.has(norm)) {
             return [norm];
         }
-        // Partial substring match in compiledIndices
-        for (const key of compiledIndices.keys()) {
-            if (norm.includes(key) || key.includes(norm)) {
-                return [key];
-            }
-        }
         return [];
+    }
+
+    function publisherOf(botName) {
+        for (const [name, , group] of KNOWN_BOT_PATTERNS) {
+            if (name === botName) return group || name;
+        }
+        return null;
     }
 
     /**
@@ -581,6 +762,8 @@ const BotDetector = (() => {
      * 
      * @param {string} botName - Detected bot name (e.g. "Googlebot", "Bingbot", "GPTBot", "YandexBot")
      * @param {string} ip - Remote client IP address
+     * @param {number} [asn] - Autonomous system of the IP, when known. Used only
+     *   for publishers whose IP ranges are not loaded.
      * @returns {{
      *   verified: boolean|null,
      *   status: 'verified'|'spoofed'|'unverified_publisher'|'human',
@@ -588,7 +771,7 @@ const BotDetector = (() => {
      *   matchedSource?: string
      * }}
      */
-    function verifyBot(botName, ip) {
+    function verifyBot(botName, ip, asn) {
         if (!botName) {
             return { verified: null, status: 'human', reason: 'Human traffic' };
         }
@@ -596,7 +779,8 @@ const BotDetector = (() => {
             return { verified: null, status: 'unverified_publisher', reason: 'Invalid client IP address' };
         }
 
-        const cacheKey = `${botName}|${ip}`;
+        const asnNum = Number(asn) || 0;
+        const cacheKey = `${botName}|${ip}|${asnNum}`;
         if (verificationCache.has(cacheKey)) {
             return verificationCache.get(cacheKey);
         }
@@ -624,13 +808,31 @@ const BotDetector = (() => {
             .map(key => compiledIndices.get(key))
             .filter(src => src && src.totalCidrs > 0);
 
-        // If no official verified source exists for this bot publisher
+        // No IP ranges for this publisher. The network the address belongs to
+        // can still rule the claim out, but cannot confirm it.
         if (activeSources.length === 0) {
-            const res = {
-                verified: null,
-                status: 'unverified_publisher',
-                reason: `Bot publisher (${botName}) does not publish official IP verification feeds`,
-            };
+            const publisher = publisherOf(botName);
+            const networks = publisher ? PUBLISHER_ASNS[publisher] : null;
+            let res;
+            if (networks && asnNum > 0 && !networks.includes(asnNum)) {
+                res = {
+                    verified: false,
+                    status: 'spoofed',
+                    reason: `Fake/Spoofed ${botName} (AS${asnNum} is not a ${publisher} network)`,
+                };
+            } else if (networks && asnNum > 0) {
+                res = {
+                    verified: null,
+                    status: 'unverified_publisher',
+                    reason: `${botName} from a ${publisher} network (AS${asnNum}); official IP ranges are not loaded, so the address cannot be confirmed`,
+                };
+            } else {
+                res = {
+                    verified: null,
+                    status: 'unverified_publisher',
+                    reason: `No official IP ranges available to verify ${botName}`,
+                };
+            }
             verificationCache.set(cacheKey, res);
             return res;
         }
@@ -717,9 +919,27 @@ const BotDetector = (() => {
         };
     }
 
+    /**
+     * Load the verified-bot ranges from an object instead of fetching them.
+     * The parser worker gets them from the page this way.
+     */
+    function loadData(data) {
+        if (!data || !data.bots) return false;
+        verifiedBotsData = data;
+        compileIndices(data);
+        return true;
+    }
+
+    function getData() {
+        return verifiedBotsData;
+    }
+
     return {
         BOT_PATTERNS,
         init,
+        loadData,
+        getData,
+        classifyUserAgent,
         detectBot,
         detectBotName,
         verifyBot,
@@ -743,4 +963,7 @@ if (typeof self !== 'undefined') {
 }
 if (typeof globalThis !== 'undefined') {
     globalThis.BotDetector = BotDetector;
+}
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = BotDetector;
 }

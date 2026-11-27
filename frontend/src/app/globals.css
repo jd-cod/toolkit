@@ -3786,10 +3786,10 @@ body[data-nginx-view="input"] #nginx-sample-bar {
   border-color: #c7d2fe;
 }
 
-/* KPI Metric Cards - Equal 100% Locked 7-Column Layout & Theme Adaptive Colors */
+/* KPI Metric Cards - Equal 100% Locked 8-Column Layout & Theme Adaptive Colors */
 .kpi-micro-cards-strip {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
+  grid-template-columns: repeat(8, minmax(0, 1fr)) !important;
   gap: 10px;
   margin-bottom: 16px;
   width: 100%;
@@ -3901,6 +3901,19 @@ body[data-nginx-view="input"] #nginx-sample-bar {
 }
 .kpi-card-spoofed .stat-label {
   color: var(--accent-red);
+}
+
+.kpi-card-otherbots {
+  border-top: 3px solid var(--accent-amber) !important;
+}
+.kpi-card-otherbots .stat-value {
+  color: var(--accent-amber);
+}
+
+.signal-traffic-note {
+  margin: -6px 0 16px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 /* 3-Column Dense Incident Matrix */
