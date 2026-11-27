@@ -803,29 +803,6 @@ const Analyzer = (() => {
         }
     }
 
-    function generateNginxDeny(ips) { return ips.map(ip => `deny ${ip};`).join('\n'); }
-
-    function generateAwsWafRule(ips) {
-        const ipSet = {
-            Name: 'BlockedIPs',
-            Scope: 'REGIONAL',
-            IPAddressVersion: 'IPV4',
-            Addresses: ips.map(ip => ip.includes(':') ? ip + '/128' : ip + '/32'),
-        };
-        return JSON.stringify(ipSet, null, 2);
-    }
-
-    function generateCloudflareRule(ips) {
-        const expression = ips.map(ip => `ip.src eq ${ip}`).join(' or ');
-        return `# Cloudflare WAF Custom Rule — Block IPs\n# Action: Block\n# Expression:\n(${expression})`;
-    }
-
-    function generateIpsetCommands(ips, setName = 'blocklist') {
-        const lines = [`ipset create ${setName} hash:ip -exist`];
-        for (const ip of ips) lines.push(`ipset add ${setName} ${ip} -exist`);
-        return lines.join('\n');
-    }
-
     function analyzeFromWorkerSummary(summary) {
         if (!summary) return emptyEnhancedResult();
 
@@ -1022,7 +999,7 @@ const Analyzer = (() => {
         };
     }
 
-    return { analyzeLogs, analyzeEnhancedLogs, analyzeFromWorkerSummary, computeRequestRate, requestRateFromSeries, rateSeriesFromEntries, enrichLogEntries, generateNginxDeny, generateAwsWafRule, generateCloudflareRule, generateIpsetCommands };
+    return { analyzeLogs, analyzeEnhancedLogs, analyzeFromWorkerSummary, computeRequestRate, requestRateFromSeries, rateSeriesFromEntries, enrichLogEntries };
 })();
 
 if (typeof window !== 'undefined') window.Analyzer = Analyzer;

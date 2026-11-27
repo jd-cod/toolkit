@@ -1,5 +1,7 @@
 'use client';
 
+import { versioned } from './asset-version';
+
 export interface GeoIPLookupResult {
   asn?: number;
   asn_org?: string;
@@ -50,7 +52,7 @@ function injectGeoIpScript() {
     }
 
     const script = document.createElement('script');
-    script.src = '/js/geoip.js?v=3.9';
+    script.src = versioned('/js/geoip.js');
     script.async = true;
     script.dataset.geoipScript = 'true';
     script.onload = () => resolve(window.GeoIP || null);

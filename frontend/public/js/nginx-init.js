@@ -550,7 +550,7 @@ window.initNginxPage = function () {
 
             let worker = null;
             try {
-                worker = typeof Worker !== 'undefined' ? new Worker('/js/log-parser.worker.js?v=6.55') : null;
+                worker = typeof Worker !== 'undefined' ? new Worker(LogParser.workerUrl()) : null;
             } catch (workerErr) {
                 console.warn('The parser worker could not be created:', workerErr);
             }

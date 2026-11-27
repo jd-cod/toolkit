@@ -27,7 +27,10 @@ export default function Navbar(props: NavbarProps) {
   const drawer = useRef<HTMLDialogElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
-  const [isNavigating, setIsNavigating] = useState(false);
+  // The page a navigation started from; the loading bar shows until the path changes.
+  const [navigatingFrom, setNavigatingFrom] = useState<string | null>(null);
+  if (navigatingFrom !== null && navigatingFrom !== pathname) setNavigatingFrom(null);
+  const isNavigating = navigatingFrom !== null;
   const tools = enabledTools(config?.tools || []);
   const settings = config?.settings || {};
   const title = props.siteTitle || settings.site_title || 'SysAdmin Toolkit';
@@ -39,10 +42,6 @@ export default function Navbar(props: NavbarProps) {
   const currentLabel = pathname === '/' ? 'Overview' : currentTool?.label || currentPage?.title || (pathname.startsWith('/s/') ? 'Shared snapshot' : 'Tools');
   const visibleTools = tools.filter(tool => matchesTool(tool, query));
 
-  useEffect(() => {
-    setIsNavigating(false);
-  }, [pathname]);
-
   const handleNavClick = (route: string) => {
     if (route === pathname) {
       if (route === '/nginx') {
@@ -53,7 +52,7 @@ export default function Navbar(props: NavbarProps) {
       }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } else {
-      setIsNavigating(true);
+      setNavigatingFrom(pathname);
     }
     if (drawer.current?.open) {
       setTimeout(() => {
@@ -148,7 +147,7 @@ export default function Navbar(props: NavbarProps) {
           <div className="signal-command-heading"><h2 id="signal-command-title">Find a tool</h2><button className="signal-icon-button" type="button" aria-label="Close tool search" onClick={() => commandDialog.current?.close()}><i className="bi bi-x-lg" aria-hidden="true" /></button></div>
           <label className="signal-sr-only" htmlFor="signal-command-search">Search all tools</label>
           <input ref={search} id="signal-command-search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search tools, tasks, or keywords…" autoComplete="off" />
-          <div className="signal-command-results">{visibleTools.map(tool => <Link href={toolMetadata(tool).route} prefetch={false} key={tool.id} onClick={() => { setIsNavigating(true); commandDialog.current?.close(); }}><i className={`bi ${toolMetadata(tool).icon}`} aria-hidden="true" /><span><strong>{tool.label}</strong><small>{toolMetadata(tool).category}</small></span><i className="bi bi-arrow-right" aria-hidden="true" /></Link>)}{!loading && visibleTools.length === 0 && <p role="status">No tools match “{query}”. Try a different search.</p>}</div>
+          <div className="signal-command-results">{visibleTools.map(tool => <Link href={toolMetadata(tool).route} prefetch={false} key={tool.id} onClick={() => { setNavigatingFrom(pathname); commandDialog.current?.close(); }}><i className={`bi ${toolMetadata(tool).icon}`} aria-hidden="true" /><span><strong>{tool.label}</strong><small>{toolMetadata(tool).category}</small></span><i className="bi bi-arrow-right" aria-hidden="true" /></Link>)}{!loading && visibleTools.length === 0 && <p role="status">No tools match “{query}”. Try a different search.</p>}</div>
           <p className="signal-command-hint">Tab to a result, Enter to open · Esc to close</p>
         </div>
       </dialog>

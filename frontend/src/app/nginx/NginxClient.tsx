@@ -15,7 +15,9 @@ const samples = [
   { file: 'heavy-traffic.log', icon: 'bar-chart-line', title: 'Heavy Web Traffic (100k)', detail: 'A larger example for exploring filters and timelines.' },
 ];
 
-const inputSources = [
+type InputMode = 'upload' | 'server' | 'paste' | 'url';
+
+const inputSources: { mode: InputMode; label: string; detail: string; hint: string; icon: string }[] = [
   { mode: 'upload', label: 'Upload file', detail: 'Local file', hint: 'Drop or choose', icon: 'upload' },
   { mode: 'server', label: 'cURL ingest', detail: 'From server', hint: 'Run a command', icon: 'terminal' },
   { mode: 'paste', label: 'Paste logs', detail: 'Clipboard', hint: 'Paste lines', icon: 'code-slash' },
@@ -37,10 +39,10 @@ export default function NginxClient() {
   const recommendedCommand = serverCommands[0];
   const fullCommand = serverCommands[1];
 
-  const [inputMode, setInputMode] = useState<'upload' | 'server' | 'paste' | 'url'>('upload');
+  const [inputMode, setInputMode] = useState<InputMode>('upload');
   const pendingSampleRef = useRef<string | null>(null);
 
-  const handleSelectTab = (mode: 'upload' | 'server' | 'paste' | 'url') => {
+  const handleSelectTab = (mode: InputMode) => {
     setInputMode(mode);
     const inputSection = document.getElementById('nginx-input-section');
     if (inputSection) {
@@ -55,9 +57,9 @@ export default function NginxClient() {
       const panel = document.getElementById(`nginx-panel-${p}`);
       if (panel) panel.hidden = p !== mode;
     });
-    if (typeof window !== 'undefined' && (window as any).__selectInputMode) {
-      (window as any).__selectInputMode(mode);
-    }
+    // Set by the classic input script once it has bound the controls.
+    const classic = window as Window & { __selectInputMode?: (mode: InputMode) => void };
+    classic.__selectInputMode?.(mode);
   };
 
   const handleSampleClick = (sampleFile: string) => {
@@ -137,7 +139,7 @@ export default function NginxClient() {
                   <button key={mode} id={`nginx-tab-${mode}`} className="signal-nginx-source-option" type="button" role="tab"
                     data-input-tab={mode} aria-controls={`nginx-panel-${mode}`} aria-label={`${label} · ${detail}`}
                     aria-selected={isSelected} tabIndex={isSelected ? 0 : -1}
-                    onClick={() => handleSelectTab(mode as any)}>
+                    onClick={() => handleSelectTab(mode)}>
                     <span className="signal-nginx-source-icon"><i className={`bi bi-${icon}`} aria-hidden="true"></i></span>
                     <span className="signal-nginx-source-copy"><strong>{label}</strong><small>{detail}</small></span>
                     <span className="signal-nginx-source-hint">{hint}</span>

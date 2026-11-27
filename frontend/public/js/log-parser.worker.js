@@ -8,25 +8,37 @@
 
 /* global importScripts, ChunkedLineSplitter, ColumnarStorage, RequestPaths, BotDetector, TrafficClassifier, LogParser */
 
+// The page starts this worker with the version of the scripts (`?v=`); the
+// scripts it loads have to be the same build.
+function scriptVersionSuffix() {
+    try {
+        const version = new URLSearchParams(self.location.search).get('v');
+        return version ? `?v=${encodeURIComponent(version)}` : '';
+    } catch (_) {
+        return '';
+    }
+}
+
 function ensureDependencies() {
     if (typeof importScripts !== 'undefined') {
+        const v = scriptVersionSuffix();
         if (typeof ChunkedLineSplitter === 'undefined') {
-            importScripts('/js/stream-line-splitter.js?v=6.55');
+            importScripts(`/js/stream-line-splitter.js${v}`);
         }
         if (typeof ColumnarStorage === 'undefined') {
-            importScripts('/js/columnar-storage.js?v=6.55');
+            importScripts(`/js/columnar-storage.js${v}`);
         }
         if (typeof RequestPaths === 'undefined') {
-            importScripts('/js/request-paths.js?v=6.55');
+            importScripts(`/js/request-paths.js${v}`);
         }
         if (typeof BotDetector === 'undefined') {
-            importScripts('/js/bot-detector.js?v=6.55');
+            importScripts(`/js/bot-detector.js${v}`);
         }
         if (typeof TrafficClassifier === 'undefined') {
-            importScripts('/js/traffic-classifier.js?v=6.55');
+            importScripts(`/js/traffic-classifier.js${v}`);
         }
         if (typeof LogParser === 'undefined') {
-            importScripts('/js/log-parser.js?v=6.55');
+            importScripts(`/js/log-parser.js${v}`);
         }
     } else if (typeof require !== 'undefined') {
         if (typeof ChunkedLineSplitter === 'undefined') {
