@@ -4,7 +4,8 @@ import { gzipSync } from 'node:zlib';
 import { test, expect, waitForEngineReady } from './fixtures/dashboard';
 
 const FIXTURE_DIR = path.resolve(__dirname, '..', 'fixtures');
-const GOLD_LOG = fs.readFileSync(path.join(FIXTURE_DIR, 'nginx-release-golden.log'), 'utf8');
+const GOLD_LOG_PATH = path.join(FIXTURE_DIR, 'nginx-release-golden.log');
+const GOLD_LOG = fs.existsSync(GOLD_LOG_PATH) ? fs.readFileSync(GOLD_LOG_PATH, 'utf8') : '';
 const MANIFEST = JSON.parse(
   fs.readFileSync(path.join(FIXTURE_DIR, 'nginx-release-golden.json'), 'utf8'),
 ) as any;
@@ -54,6 +55,7 @@ async function engineSnapshot(page: Parameters<typeof waitForEngineReady>[0], sk
         verifiedBots: data.verified_bots_count,
         spoofedBots: data.spoofed_bots_count,
         unverifiedBots: data.unverified_bots_count,
+        automatedRequests: data.automated_count,
         statusCategories: data.http_metrics.status_categories,
         statusHits: countMap(data.http_metrics.status_hits, 'code', 'count'),
         methodHits: countMap(data.http_metrics.method_hits, 'method', 'count'),
@@ -108,6 +110,7 @@ function expectEngineSnapshot(snapshot: any, mode: GoldenMode) {
     totalRequests: expected.total_requests,
     humanRequests: expected.human_requests,
     unverifiedBots: expected.unverified_bots,
+    automatedRequests: expected.automated_requests,
     statusCategories: expected.status_categories,
     methodHits: expected.method_hits,
     responseSize: expected.response_size,
@@ -148,6 +151,7 @@ function expectEngineSnapshot(snapshot: any, mode: GoldenMode) {
 }
 
 test.describe('Nginx release golden analysis', () => {
+  test.skip(!GOLD_LOG, `fixture not present at ${GOLD_LOG_PATH}`);
   test.use({ timezoneId: 'Asia/Kolkata' });
   test('parser and analyzer match the independent default oracle', async ({ page, console: watcher }) => {
     await loadGolden(page);
@@ -173,8 +177,9 @@ test.describe('Nginx release golden analysis', () => {
 
     await expect(page.locator('.kpi-card-total .stat-value')).toHaveText('15');
     await expect(page.locator('.kpi-card-ips .stat-value')).toHaveText('11');
-    await expect(page.locator('.kpi-card-asns .stat-value')).toHaveText('7');
-    await expect(page.locator('.kpi-card-countries .stat-value')).toHaveText('4');
+    // "Unknown" is not counted as a country, nor AS0 as a network.
+    await expect(page.locator('.kpi-card-asns .stat-value')).toHaveText(String(MANIFEST.default_skip_403.unique_asns));
+    await expect(page.locator('.kpi-card-countries .stat-value')).toHaveText(String(MANIFEST.default_skip_403.unique_countries));
     await expect(page.locator('.kpi-card-human .stat-value')).toHaveText('60%');
     await expect(page.locator('.kpi-card-verified .stat-value')).toHaveText('3');
     await expect(page.locator('.kpi-card-spoofed .stat-value')).toHaveText('2');
@@ -256,6 +261,7 @@ test.describe('Nginx release golden analysis', () => {
       expect(entries[index]).toMatchObject({ ip, timestamp, method, url, status_code: status,
         response_size: size, country, asn_num: asn, raw_line: lines[line - 1],
         bot_status: bot === 'unverified' ? 'unverified_publisher' : bot });
+      expect(entries[index].traffic_class).toBe(bot);
       // The literal quoted fixture fields are the oracle for preservation, not
       // the application's parser result.
       const quoted = lines[line - 1].split('"');
@@ -279,9 +285,10 @@ test.describe('Nginx release golden analysis', () => {
     watcher.assertClean();
   });
 
-  test('unverified traffic and individual bot rows filter exactly their displayed requests', async ({ page, console: watcher }) => {
+  test('script traffic and individual bot rows filter exactly their displayed requests', async ({ page, console: watcher }) => {
     await loadGolden(page);
-    await page.locator('#filter-bot').selectOption('unverified');
+    // curl is a tool, not a crawler that could be verified: class "automated".
+    await page.locator('#filter-bot').selectOption('automated');
     await expect(page.locator('#filter-matching-badge strong')).toHaveText('1');
     await expect(page.locator('#explorer-rows-body')).toContainText('curl/8.4.0');
     await page.locator('#filter-clear-btn').click();
@@ -386,6 +393,8 @@ test.describe('Nginx release golden analysis', () => {
     const response = await request.post('/api/ingest', { multipart: {
       file: { name: 'golden.log.gz', mimeType: 'application/gzip', buffer: gzipSync(GOLD_LOG) },
     } });
+    // The ingest endpoint keeps the upload in object storage (R2).
+    test.skip(response.status() === 503 && /Storage service is not configured/.test(await response.text()), 'object storage is not configured on this instance');
     expect(response.status(), await response.text()).toBe(200);
     const { sessionId } = await response.json();
     expect(sessionId).toMatch(/^[a-f0-9]{24}$/);
@@ -426,9 +435,10 @@ test.describe('Nginx release golden analysis', () => {
     expect(report).toContain('AS15169');
     await page.route('**/golden-report.html', route => route.fulfill({ contentType: 'text/html', body: report }));
     await page.goto('/golden-report.html', { waitUntil: 'domcontentloaded' });
-    await expect(page.getByRole('heading', { name: /Nginx Log Analysis Report/ })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Traffic Log Analysis Report/ })).toBeVisible();
     const summary = page.locator('.container > .stat-cards').first();
-    await expect(summary.locator('.stat-value')).toHaveText(['15', '11', '4', '7', '60%', '3', '2']);
+    // Requests, addresses, countries, networks, human share, verified, spoofed, other bots.
+    await expect(summary.locator('.stat-value')).toHaveText(['15', '11', '3', '6', '60%', '3', '2', '1']);
     const statuses = page.locator('.metric-box').filter({ hasText: 'Status Categories' });
     await expect(statuses.locator('.metric-chip-val')).toHaveText(['1', '8', '2', '3', '1']);
     await expect(page.locator('[data-detail-key="c-United_States"] .hits-badge')).toHaveText('9');

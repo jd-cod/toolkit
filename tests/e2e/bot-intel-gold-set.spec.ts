@@ -44,7 +44,10 @@ import type { Page } from '@playwright/test';
  */
 
 const FIXTURE_DIR = path.resolve(__dirname, '..', 'fixtures');
-const GOLD_LOG = fs.readFileSync(path.join(FIXTURE_DIR, 'bot-intel-test.log'), 'utf8');
+// The log is made from the crawler ranges of the day and is not kept in the
+// repository: python3 scripts/generate_bot_intel_test_logs.py
+const GOLD_LOG_PATH = path.join(FIXTURE_DIR, 'bot-intel-test.log');
+const GOLD_LOG = fs.existsSync(GOLD_LOG_PATH) ? fs.readFileSync(GOLD_LOG_PATH, 'utf8') : '';
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, 'bot-intel-expected.json'), 'utf8')) as {
   expected_counts: Record<string, number>;
   ui_expected_counts: Record<string, number>;
@@ -121,6 +124,7 @@ const spoofedClientIps = () => [
 ];
 
 test.describe('Bot Intelligence Gold Set → UI', () => {
+  test.skip(!GOLD_LOG, `fixture not present at ${GOLD_LOG_PATH}; run python3 scripts/generate_bot_intel_test_logs.py`);
   test.beforeEach(async ({ page }) => {
     await page.goto('/nginx', { waitUntil: 'load' });
     await waitForEngineReady(page);

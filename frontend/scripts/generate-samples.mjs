@@ -91,11 +91,10 @@ const CRAWLERS = [
   { agent: 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm) Chrome/116.0.1938.76 Safari/537.36', networks: ['40.77.167', '157.55.39', '207.46.13'], weight: 16 },
   { agent: 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)', networks: ['20.171.206', '52.230.152'], weight: 10 },
   { agent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.1 Safari/605.1.15 (Applebot/0.1; +http://www.apple.com/go/applebot)', networks: ['17.22.237', '17.241.75'], weight: 6 },
-  { agent: 'Mozilla/5.0 (compatible; AhrefsBot/7.0; +http://ahrefs.com/robot/)', networks: ['54.36.148', '51.222.253'], weight: 12 },
+  { agent: 'Mozilla/5.0 (compatible; AhrefsBot/7.0; +http://ahrefs.com/robot/)', networks: ['54.36.148', '142.44.220'], weight: 12 },
   { agent: 'Mozilla/5.0 (compatible; SemrushBot/7~bl; +http://www.semrush.com/bot.html)', networks: ['185.191.171', '85.208.96'], weight: 10 },
   { agent: 'Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)', networks: ['5.255.253', '87.250.224', '213.180.203'], weight: 6 },
-  { agent: 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claudebot@anthropic.com)', networks: ['160.79.104'], weight: 5 },
-  { agent: 'Mozilla/5.0 (compatible; DuckDuckBot-Https/1.1; https://duckduckgo.com/duckduckbot)', networks: ['20.191.45', '40.88.21'], weight: 3 },
+  { agent: 'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claudebot@anthropic.com)', networks: ['216.73.216'], weight: 8 },
 ];
 const CRAWL_PATHS = ['/robots.txt', '/sitemap.xml', '/', '/products', '/products/item-{n}', '/products/item-{n}', '/category/shoes', '/category/bags', '/blog/summer-sale', '/blog/care-guide', '/pricing', '/about'];
 

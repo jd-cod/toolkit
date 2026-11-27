@@ -52,8 +52,8 @@ def main():
     asn = maxminddb.open_database(str(DATA / 'GeoLite2-ASN.mmdb'))
 
     rows = []
-    # Fixture-specific contracts: ordinary browser UAs are human; cURL is an
-    # unverified tool; recognized publisher identities require a CIDR match.
+    # Fixture-specific contracts: ordinary browser UAs are human; cURL is a
+    # script ("automated"); recognized publisher identities require a CIDR match.
     for number, raw in enumerate(log_path.read_text().splitlines(), 1):
         prefix, rest = raw.split('[', 1)
         stamp, request = rest.split(']', 1)
@@ -75,7 +75,7 @@ def main():
             verified = any(ip in ipaddress.ip_network(cidr) for cidr in networks)
             verdict = 'verified' if verified else 'spoofed' if private or networks else 'unverified'
         elif ua.startswith('curl/'):
-            verdict = 'unverified'
+            verdict = 'automated'
         geo = (country.get(ip_text) or {}).get('country', {})
         network = asn.get(ip_text) or {}
         rows.append({
@@ -134,8 +134,12 @@ def main():
         peak = max(buckets, key=lambda b: buckets[b]['count'])
         result[mode] = {
             'parsed_lines': len(accepted), 'skipped_lines': sum(skipped.values()), 'skip_reasons': dict(skipped),
-            'total_requests': len(accepted), 'unique_ips': len(count('ip')), 'unique_countries': len(count('country')),
-            'unique_asns': len(count('asn_num')), 'human_requests': sum(r['bot_status'] == 'human' for r in accepted),
+            # "Unknown" is not a country and AS0 is not a network: neither is counted.
+            'total_requests': len(accepted), 'unique_ips': len(count('ip')),
+            'unique_countries': len(set(r['country'] for r in accepted) - {'Unknown'}),
+            'unique_asns': len(set(r['asn_num'] for r in accepted) - {0}),
+            'human_requests': sum(r['bot_status'] == 'human' for r in accepted),
+            'automated_requests': sum(r['bot_status'] == 'automated' for r in accepted),
             **{f'{kind}_bots': sum(r['bot_status'] == kind for r in accepted) for kind in ('verified', 'spoofed', 'unverified')},
             'status_categories': statuses, 'status_hits': count('status_code'), 'method_hits': count('method'),
             'response_size': {'total': sum(sizes), 'average': int(statistics.mean(sizes) + .5),
@@ -144,7 +148,8 @@ def main():
             'country_hits': count('country'), 'asn_hits': count('asn_num'), 'ip_hits': count('ip'),
             'referrers': dict(Counter(r['referrer'] or '-' for r in accepted)),
             'top_urls': dict(Counter(r['url'].split('?')[0] for r in accepted)),
-            'top_paths': dict(Counter('/' + segment for r in accepted for segment in r['url'].split('?')[0].split('/') if segment)),
+            # A path is the URL without its query string, counted once per request.
+            'top_paths': dict(Counter(r['url'].split('?')[0] for r in accepted)),
             'hourly_nonzero_utc': dict(Counter(str(t.hour) for t in stamps)),
             'daily_nonzero_utc': dict(Counter(str((t.weekday() + 1) % 7) for t in stamps)),
             'request_rate': {'bucket_seconds': 120, 'bucket_label': '2m', 'total_buckets': (max(buckets) - min(buckets)) // 120 + 1,
