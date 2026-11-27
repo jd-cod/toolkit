@@ -222,6 +222,9 @@ section 3 that says "upload" is unchanged, because the streaming engine still la
 
 ## 7. Open issues, in suggested order
 
+The parser, client and bot identification, and path handling were reviewed in more depth afterwards:
+see `PARSER_AND_IDENTIFICATION_REVIEW.md` (48 findings, each with a reproduction).
+
 Severity: C critical, H high, M medium, L low. "Yesterday" means reproduced on 2026-11-26 with the script
 named, not re-run today.
 
