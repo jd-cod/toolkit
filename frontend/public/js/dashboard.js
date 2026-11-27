@@ -13,6 +13,7 @@ const Dashboard = (() => {
     let currentSourceLabel = '';
     let currentSkip403 = false;
     let currentSkipInternal = true;
+    let currentClientIp = 'auto'; // 'auto' | 'remote' | 'forwarded': which address on a line is the client
     let exclusionRevision = 0;
     let countryChart = null;
     let asnChart = null;
@@ -37,6 +38,7 @@ const Dashboard = (() => {
     let uploadRateSeries = null; // requests over time of the whole uploaded log
     let currentReanalyze = null; // re-reads an uploaded file with other exclusions, when it can be
     let timelineDragEvents = null;
+    let modalKeyEvents = null;
     let currentFilteredEntries = [];
     let activeFilters = {
         statusCategory: 'all',
@@ -647,10 +649,7 @@ const Dashboard = (() => {
         const inputWarnings = () => [...(originalParseResult?.inputWarnings || []), ...warnings];
 
         if (activeWorker && typeof appendStreamToWorker === 'function') {
-            const result = await appendStreamToWorker(decompressed, activeWorker, {
-                skip403: currentSkip403,
-                skipInternal: currentSkipInternal
-            });
+            const result = await appendStreamToWorker(decompressed, activeWorker, parserOptions(currentSkip403, currentSkipInternal, currentClientIp));
             currentNodeCount++;
             const mergedData = Analyzer.analyzeFromWorkerSummary(result.summary);
             latestSummary = result.summary;
@@ -697,10 +696,7 @@ const Dashboard = (() => {
 
         // In-memory path
         currentLogText = (currentLogText ? currentLogText + '\n' : '') + text;
-        const appendParse = await LogParser.parseAsync(text, {
-            skip403: currentSkip403,
-            skipInternal: currentSkipInternal
-        });
+        const appendParse = await LogParser.parseAsync(text, parserOptions(currentSkip403, currentSkipInternal, currentClientIp));
         // A client is judged by all of its requests, so classify the merged log.
         originalEnrichedEntries = originalEnrichedEntries.concat(appendParse.logEntries);
         Analyzer.enrichLogEntries(originalEnrichedEntries);
@@ -879,6 +875,7 @@ const Dashboard = (() => {
             currentSourceLabel = options.sourceLabel || ({ file: 'Uploaded logs', sample: 'Sample dataset', url: 'Remote log', gist: 'Shared snapshot', terminal_ingest: 'Terminal session' }[currentInputSource]) || 'Pasted logs';
             currentSkip403 = parseResult?.options?.skip403 ?? options.skip403 ?? true;
             currentSkipInternal = parseResult?.options?.skipInternal ?? options.skipInternal ?? true;
+            currentClientIp = parseResult?.options?.clientIp ?? options.clientIp ?? 'auto';
         }
 
         if (!options.preserveFilters) {
@@ -1385,6 +1382,13 @@ const Dashboard = (() => {
                 <div class="signal-exclusion-toggles">
                     <label><input type="checkbox" id="dash-skip-403" ${currentSkip403 ? 'checked' : ''} ${fixed}> Ignore 403 responses</label>
                     <label><input type="checkbox" id="dash-skip-internal" ${currentSkipInternal ? 'checked' : ''} ${fixed}> Ignore internal requests</label>
+                    <label for="dash-client-ip" title="Which address on a log line is the visitor. Automatic uses the forwarded address (X-Forwarded-For) when the connecting address is private, or when nearly every line carries one.">Client address
+                        <select id="dash-client-ip" class="filter-select" style="width:auto;" ${fixed}>
+                            <option value="auto" ${currentClientIp === 'auto' ? 'selected' : ''}>Automatic</option>
+                            <option value="remote" ${currentClientIp === 'remote' ? 'selected' : ''}>Connecting address</option>
+                            <option value="forwarded" ${currentClientIp === 'forwarded' ? 'selected' : ''}>X-Forwarded-For</option>
+                        </select>
+                    </label>
                 </div>
                 <p class="signal-exclusion-counts" id="exclusion-counts">Skipped: <strong>${numberWithCommas(counts.privateIP || 0)}</strong> private/local IP · <strong>${numberWithCommas(counts.healthCheck || 0)}</strong> health-check path · <strong>${numberWithCommas(counts.forbidden || 0)}</strong> ordinary 403 · <strong>${numberWithCommas(counts.invalid || 0)}</strong> invalid</p>
                 <details class="signal-nginx-option-help"><summary>What is excluded?</summary><p>Internal requests: private, loopback, link-local, CGNAT and IPv6 unique-local IPs (including mapped IPv4), plus exact paths /health, /healthz, /healthcheck, /health-check, /health_check, /readyz, /livez and /_health. Query strings and trailing slashes are ignored. Every User-Agent and response status is covered. Unknown ASN alone is not an exclusion.</p><p>403 filtering retains recognized crawlers for bot analysis. Each skipped line is counted once: private/local IP first, then health-check path, then ordinary 403. Changing an exclusion recalculates the loaded log and resets result filters. The input time span still includes excluded rows.</p></details>
@@ -1392,10 +1396,30 @@ const Dashboard = (() => {
             </fieldset>`;
     }
 
+    // The parser's options. The client-address choice is only named when it
+    // is not the automatic rule.
+    function parserOptions(skip403, skipInternal, clientIp) {
+        return clientIp === 'remote' || clientIp === 'forwarded' ? { skip403, skipInternal, clientIp } : { skip403, skipInternal };
+    }
+
+    function showAnalysisOptions(skip403, skipInternal, clientIp) {
+        for (const [id, value] of [['dash-skip-403', skip403], ['dash-skip-internal', skipInternal], ['nginx-skip-403', skip403], ['nginx-skip-internal', skipInternal]]) {
+            const input = document.getElementById(id);
+            if (input) input.checked = value;
+        }
+        for (const id of ['dash-client-ip', 'nginx-client-ip']) {
+            const select = document.getElementById(id);
+            if (select) select.value = clientIp;
+        }
+    }
+
     async function reanalyzeExclusions(focusId) {
         const revision = ++exclusionRevision;
         const skip403 = document.getElementById('dash-skip-403').checked;
         const skipInternal = document.getElementById('dash-skip-internal').checked;
+        const clientIp = document.getElementById('dash-client-ip')?.value || 'auto';
+        // What the dashboard shows now, to go back to if this fails.
+        const before = [currentSkip403, currentSkipInternal, currentClientIp];
         const fieldset = document.getElementById('dashboard-exclusions');
         fieldset.disabled = true;
         fieldset.setAttribute('aria-busy', 'true');
@@ -1403,16 +1427,13 @@ const Dashboard = (() => {
         if (!originalEnrichedEntries.length && latestSummary && currentReanalyze) {
             // Upload: read the file again. A successful run renders a new dashboard.
             try {
-                await currentReanalyze({ skip403, skipInternal, isCurrent: () => revision === exclusionRevision });
+                await currentReanalyze({ skip403, skipInternal, clientIp, isCurrent: () => revision === exclusionRevision });
             } catch (err) {
                 console.error('Re-reading the file failed:', err);
             }
             if (document.getElementById('dashboard-exclusions') !== fieldset) {
                 // A new dashboard was rendered from the file.
-                for (const [id, value] of [['nginx-skip-403', skip403], ['nginx-skip-internal', skipInternal]]) {
-                    const input = document.getElementById(id);
-                    if (input) input.checked = value;
-                }
+                showAnalysisOptions(skip403, skipInternal, clientIp);
                 document.getElementById(focusId)?.focus({ preventScroll: true });
                 return;
             }
@@ -1420,40 +1441,35 @@ const Dashboard = (() => {
             // Nothing was rendered: the file could not be read again.
             fieldset.disabled = false;
             fieldset.removeAttribute('aria-busy');
-            document.getElementById('dash-skip-403').checked = currentSkip403;
-            document.getElementById('dash-skip-internal').checked = currentSkipInternal;
-            document.getElementById('dash-exclusion-status').textContent = 'Could not read the file again. Start a new analysis to change the exclusions.';
+            showAnalysisOptions(...before);
+            document.getElementById('dash-exclusion-status').textContent = 'Could not read the file again. Start a new analysis to change these options.';
             return;
         }
         try {
-            const parseResult = await LogParser.parseAsync(currentLogText, { skip403, skipInternal });
+            const parseResult = await LogParser.parseAsync(currentLogText, parserOptions(skip403, skipInternal, clientIp));
             if (revision !== exclusionRevision) return;
             if (originalParseResult?.inputWarnings?.length) parseResult.inputWarnings = originalParseResult.inputWarnings;
             Analyzer.enrichLogEntries(parseResult.logEntries);
             const data = Analyzer.analyzeEnhancedLogs(parseResult.logEntries);
-            for (const [id, value] of [['nginx-skip-403', skip403], ['nginx-skip-internal', skipInternal]]) {
-                const input = document.getElementById(id);
-                if (input) input.checked = value;
-            }
+            showAnalysisOptions(skip403, skipInternal, clientIp);
             // Do not re-fetch a remote/one-time source: the original text is
             // already in memory. These are dataset policies, not view filters.
             render(data, currentLogText, parseResult, {
                 source: currentInputSource, sourceLabel: currentSourceLabel,
-                gistUrl: currentGistUrl, readOnly: currentReadOnly, skip403, skipInternal,
+                gistUrl: currentGistUrl, readOnly: currentReadOnly, skip403, skipInternal, clientIp,
             });
             document.getElementById(focusId)?.focus({ preventScroll: true });
         } catch {
             if (revision !== exclusionRevision) return;
             fieldset.disabled = false;
             fieldset.removeAttribute('aria-busy');
-            document.getElementById('dash-skip-403').checked = currentSkip403;
-            document.getElementById('dash-skip-internal').checked = currentSkipInternal;
+            showAnalysisOptions(...before);
             document.getElementById('dash-exclusion-status').textContent = 'Could not recalculate exclusions. Please try again.';
         }
     }
 
     function bindEvents(data, parseResult) {
-        for (const id of ['dash-skip-403', 'dash-skip-internal']) {
+        for (const id of ['dash-skip-403', 'dash-skip-internal', 'dash-client-ip']) {
             document.getElementById(id)?.addEventListener('change', () => reanalyzeExclusions(id));
         }
         // AbuseIPDB Scan Button (hidden, kept for backwards compat)
@@ -1587,6 +1603,13 @@ const Dashboard = (() => {
         document.getElementById('ip-log-modal-close')?.addEventListener('click', () => {
             document.getElementById('ip-log-modal').style.display = 'none';
         });
+        // Escape closes the window, as the close button and a click outside do.
+        modalKeyEvents?.abort();
+        modalKeyEvents = new AbortController();
+        document.addEventListener('keydown', (e) => {
+            const modal = document.getElementById('ip-log-modal');
+            if (e.key === 'Escape' && modal && modal.style.display !== 'none') modal.style.display = 'none';
+        }, { signal: modalKeyEvents.signal });
         document.getElementById('ip-log-modal')?.addEventListener('click', (e) => {
             if (e.target.id === 'ip-log-modal') e.target.style.display = 'none';
         });
@@ -3360,6 +3383,8 @@ const Dashboard = (() => {
         exclusionRevision++;
         timelineDragEvents?.abort();
         timelineDragEvents = null;
+        modalKeyEvents?.abort();
+        modalKeyEvents = null;
         themeObserver?.disconnect();
         themeObserver = null;
         clearTimeout(_filterDebounceTimer);

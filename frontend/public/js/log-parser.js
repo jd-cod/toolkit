@@ -248,6 +248,22 @@ const LogParser = (() => {
     // ─── Time ───
 
     const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+    // Servers that format dates with the system locale write other names.
+    // German, French, Spanish, Italian, Portuguese and Dutch abbreviations
+    // that differ from the English ones; none of them names two months.
+    const MONTHS_LOCALISED = {
+        'mär': 2, mrz: 2, mai: 4, okt: 9, dez: 11,
+        janv: 0, 'févr': 1, fevr: 1, mars: 2, avr: 3, juin: 5, juil: 6, 'août': 7, aout: 7, sept: 8, 'déc': 11,
+        ene: 0, abr: 3, ago: 7, dic: 11,
+        gen: 0, mag: 4, giu: 5, lug: 6, set: 8, ott: 9,
+        fev: 1, out: 9,
+        mrt: 2, mei: 4,
+    };
+
+    function monthIndex(name) {
+        const key = name.toLowerCase().replace(/\.$/, '');
+        return MONTHS[key] !== undefined ? MONTHS[key] : MONTHS_LOCALISED[key];
+    }
 
     function wallClock(y, mo, d, h, mi, s) {
         if (mo < 0 || mo > 11 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 59) return null;
@@ -280,9 +296,9 @@ const LogParser = (() => {
         if (m) return validOffset(m[7], m[8]) ? wallClock(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null;
 
         // Common Log Format: 01/Oct/2026:00:00:00 +0000
-        m = /^(\d{1,2})\/([A-Za-z]{3})\/(\d{4}):(\d{2}):(\d{2}):(\d{2})(?:[.,]\d+)?(?:\s*(?:Z|UTC|GMT|[+-](\d{2}):?(\d{2})))?$/.exec(str);
+        m = /^(\d{1,2})\/([A-Za-z\u00C0-\u00FF]{3,5}\.?)\/(\d{4}):(\d{2}):(\d{2}):(\d{2})(?:[.,]\d+)?(?:\s*(?:Z|UTC|GMT|[+-](\d{2}):?(\d{2})))?$/.exec(str);
         if (m) {
-            const month = MONTHS[m[2].toLowerCase()];
+            const month = monthIndex(m[2]);
             if (month === undefined || !validOffset(m[7], m[8])) return null;
             return wallClock(+m[3], month, +m[1], +m[4], +m[5], +m[6]);
         }
@@ -297,7 +313,7 @@ const LogParser = (() => {
         // RFC 1123: Sat, 10 Oct 2026 13:55:36 GMT
         m = /^(?:[A-Za-z]{3},\s*)?(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/.exec(str);
         if (m) {
-            const month = MONTHS[m[2].toLowerCase()];
+            const month = monthIndex(m[2]);
             if (month === undefined) return null;
             return wallClock(+m[3], month, +m[1], +m[4], +m[5], +m[6]);
         }
@@ -467,10 +483,16 @@ const LogParser = (() => {
      * @param {object} options - skip403, skipInternal, clientIp ('auto' | 'remote' | 'forwarded').
      * @param {object} [ctx] - Per-file findings: useForwarded.
      */
+    // 'remote' or 'forwarded' when the caller chose; null for the automatic rule.
+    function clientIpOption(options) {
+        const mode = options && options.clientIp;
+        return mode === 'remote' || mode === 'forwarded' ? mode : null;
+    }
+
     function finish(f, options, ctx, line) {
         const skip403 = option(options, 'skip403');
         const skipInternal = option(options, 'skipInternal');
-        const mode = (options && options.clientIp) || 'auto';
+        const mode = clientIpOption(options) || 'auto';
 
         let ip = f.remote;
         let viaForwarded = false;
@@ -578,6 +600,28 @@ const LogParser = (() => {
             userAgent: m[9] === undefined ? null : unescapeField(m[9]),
             forwarded: m[10] ? forwardedFromTail(m[10]) : null,
         };
+    }
+
+    // HAProxy HTTP log, with or without its syslog prefix:
+    // client:port [date] frontend backend/server timers status bytes cookie cookie flags connections queues {request headers} {response headers} "request"
+    const HAPROXY_REGEX = /(?:^|\s)(\S+):\d+ \[(\d{2}\/[A-Za-z]{3}\/\d{4}:\d{2}:\d{2}:\d{2}(?:\.\d+)?)\] \S+ \S+ (?:-?\d+\/){4}\+?-?\d+ (\d{3}|-1) \+?(\d+) \S+ \S+ \S{4} (?:\d+\/){4}\+?\d+ \d+\/\d+((?: \{[^}]*\})*) "((?:[^"\\]|\\.)*)"?\s*$/;
+
+    function extractHaproxy(line) {
+        const m = HAPROXY_REGEX.exec(line);
+        if (!m) return null;
+        const remote = parseClientToken(m[1]);
+        if (!remote) return null;
+        // Captured headers have no names in the log; a User-Agent, a referrer
+        // and a forwarded address are recognised by what they look like.
+        let userAgent = null, referrer = null, forwarded = null;
+        for (const piece of m[5].replace(/[{}]/g, '|').split('|')) {
+            const value = piece.trim();
+            if (!value || value === '-') continue;
+            if (!referrer && /^https?:\/\//i.test(value)) referrer = value;
+            else if (!forwarded && isAddressList(value)) forwarded = { list: value, quoted: true };
+            else if (!userAgent && isLikelyUserAgent(value)) userAgent = value;
+        }
+        return { remote, time: m[2], request: unescapeField(m[6]), status: m[3], bytes: m[4], referrer, userAgent, forwarded };
     }
 
     function extractAlb(line) {
@@ -823,11 +867,11 @@ const LogParser = (() => {
         };
     }
 
-    const EXTRACTORS = { standard: extractStandard, vhost: extractVhost, alb: extractAlb, json: extractJson };
+    const EXTRACTORS = { standard: extractStandard, vhost: extractVhost, alb: extractAlb, haproxy: extractHaproxy, json: extractJson };
     // Lines forwarded through syslog carry `Oct 10 13:55:36 host tag: ` (or an
     // ISO time) in front of the access-log line.
     const SYSLOG_PREFIX_RE = /^(?:<\d+>)?(?:[A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2}|\d{4}-\d{2}-\d{2}T\S+) \S+ [^\s:]+(?:\[\d+\])?: /;
-    const FORMAT_ORDER = ['standard', 'vhost', 'alb', 'json'];
+    const FORMAT_ORDER = ['standard', 'vhost', 'alb', 'haproxy', 'json'];
 
     /**
      * Build the parser for one file. The detected format is tried first; a
@@ -846,7 +890,7 @@ const LogParser = (() => {
                 if (fields.wrapped !== undefined) {
                     return depth === 0 ? parse(fields.wrapped, options, 1) : { valid: false, reason: 'Unparseable log format', reasonType: 'invalid', line };
                 }
-                if (ctx.swapRefUa && type !== 'json' && type !== 'alb') {
+                if (ctx.swapRefUa && (type === 'standard' || type === 'vhost')) {
                     fields = { ...fields, referrer: fields.userAgent, userAgent: fields.referrer };
                 }
                 return finish(fields, options || {}, ctx, line);
@@ -910,7 +954,7 @@ const LogParser = (() => {
             return { type: 'standard', parseLine, useForwarded: false, swapRefUa: false };
         }
 
-        const hits = { standard: 0, vhost: 0, alb: 0, json: 0 };
+        const hits = { standard: 0, vhost: 0, alb: 0, haproxy: 0, json: 0 };
         const fieldsOf = [];
         for (const line of candidates) {
             let found = null;
@@ -928,7 +972,7 @@ const LogParser = (() => {
 
         let type = 'standard';
         for (const candidate of FORMAT_ORDER) if (hits[candidate] > hits[type]) type = candidate;
-        const recognised = hits.standard + hits.vhost + hits.alb + hits.json;
+        const recognised = hits.standard + hits.vhost + hits.alb + hits.haproxy + hits.json;
 
         let dynamic = null;
         if (recognised < candidates.length / 2) {
@@ -1051,7 +1095,7 @@ const LogParser = (() => {
             skippedLines,
             skipCounts,
             validLines,
-            options: { skip403, skipInternal },
+            options: clientIpOption(options) ? { skip403, skipInternal, clientIp: clientIpOption(options) } : { skip403, skipInternal },
             format: format.type,
             // How many requests took their client from a forwarded-address field.
             forwardedLines,

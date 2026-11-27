@@ -459,7 +459,10 @@ window.initNginxPage = function () {
         const skipInternal = (options && options.skipInternal !== undefined)
             ? Boolean(options.skipInternal)
             : (internalToggle ? internalToggle.checked : true);
-        const parserOptions = { skip403, skipInternal };
+        const clientIpSelect = document.getElementById('nginx-client-ip');
+        const clientIpChoice = (options && options.clientIp) || (clientIpSelect ? clientIpSelect.value : 'auto');
+        const clientIp = clientIpChoice === 'remote' || clientIpChoice === 'forwarded' ? clientIpChoice : 'auto';
+        const parserOptions = clientIp === 'auto' ? { skip403, skipInternal } : { skip403, skipInternal, clientIp };
         // Parts of the input that could not be read (a damaged archive). The
         // dashboard shows them; the analysis covers the rest.
         const inputWarnings = Array.isArray(options?.inputWarnings) ? options.inputWarnings.slice() : [];
@@ -526,6 +529,7 @@ window.initNginxPage = function () {
                     sourceLabel: options?.sourceLabel || '',
                     skip403,
                     skipInternal,
+                    clientIp,
                 });
             };
 
@@ -637,9 +641,10 @@ window.initNginxPage = function () {
                 sourceLabel: options?.sourceLabel || '',
                 skip403,
                 skipInternal,
-                // A file can be read again with other exclusions; a stream cannot.
+                clientIp,
+                // A file can be read again with other options; a stream cannot.
                 reanalyze: isFile
-                    ? (next) => executeAnalysis(rawLogInput, inputSource, currentUrl, { ...(options || {}), inputWarnings: [], skip403: next.skip403, skipInternal: next.skipInternal, isCurrent: next.isCurrent })
+                    ? (next) => executeAnalysis(rawLogInput, inputSource, currentUrl, { ...(options || {}), inputWarnings: [], skip403: next.skip403, skipInternal: next.skipInternal, clientIp: next.clientIp, isCurrent: next.isCurrent })
                     : null,
                 worker,
                 summary: result.summary,

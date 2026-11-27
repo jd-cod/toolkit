@@ -984,19 +984,30 @@ this.textContent=s?this.textContent.replace('Hide','View'):this.textContent.repl
         }, {});
     }
 
-    function exportToCSV(data, filename) {
+    /**
+     * One CSV cell. Text from a log (a URL, a User-Agent, a referrer) that
+     * starts with = + - @ would be run as a formula by a spreadsheet, so such
+     * text gets a leading apostrophe. Numbers are left as they are.
+     */
+    function csvCell(value) {
+        if (value === undefined || value === null) return '""';
+        let text = String(value);
+        if (typeof value !== 'number' && text !== '-' && /^[=+\-@\t\r]/.test(text) && !/^-?\d+(?:\.\d+)?$/.test(text)) text = "'" + text;
+        return `"${text.replace(/"/g, '""')}"`;
+    }
+
+    function toCsv(data) {
         const rows = Array.isArray(data) ? data : [data];
         const flattenedData = rows.map(row => flattenObject(row));
         const headers = Array.from(new Set(flattenedData.flatMap(row => Object.keys(row))));
-        const csvContent = [
-            headers.join(','),
-            ...flattenedData.map(row =>
-                headers.map(h => {
-                    const val = row[h] === undefined ? '' : String(row[h]);
-                    return `"${val.replace(/"/g, '""')}"`;
-                }).join(',')
-            )
+        return [
+            headers.map(csvCell).join(','),
+            ...flattenedData.map(row => headers.map(h => csvCell(row[h])).join(','))
         ].join('\n');
+    }
+
+    function exportToCSV(data, filename) {
+        const csvContent = toCsv(data);
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -1010,6 +1021,6 @@ this.textContent=s?this.textContent.replace('Hide','View'):this.textContent.repl
 
     function n(v) { return (v || 0).toString().replace(/\\B(?=(\\d{3})+(?!\\d))/g, ','); }
 
-    return { openModal };
+    return { openModal, toCsv };
 })();
 window.Report = Report;

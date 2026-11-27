@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { ChunkedLineSplitter } = require('../../frontend/public/js/stream-line-splitter.js');
+const { ChunkedLineSplitter, detectTextEncoding } = require('../../frontend/public/js/stream-line-splitter.js');
 
 describe('ChunkedLineSplitter', () => {
     test('splits complete lines in a single chunk', () => {
@@ -47,6 +47,40 @@ describe('ChunkedLineSplitter', () => {
 
         splitter = new ChunkedLineSplitter();
         assert.deepEqual(splitter.feed('a\rb\nc\r\n'), ['a', 'b', 'c']);
+    });
+
+    test('reads UTF-16 files, with or without a byte order mark, cut anywhere', () => {
+        const text = 'line 1 caf\u00e9\r\nline 2 \u65e5\u672c\nline 3\n';
+        const le = Buffer.from(text, 'utf16le');
+        const be = Buffer.from(le).swap16();
+        const inputs = {
+            'UTF-16LE with BOM': Buffer.concat([Buffer.from([0xff, 0xfe]), le]),
+            'UTF-16BE with BOM': Buffer.concat([Buffer.from([0xfe, 0xff]), be]),
+            'UTF-16LE without BOM': Buffer.from('plain ascii line one\nplain ascii line two\n', 'utf16le'),
+            'UTF-16BE without BOM': Buffer.from(Buffer.from('plain ascii line one\nplain ascii line two\n', 'utf16le')).swap16(),
+        };
+        for (const [name, bytes] of Object.entries(inputs)) {
+            const expected = name.includes('without') ? ['plain ascii line one', 'plain ascii line two'] : ['line 1 caf\u00e9', 'line 2 \u65e5\u672c', 'line 3'];
+            for (const size of [bytes.length, 64, 7, 3]) {
+                if (size < 16 && name.includes('without')) continue; // too little to tell without a mark
+                const splitter = new ChunkedLineSplitter();
+                const lines = [];
+                for (let i = 0; i < bytes.length; i += size) lines.push(...splitter.feed(new Uint8Array(bytes.subarray(i, i + size))));
+                lines.push(...splitter.flush());
+                assert.deepEqual(lines, expected, `${name}, chunks of ${size}`);
+            }
+        }
+    });
+
+    test('UTF-8 stays UTF-8, and one splitter reads files in different encodings one after the other', () => {
+        assert.equal(detectTextEncoding(new TextEncoder().encode('8.8.8.8 - - [27/Nov/2026:10:00:00 +0000] "GET / HTTP/1.1" 200 5')), 'utf-8');
+        assert.equal(detectTextEncoding(new Uint8Array([0xef, 0xbb, 0xbf, 0x38, 0x2e, 0x38, 0x2e, 0x38, 0x2e, 0x38])), 'utf-8');
+        assert.equal(detectTextEncoding(new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03])), 'utf-8');
+
+        const splitter = new ChunkedLineSplitter();
+        assert.deepEqual(splitter.feed(new Uint8Array(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('first file\n', 'utf16le')]))), ['first file']);
+        assert.deepEqual(splitter.flush(), []);
+        assert.deepEqual(splitter.feed(new TextEncoder().encode('second file caf\u00e9\n')), ['second file caf\u00e9']);
     });
 
     test('handles CRLF (Windows) and LF (Linux) newlines cleanly', () => {

@@ -82,6 +82,26 @@ test('a forwarded header from a direct client is not trusted', () => {
     assert.ok(!r.ips.includes('66.249.66.1'));
 });
 
+test('the client address can be chosen instead of left to the automatic rule', () => {
+    // A direct client that sends its own forwarded header: not trusted automatically.
+    const text = many(40, i => line('GET / HTTP/1.1', { ip: `81.2.69.${i + 1}`, tail: i % 2 ? ' "6.6.6.6"' : ' "-"' }));
+    const auto = LogParser.parseIPs(text, ALL);
+    assert.equal(auto.forwardedLines, 0);
+    assert.deepEqual(auto.options, { skip403: false, skipInternal: false }, 'the automatic rule is not named in the options');
+
+    const forwarded = LogParser.parseIPs(text, { ...ALL, clientIp: 'forwarded' });
+    assert.equal(forwarded.forwardedLines, 20);
+    assert.equal(forwarded.ips.filter(ip => ip === '6.6.6.6').length, 20);
+    assert.deepEqual(forwarded.options, { skip403: false, skipInternal: false, clientIp: 'forwarded' });
+
+    const remote = LogParser.parseIPs(text, { ...ALL, clientIp: 'remote' });
+    assert.equal(remote.forwardedLines, 0);
+    assert.deepEqual(remote.options, { skip403: false, skipInternal: false, clientIp: 'remote' });
+
+    // Anything else is the automatic rule.
+    assert.deepEqual(LogParser.parseIPs(text, { ...ALL, clientIp: 'nonsense' }).options, { skip403: false, skipInternal: false });
+});
+
 test('the right-most public address of a forwarded list is the client', () => {
     assert.equal(LogParser.forwardedClient('6.6.6.6, 81.2.69.1, 10.1.1.1'), '81.2.69.1');
     assert.equal(LogParser.forwardedClient('10.0.0.1, 192.168.1.1'), '192.168.1.1');
@@ -210,4 +230,52 @@ test('address filter: full address, start of an address, CIDR', () => {
     assert.deepEqual(hits('1.2.3.0/24'), ['1.2.3.4', '1.2.3.40']);
     assert.deepEqual(hits('2001:db8::/32'), ['2001:db8:1::5']);
     assert.deepEqual(hits('9.9.9.9'), []);
+});
+
+test('HAProxy HTTP logs, with and without the syslog prefix', () => {
+    const rows = [
+        'Feb  6 12:14:14 localhost haproxy[14389]: 81.2.69.1:33317 [06/Feb/2026:12:14:14.655] http-in static/srv1 10/0/30/69/109 200 2750 - - ---- 1/1/1/1/0 0/0 {1wt.eu} {} "GET /index.html HTTP/1.1"',
+        '81.2.69.142:51234 [06/Feb/2026:12:14:15.123] fe_https~ be_app/app2 0/0/1/12/13 404 512 - - ---- 5/5/0/0/0 0/0 {shop.test|Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0|https://shop.test/} "GET /missing?x=1 HTTP/2.0"',
+        '2026-02-06T12:14:16+00:00 lb1 haproxy[991]: 2001:4860:4860::8888:40000 [06/Feb/2026:12:14:16.001] fe be/<NOSRV> -1/-1/-1/-1/0 503 212 - - SC-- 1/1/0/0/0 0/0 "POST /api HTTP/1.1"',
+        '81.2.69.3:40000 [06/Feb/2026:12:14:17.001] fe be/s1 0/0/0/1/+1 200 +99 - - ---- 1/1/0/0/0 0/0 "GET / HTTP/1.1"',
+        '81.2.69.4:40001 [06/Feb/2026:12:14:18.001] fe be/s1 0/0/1/-1/2 -1 0 - - CD-- 5/5/0/0/0 0/0 "<BADREQ>"',
+    ];
+    const r = LogParser.parseIPs(rows.join('\n'), ALL);
+    assert.equal(r.format, 'haproxy');
+    assert.equal(r.logEntries.length, 5);
+    const view = e => [e.ip, e.method, e.url, e.status_code, e.response_size, e.user_agent, e.referrer, e.timestamp.toISOString().slice(11, 19)];
+    assert.deepEqual(view(r.logEntries[0]), ['81.2.69.1', 'GET', '/index.html', 200, 2750, null, null, '12:14:14']);
+    assert.deepEqual(view(r.logEntries[1]), ['81.2.69.142', 'GET', '/missing?x=1', 404, 512, 'Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0', 'https://shop.test/', '12:14:15']);
+    assert.deepEqual(view(r.logEntries[2]).slice(0, 5), ['2001:4860:4860::8888', 'POST', '/api', 503, 212]);
+    assert.deepEqual(view(r.logEntries[3]).slice(0, 5), ['81.2.69.3', 'GET', '/', 200, 99]);
+    assert.deepEqual(view(r.logEntries[4]).slice(0, 5), ['81.2.69.4', null, null, 0, 0], 'a request that was never a request has no method or status');
+
+    // An ordinary access log is not taken for HAProxy, and the other way round.
+    assert.equal(LogParser.parseIPs(many(30, i => line(`GET /p${i} HTTP/1.1`)), ALL).format, 'standard');
+    assert.equal(LogParser.parseIPs([...rows, line('GET /mixed HTTP/1.1')].join('\n'), ALL).logEntries.length, 6);
+});
+
+test('behind HAProxy the captured X-Forwarded-For names the client when the connecting address is private', () => {
+    const rows = many(20, i => `10.0.0.1:4${1000 + i} [06/Feb/2026:12:14:${String(10 + i).padStart(2, '0')}.001] fe be/s1 0/0/0/1/1 200 99 - - ---- 1/1/0/0/0 0/0 {81.2.69.${i + 1}|curl/8.4.0} "GET /p${i} HTTP/1.1"`);
+    const r = LogParser.parseIPs(rows, { skip403: false, skipInternal: true });
+    assert.equal(r.logEntries.length, 20);
+    assert.equal(r.forwardedLines, 20);
+    assert.equal(r.logEntries[0].ip, '81.2.69.1');
+    assert.equal(r.logEntries[0].user_agent, 'curl/8.4.0');
+});
+
+test('month names in other languages', () => {
+    const month = t => { const d = LogParser.parseTimestamp(t); return d ? d.getUTCMonth() + 1 : null; };
+    const names = {
+        1: ['Jan', 'janv', 'janv.', 'ene', 'gen'], 2: ['Feb', 'févr', 'fev'], 3: ['Mar', 'Mär', 'mrz', 'mars', 'mrt'], 4: ['Apr', 'avr', 'abr'],
+        5: ['May', 'Mai', 'mag', 'mei'], 6: ['Jun', 'juin', 'giu'], 7: ['Jul', 'juil', 'lug'], 8: ['Aug', 'août', 'ago'],
+        9: ['Sep', 'sept', 'set'], 10: ['Oct', 'Okt', 'ott', 'out'], 11: ['Nov'], 12: ['Dec', 'Dez', 'déc', 'dic'],
+    };
+    for (const [number, list] of Object.entries(names)) {
+        for (const name of list) assert.equal(month(`10/${name}/2026:13:55:36 +0100`), Number(number), name);
+    }
+    assert.equal(month('10/Foo/2026:13:55:36 +0000'), null);
+    assert.equal(month('10/Octobre/2026:13:55:36 +0000'), null);
+    const e = LogParser.parseIPs('81.2.69.9 - - [10/Okt/2026:13:55:36 +0200] "GET /de HTTP/1.1" 200 5 "-" "curl/8"', ALL).logEntries[0];
+    assert.equal(e.timestamp.toISOString().slice(0, 19), '2026-10-10T13:55:36');
 });

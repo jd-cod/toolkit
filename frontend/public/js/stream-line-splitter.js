@@ -6,9 +6,43 @@
  * monolithic strings in memory.
  */
 
+/**
+ * The text encoding of a file, from its first bytes: UTF-16 when it starts
+ * with a byte order mark or when every second byte of its start is zero
+ * (Windows tools such as PowerShell's `>` write logs that way), else UTF-8.
+ * @param {Uint8Array} bytes
+ * @returns {'utf-8'|'utf-16le'|'utf-16be'}
+ */
+function detectTextEncoding(bytes) {
+    if (!bytes || bytes.length < 2) return 'utf-8';
+    if (bytes[0] === 0xff && bytes[1] === 0xfe) return 'utf-16le';
+    if (bytes[0] === 0xfe && bytes[1] === 0xff) return 'utf-16be';
+    const length = Math.min(bytes.length - (bytes.length % 2), 256);
+    if (length < 8) return 'utf-8';
+    let evenZero = 0, oddZero = 0;
+    for (let i = 0; i < length; i += 2) {
+        if (bytes[i] === 0) evenZero++;
+        if (bytes[i + 1] === 0) oddZero++;
+    }
+    const pairs = length / 2;
+    if (oddZero >= pairs * 0.8 && evenZero === 0) return 'utf-16le';
+    if (evenZero >= pairs * 0.8 && oddZero === 0) return 'utf-16be';
+    return 'utf-8';
+}
+
+function textDecoderFor(firstBytes) {
+    if (typeof TextDecoder === 'undefined') return null;
+    try {
+        return new TextDecoder(detectTextEncoding(firstBytes), { fatal: false });
+    } catch {
+        return new TextDecoder('utf-8', { fatal: false });
+    }
+}
+
 class ChunkedLineSplitter {
     constructor() {
-        this.decoder = typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { fatal: false, stream: true }) : null;
+        // Chosen from the first bytes of the file, see detectTextEncoding.
+        this.decoder = null;
         this.remainder = '';
     }
 
@@ -22,6 +56,7 @@ class ChunkedLineSplitter {
         if (typeof chunk === 'string') {
             text = this.remainder + chunk;
         } else if (chunk && chunk.buffer) {
+            if (!this.decoder) this.decoder = textDecoderFor(chunk);
             text = this.remainder + (this.decoder ? this.decoder.decode(chunk, { stream: true }) : String.fromCharCode.apply(null, chunk));
         } else {
             return [];
@@ -63,6 +98,7 @@ class ChunkedLineSplitter {
         if (this.decoder) {
             text = this.decoder.decode();
         }
+        this.decoder = null; // the next file may be in another encoding
         text = this.remainder + text;
         this.remainder = '';
 
@@ -79,9 +115,7 @@ class ChunkedLineSplitter {
      */
     reset() {
         this.remainder = '';
-        if (this.decoder) {
-            this.decoder.decode(); // Clears any internal decoder state
-        }
+        this.decoder = null; // the next file may be in another encoding
     }
 }
 
@@ -305,14 +339,16 @@ async function peekAndDecompressStream(input, options = {}) {
  */
 async function readStreamAsText(stream) {
     const reader = stream.getReader();
-    const decoder = new TextDecoder('utf-8');
+    let decoder = null;
     let text = '';
     for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        text += typeof value === 'string' ? value : decoder.decode(value, { stream: true });
+        if (typeof value === 'string') { text += value; continue; }
+        if (!decoder) decoder = textDecoderFor(value);
+        text += decoder.decode(value, { stream: true });
     }
-    return text + decoder.decode();
+    return decoder ? text + decoder.decode() : text;
 }
 
 /** A worker 'error' event carries no readable text of its own. */
@@ -655,7 +691,7 @@ function appendStreamToWorker(stream, worker, options = {}, onProgress = null) {
 
 // Universal export: CommonJS (Node.js tests) and Worker/Browser global (importScripts / <script>)
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { ChunkedLineSplitter, peekAndDecompressStream, readStreamAsText, streamChunksToWorker, appendStreamToWorker };
+    module.exports = { ChunkedLineSplitter, detectTextEncoding, peekAndDecompressStream, readStreamAsText, streamChunksToWorker, appendStreamToWorker };
 }
 if (typeof self !== 'undefined') {
     self.ChunkedLineSplitter = ChunkedLineSplitter;

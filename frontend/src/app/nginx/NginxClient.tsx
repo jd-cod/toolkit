@@ -203,6 +203,13 @@ export default function NginxClient() {
                 <div className="signal-exclusion-toggles">
                   <label htmlFor="nginx-skip-403"><input type="checkbox" id="nginx-skip-403" defaultChecked /> Ignore 403 responses</label>
                   <label htmlFor="nginx-skip-internal"><input type="checkbox" id="nginx-skip-internal" defaultChecked /> Ignore internal requests</label>
+                  <label htmlFor="nginx-client-ip" title="Which address on a log line is the visitor. Automatic uses the forwarded address (X-Forwarded-For) when the connecting address is private, or when nearly every line carries one.">Client address
+                    <select id="nginx-client-ip" className="filter-select" style={{ width: 'auto' }} defaultValue="auto">
+                      <option value="auto">Automatic</option>
+                      <option value="remote">Connecting address</option>
+                      <option value="forwarded">X-Forwarded-For</option>
+                    </select>
+                  </label>
                 </div>
                 <details className="signal-nginx-option-help"><summary>What is excluded?</summary><p>Internal requests: private, loopback, link-local, CGNAT and IPv6 unique-local IPs (including mapped IPv4), plus exact paths /health, /healthz, /healthcheck, /health-check, /health_check, /readyz, /livez and /_health. Query strings and trailing slashes are ignored. This applies to every User-Agent and response status. Unknown ASN alone is not an exclusion.</p><p>403 filtering excludes ordinary blocked requests; recognized crawlers are retained for bot analysis. Uncheck either option to include those requests. You can also change these options above the results.</p></details>
               </fieldset>

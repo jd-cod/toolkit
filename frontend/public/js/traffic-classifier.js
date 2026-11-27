@@ -131,8 +131,8 @@ const TrafficClassifier = (() => {
             ip, ua, info,
             n: 0, pages: 0, assets: 0, media: 0, withRef: 0, err4: 0, heads: 0, http10: 0,
             robots: 0, probeBits: 0, probeHits: 0, strongBits: 0, scriptMissBits: 0, pathLo: 0, pathHi: 0,
-            winStart: -1, winCount: 0, peakMin: 0,
-            authStart: -1, authCount: 0, authPeak: 0, authAttempts: 0, authPath: null,
+            pageTimes: null, peakMin: 0,
+            authTimes: null, authPeak: 0, authAttempts: 0, authPath: null,
             cls: 'human', name: null, group: null, reason: 'Browser traffic', verified: null,
         };
     }
@@ -152,6 +152,29 @@ const TrafficClassifier = (() => {
         };
     }
 
+    // No rule looks past this many requests in one minute.
+    const MINUTE_CAP = 5000;
+
+    /**
+     * Add a request time and return how many requests lie within the 60
+     * seconds that end with it. The window moves with every request, so a
+     * burst is counted whole wherever it falls on the clock. Logs are written
+     * in time order (or in reverse); `window` keeps only the last minute.
+     *
+     * @param {{ times: number[], head: number }} window
+     */
+    function withinLastMinute(window, t) {
+        const times = window.times;
+        while (window.head < times.length && Math.abs(t - times[window.head]) >= 60) window.head++;
+        times.push(t);
+        if (times.length - window.head > MINUTE_CAP) window.head++;
+        if (window.head >= 1024 && window.head * 2 >= times.length) {
+            times.splice(0, window.head);
+            window.head = 0;
+        }
+        return times.length - window.head;
+    }
+
     function observe(client, row, d) {
         client.n++;
         const t = row.timeSec > 0 ? row.timeSec : -1;
@@ -165,13 +188,10 @@ const TrafficClassifier = (() => {
             const bit = d.hash & 63;
             if (bit < 32) client.pathLo |= (1 << bit);
             else client.pathHi |= (1 << (bit - 32));
-            // Busiest minute: a 60-second window that opens at the first
-            // request after the previous window closed. Logs are written in
-            // time order, so one open window per client is enough.
             if (t >= 0) {
-                if (client.winStart >= 0 && Math.abs(t - client.winStart) < 60) client.winCount++;
-                else { client.winStart = t; client.winCount = 1; }
-                if (client.winCount > client.peakMin) client.peakMin = client.winCount;
+                if (!client.pageTimes) client.pageTimes = { times: [], head: 0 };
+                const inMinute = withinLastMinute(client.pageTimes, t);
+                if (inMinute > client.peakMin) client.peakMin = inMinute;
             }
         }
 
@@ -184,9 +204,9 @@ const TrafficClassifier = (() => {
             client.authAttempts++;
             if (client.authPath === null) client.authPath = d.path;
             if (t >= 0) {
-                if (client.authStart >= 0 && Math.abs(t - client.authStart) < 60) client.authCount++;
-                else { client.authStart = t; client.authCount = 1; }
-                if (client.authCount > client.authPeak) client.authPeak = client.authCount;
+                if (!client.authTimes) client.authTimes = { times: [], head: 0 };
+                const inMinute = withinLastMinute(client.authTimes, t);
+                if (inMinute > client.authPeak) client.authPeak = inMinute;
             }
         }
 

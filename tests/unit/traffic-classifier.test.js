@@ -582,6 +582,29 @@ describe('TrafficClassifier: attacks that used to pass as human', () => {
         assert.equal(classOfOnlyClient(served).name, 'Vulnerability probing');
     });
 
+    test('a burst is counted whole wherever it falls on the clock', () => {
+        // One request, then 70 a half-minute later and 70 more right after:
+        // 140 within a minute, but never more than 71 in a minute counted from the first request.
+        const start = later();
+        const burst = [line('45.1.2.1', { url: '/first', at: start })];
+        for (let i = 0; i < 140; i++) burst.push(line('45.1.2.1', { url: `/page/${i}`, at: start + 31 + Math.floor(i * 58 / 140) }));
+        const flood = classOfOnlyClient(burst);
+        assert.equal(flood.name, 'Request flood');
+        assert.match(flood.reason, /^1[34]\d page requests within one minute/);
+
+        // Twelve login attempts across a minute boundary of the same kind.
+        const again = later();
+        const logins = [line('45.1.2.2', { method: 'POST', url: '/login', status: 401, at: again })];
+        for (let i = 0; i < 12; i++) logins.push(line('45.1.2.2', { method: 'POST', url: '/login', status: 401, at: again + 50 + i * 2 }));
+        for (let i = 0; i < 40; i++) logins.push(line('45.1.2.2', { url: `/static/a${i}.css`, ref: 'https://site.test/', at: again + 200 + i }));
+        assert.equal(classOfOnlyClient(logins).name, 'Login brute force');
+
+        // The same number of requests spread over ten minutes is not a flood.
+        const calm = later();
+        const spread = Array.from({ length: 141 }, (_, i) => line('81.2.69.180', { url: `/page/${i}`, ref: 'https://site.test/', at: calm + i * 4 }));
+        assert.notEqual(classOfOnlyClient(spread).name, 'Request flood');
+    });
+
     test('a native app is traffic from a person, unless it attacks', () => {
         let start = later();
         const app = 'MyShopApp/5.2.1 CFNetwork/1485 Darwin/23.1.0';
