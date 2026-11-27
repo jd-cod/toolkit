@@ -43,6 +43,7 @@ export async function loadNginxEngine() {
     'traffic-classifier',
     'analyzer',
     'dashboard-filters',
+    'dashboard-views',
     'dashboard',
     'share',
     'report',
