@@ -737,6 +737,12 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
 </div>`;
     }
 
+    // The lists of addresses are cut; say so when one is.
+    function moreIps(row) {
+        const shown = (row.ip_details || []).length;
+        return row.unique_ips > shown ? ` (the ${n(shown)} busiest of ${n(row.unique_ips)})` : '';
+    }
+
     function buildCountryTable(data) {
         const total = data.total_requests;
         const rows = data.country_hits.map(c => {
@@ -744,7 +750,7 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
             const key = 'c-' + esc(c.country).replace(/[\s'"]/g, '_');
             const pills = (c.ip_details || []).map(d => `<div class="ip-pill"><span class="ip-code">${esc(d.ip)}</span><span class="ip-pill-hits">${n(d.hits)} hits</span></div>`).join('');
             return `<tr class="expand-row" data-detail-key="${key}"><td><span class="country-flag">${esc(c.country_code)}</span> ${esc(c.country)} <span class="expand-chevron">▸</span></td><td class="text-right"><span class="hits-badge">${n(c.hits)}</span></td><td class="text-right">${n(c.unique_ips)}</td><td><div class="traffic-bar-wrap"><div class="traffic-bar traffic-bar-blue" style="width:${p}%"></div><span class="traffic-pct">${p}%</span></div></td></tr>
-<tr data-detail-id="${key}" style="display:none" class="detail-row"><td colspan="4" style="padding:0;border:none"><div class="detail-container"><div class="detail-title">IPs from ${esc(c.country)}</div><div class="detail-pills">${pills}</div></div></td></tr>`;
+<tr data-detail-id="${key}" style="display:none" class="detail-row"><td colspan="4" style="padding:0;border:none"><div class="detail-container"><div class="detail-title">IPs from ${esc(c.country)}${moreIps(c)}</div><div class="detail-pills">${pills}</div></div></td></tr>`;
         }).join('');
         return `<div class="section" style="margin-bottom:20px"><div class="section-header">🌍 Country Breakdown</div><div class="scroll-wrap"><table><thead><tr><th>Country</th><th class="text-right">Hits</th><th class="text-right">Unique IPs</th><th style="min-width:120px">Traffic</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
     }
@@ -756,7 +762,7 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
             const key = 'a-' + esc(a.asn);
             const pills = (a.ip_details || []).map(d => `<div class="ip-pill"><span class="ip-code">${esc(d.ip)}</span><span class="ip-pill-hits">${n(d.hits)} hits</span></div>`).join('');
             return `<tr class="expand-row" data-detail-key="${key}"><td><span class="asn-code">AS${esc(a.asn)}</span> <span class="expand-chevron">▸</span></td><td style="font-size:0.88rem">${esc(a.asn_org)}</td><td class="text-right"><span class="hits-badge">${n(a.hits)}</span></td><td class="text-right">${n(a.unique_ips)}</td><td><div class="traffic-bar-wrap"><div class="traffic-bar traffic-bar-purple" style="width:${p}%"></div><span class="traffic-pct">${p}%</span></div></td></tr>
-<tr data-detail-id="${key}" style="display:none" class="detail-row"><td colspan="5" style="padding:0;border:none"><div class="detail-container"><div class="detail-title">IPs in AS${esc(a.asn)}</div><div class="detail-pills">${pills}</div></div></td></tr>`;
+<tr data-detail-id="${key}" style="display:none" class="detail-row"><td colspan="5" style="padding:0;border:none"><div class="detail-container"><div class="detail-title">IPs in AS${esc(a.asn)}${moreIps(a)}</div><div class="detail-pills">${pills}</div></div></td></tr>`;
         }).join('');
         return `<div class="section" style="margin-bottom:20px"><div class="section-header">🏢 ASN Breakdown</div><div class="scroll-wrap"><table><thead><tr><th>ASN</th><th>Organization</th><th class="text-right">Hits</th><th class="text-right">Unique IPs</th><th style="min-width:120px">Traffic</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
     }

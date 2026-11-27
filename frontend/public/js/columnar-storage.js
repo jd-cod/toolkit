@@ -132,11 +132,17 @@ class ColumnarStorage {
         const code = this.countryDict[this.ipCountryIds[id]] || '--';
         const asn = this.ipAsns[id] || 0;
         return {
-            country: code,
+            country: this._countryName(code),
             country_code: code,
             asn,
             asn_org: (this.asnOrgMap && this.asnOrgMap[asn]) || 'Unknown',
         };
+    }
+
+    /** "Germany" for DE; "Unknown" for an address that has no country. */
+    _countryName(code) {
+        if (!code || code === '-' || code === '--') return 'Unknown';
+        return (this.countryNames && this.countryNames[code]) || code;
     }
 
     enrichGeo(geoMap = {}) {
@@ -375,8 +381,9 @@ class ColumnarStorage {
             }
         }
 
-        let targetAsn = 0;
-        if (filters.asn && filters.asn !== 'all') {
+        // -1: any network. 0 is a network of its own: addresses without one.
+        let targetAsn = -1;
+        if (filters.asn !== undefined && filters.asn !== null && filters.asn !== '' && filters.asn !== 'all') {
             const rawAsn = String(filters.asn).replace(/^AS/i, '');
             targetAsn = Number(rawAsn) || 0;
         }
@@ -404,7 +411,7 @@ class ColumnarStorage {
             if (unknownCountryIds && !unknownCountryIds.has(col_country[i])) return false;
             if (col_status[i] < minStatus || col_status[i] > maxStatus) return false;
             if (otherStatus && col_status[i] >= 100 && col_status[i] <= 599) return false;
-            if (targetAsn !== 0 && col_asn[i] !== targetAsn) return false;
+            if (targetAsn !== -1 && col_asn[i] !== targetAsn) return false;
             if (col_time[i] < minTime || col_time[i] > maxTime) return false;
             return true;
         };
@@ -416,6 +423,35 @@ class ColumnarStorage {
      * keeps the series at 20,000 slots or fewer. Every chart interval the page
      * offers for a span is a multiple of the step chosen for that span.
      */
+    /**
+     * The value that would be at index `n` if `values` were sorted. Reorders
+     * `values`: smaller ones end up left of `n`, larger ones right of it.
+     */
+    static selectNth(values, n) {
+        let left = 0;
+        let right = values.length - 1;
+        while (left < right) {
+            const pivot = values[(left + right) >> 1];
+            let i = left;
+            let j = right;
+            while (i <= j) {
+                while (values[i] < pivot) i++;
+                while (values[j] > pivot) j--;
+                if (i <= j) {
+                    const swap = values[i]; values[i] = values[j]; values[j] = swap;
+                    i++; j--;
+                }
+            }
+            if (n <= j) right = j;
+            else if (n >= i) left = i;
+            else break;
+        }
+        return values[n];
+    }
+
+    /** Addresses listed per country, network and bot group. The count beside the list is not cut. */
+    static get IP_DETAIL_LIMIT() { return 100; }
+
     static rateSeriesBase(minSec, maxSec) {
         const slots = step => Math.floor(maxSec / step) - Math.floor(minSec / step) + 1;
         for (const step of [1, 5, 10, 30, 60, 300, 900, 3600]) {
@@ -499,8 +535,14 @@ class ColumnarStorage {
 
         let matchingCount = 0;
         let totalBytes = 0;
-        const ipSeen = new Uint8Array(this.ipDict.length);
+        // Requests per address, for the address list and the addresses of
+        // each country and network.
+        const ipHits = new Uint32Array(this.ipDict.length);
+        const ipFirstRow = new Uint32Array(this.ipDict.length);
         let uniqueIps = 0;
+        const sizes = new Float64Array(total);
+        const hourly = new Array(24).fill(0);
+        const daily = new Array(7).fill(0);
         let minTimeSec = 0;
         let maxTimeSec = 0;
         const statusCounts = {};
@@ -531,16 +573,13 @@ class ColumnarStorage {
             if (!matches(i)) continue;
 
             matched[i] = 1;
+            sizes[matchingCount] = col_bytes[i];
             matchingCount++;
             totalBytes += col_bytes[i];
             if (clientCounts) clientCounts[col_client[i]]++;
             urlHits[col_url[i]]++;
             refHits[col_ref[i]]++;
-            const ipId = col_ip[i];
-            if (ipSeen[ipId] === 0) {
-                ipSeen[ipId] = 1;
-                uniqueIps++;
-            }
+            if (ipHits[col_ip[i]]++ === 0) { uniqueIps++; ipFirstRow[col_ip[i]] = i; }
 
             const st = col_status[i];
             statusCounts[st] = (statusCounts[st] || 0) + 1;
@@ -555,9 +594,7 @@ class ColumnarStorage {
             methodHits[mId] = (methodHits[mId] || 0) + 1;
 
             const asn = col_asn[i];
-            if (asn > 0) {
-                asnHits[asn] = (asnHits[asn] || 0) + 1;
-            }
+            asnHits[asn] = (asnHits[asn] || 0) + 1;
 
             // Timeline hourly bucket (or 10-minute bucket)
             const t = col_time[i];
@@ -566,7 +603,30 @@ class ColumnarStorage {
                 if (t > maxTimeSec) maxTimeSec = t;
                 const bucket = t - (t % 3600);
                 timeBuckets[bucket] = (timeBuckets[bucket] || 0) + 1;
+                hourly[Math.floor(t / 3600) % 24]++;
+                daily[(Math.floor(t / 86400) + 4) % 7]++; // 1 January 1970 was a Thursday
             }
+        }
+
+        // Smallest, largest and middle response size of the matching requests.
+        let responseSize = { median: 0, min: 0, max: 0 };
+        if (matchingCount > 0) {
+            const values = sizes.subarray(0, matchingCount);
+            let min = values[0], max = values[0];
+            for (let i = 1; i < matchingCount; i++) {
+                if (values[i] < min) min = values[i];
+                else if (values[i] > max) max = values[i];
+            }
+            const mid = Math.floor(matchingCount / 2);
+            const upper = ColumnarStorage.selectNth(values, mid);
+            let median = upper;
+            if (matchingCount % 2 === 0) {
+                // The value just below the middle is the largest one left of it.
+                let lower = values[0];
+                for (let i = 1; i < mid; i++) if (values[i] > lower) lower = values[i];
+                median = Math.round((lower + upper) / 2);
+            }
+            responseSize = { median, min, max };
         }
 
         // One line with a wrong year would stretch the timeline over years:
@@ -621,24 +681,37 @@ class ColumnarStorage {
             if (this.methodDict[id] !== '-') methodCounts[this.methodDict[id]] = count;
         }
 
-        const topIps = this.getTopIps(50, filters);
+        // Addresses with requests, busiest first; equal counts in the order
+        // of their first matching request.
+        const activeIps = [];
+        for (let id = 0; id < ipHits.length; id++) if (ipHits[id] > 0) activeIps.push(id);
+        activeIps.sort((a, b) => ipHits[b] - ipHits[a] || ipFirstRow[a] - ipFirstRow[b]);
+        const topIps = activeIps.slice(0, 50).map(id => ({ ip: this.ipDict[id], hits: ipHits[id] }));
+
         const ipGeoMap = {};
+        // Per country code and per network: how many addresses, and the busiest of them.
+        const countryIps = {};
+        const asnIps = {};
         if (this.ipCountryIds && this.ipAsns) {
             for (let k = 0; k < topIps.length; k++) {
-                const item = topIps[k];
-                const id = this.ipMap.get(item.ip);
-                if (id !== undefined) {
-                    const cId = this.ipCountryIds[id];
-                    const cCode = this.countryDict[cId] || '--';
-                    const asn = this.ipAsns[id] || 0;
-                    const asnOrg = this.asnOrgMap ? (this.asnOrgMap[asn] || 'Unknown') : 'Unknown';
-                    ipGeoMap[item.ip] = {
-                        country: cCode,
-                        country_code: cCode,
-                        asn,
-                        asn_org: asnOrg
-                    };
-                }
+                const id = activeIps[k];
+                const cCode = this.countryDict[this.ipCountryIds[id]] || '--';
+                const asn = this.ipAsns[id] || 0;
+                ipGeoMap[topIps[k].ip] = {
+                    country: this._countryName(cCode),
+                    country_code: cCode,
+                    asn,
+                    asn_org: this.asnOrgMap ? (this.asnOrgMap[asn] || 'Unknown') : 'Unknown'
+                };
+            }
+            const note = (groups, key, id) => {
+                const group = groups[key] || (groups[key] = { unique_ips: 0, ip_details: [] });
+                group.unique_ips++;
+                if (group.ip_details.length < ColumnarStorage.IP_DETAIL_LIMIT) group.ip_details.push({ ip: this.ipDict[id], hits: ipHits[id] });
+            };
+            for (const id of activeIps) {
+                note(countryIps, this.countryDict[this.ipCountryIds[id]] || '--', id);
+                note(asnIps, this.ipAsns[id] || 0, id);
             }
         }
 
@@ -654,7 +727,12 @@ class ColumnarStorage {
             asnOrgMap: this.asnOrgMap || {},
             countryNames: this.countryNames || {},
             ipGeoMap,
+            countryIps,
+            asnIps,
             topIps,
+            responseSize,
+            hourly,
+            daily,
             timeBuckets,
             ...this._referrerSites(refHits),
             rateSeries,

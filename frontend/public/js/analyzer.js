@@ -9,6 +9,9 @@
  */
 
 const Analyzer = (() => {
+    // Addresses listed per country and per network; `unique_ips` is the full count.
+    const IP_DETAIL_LIMIT = 100;
+
     /**
      * Group requests into clients (IP + User-Agent) with their traffic class.
      *
@@ -108,7 +111,7 @@ const Analyzer = (() => {
 
         // Build sorted country hits
         const countryHits = [...countryCounter.entries()]
-            .sort((a, b) => b[1] - a[1])
+            .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0)))
             .map(([country, hits]) => {
                 let countryCode = '--';
                 const ipsInCountry = countryIPs.get(country);
@@ -123,19 +126,19 @@ const Analyzer = (() => {
                     unique_ips: ipsInCountry ? ipsInCountry.size : 0,
                     ip_details: ipsInCountry ?
                         [...ipsInCountry].map(ip => ({ ip, hits: ipCounter.get(ip) || 0 }))
-                            .sort((a, b) => b.hits - a.hits) : [],
+                            .sort((a, b) => b.hits - a.hits).slice(0, IP_DETAIL_LIMIT) : [],
                 };
             });
 
         // Build sorted ASN hits
         const asnHits = [...asnCounter.entries()]
-            .sort((a, b) => b[1] - a[1])
+            .sort((a, b) => b[1] - a[1] || a[0] - b[0])
             .map(([asn, hits]) => ({
                 asn, asn_org: asnOrgMap.get(asn) || 'Unknown', hits,
                 unique_ips: asnIPs.get(asn) ? asnIPs.get(asn).size : 0,
                 ip_details: asnIPs.get(asn) ?
                     [...asnIPs.get(asn)].map(ip => ({ ip, hits: ipCounter.get(ip) || 0 }))
-                        .sort((a, b) => b.hits - a.hits) : [],
+                        .sort((a, b) => b.hits - a.hits).slice(0, IP_DETAIL_LIMIT) : [],
             }));
 
         // Top 50 IPs
@@ -299,22 +302,13 @@ const Analyzer = (() => {
                     max: maxResponseSize,
                 },
             },
-            temporal_distribution: {
-                hourly: hourlyCounter.map((count, hour) => ({ hour, count, percentage: totalRequests ? (count / totalRequests * 100).toFixed(1) : 0 })),
-                daily: dailyCounter.map((count, day) => ({
-                    day, day_name: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][day],
-                    count, percentage: totalRequests ? (count / totalRequests * 100).toFixed(1) : 0,
-                })),
-            },
+            temporal_distribution: temporalDistribution(hourlyCounter, dailyCounter, totalRequests),
             request_rate: computeRequestRate(logEntries),
             referrers: referrers,
             referrer_sites: referrerSites.sites,
             referrer_site_count: referrerSites.count,
             direct_requests: referrerSites.direct,
-            security_metrics: {
-                error_rate: statusCategories['4xx'] + statusCategories['5xx'],
-                error_percentage: totalRequests ? ((statusCategories['4xx'] + statusCategories['5xx']) / totalRequests * 100).toFixed(1) : 0,
-            },
+            security_metrics: securityMetrics(statusCategories, totalRequests),
         };
     }
 
@@ -338,6 +332,22 @@ const Analyzer = (() => {
         { seconds: 43200, label: '12h' },
         { seconds: 86400, label: '1d' },
     ];
+
+    // Requests per hour of the day and per weekday, in the log's own clock.
+    function temporalDistribution(hourly, daily, totalRequests) {
+        const share = count => (totalRequests ? (count / totalRequests * 100).toFixed(1) : 0);
+        return {
+            hourly: Array.from({ length: 24 }, (_, hour) => ({ hour, count: (hourly && hourly[hour]) || 0, percentage: share((hourly && hourly[hour]) || 0) })),
+            daily: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((day_name, day) => ({
+                day, day_name, count: (daily && daily[day]) || 0, percentage: share((daily && daily[day]) || 0),
+            })),
+        };
+    }
+
+    function securityMetrics(statusCategories, totalRequests) {
+        const errors = statusCategories['4xx'] + statusCategories['5xx'];
+        return { error_rate: errors, error_percentage: totalRequests ? (errors / totalRequests * 100).toFixed(1) : 0 };
+    }
 
     /**
      * Requests per status class. Requests whose status is missing or is not
@@ -809,33 +819,35 @@ const Analyzer = (() => {
         const totalRequests = summary.matchingCount || 0;
         const uniqueIps = summary.uniqueIps || 0;
 
-        // Country Hits
+        // Countries and networks, in the shape analyzeLogs gives them.
+        const noIps = { unique_ips: 0, ip_details: [] };
         const countryHits = Object.entries(summary.countryCounts || {})
-            .map(([code, count]) => {
+            .map(([code, hits]) => {
                 const known = code && code !== '-' && code !== '--';
+                const ips = (summary.countryIps && summary.countryIps[code]) || noIps;
                 return {
                     country: known ? ((summary.countryNames && summary.countryNames[code]) || code) : 'Unknown',
                     country_code: known ? code : '--',
-                    count,
-                    hits: count,
-                    percentage: totalRequests ? ((count / totalRequests) * 100).toFixed(1) : '0.0'
+                    hits,
+                    unique_ips: ips.unique_ips,
+                    ip_details: ips.ip_details,
                 };
             })
-            .sort((a, b) => b.hits - a.hits);
+            .sort((a, b) => b.hits - a.hits || (a.country < b.country ? -1 : (a.country > b.country ? 1 : 0)));
 
-        // ASN Hits
         const asnHits = Object.entries(summary.asnHits || {})
-            .map(([asn, count]) => {
-                const asnOrg = (summary.asnOrgMap && summary.asnOrgMap[asn]) || (typeof GeoIP !== 'undefined' && GeoIP.lookupASNOrg ? GeoIP.lookupASNOrg(Number(asn)) : '') || `AS${asn}`;
+            .map(([key, hits]) => {
+                const asn = Number(String(key).replace(/^AS/i, '')) || 0;
+                const ips = (summary.asnIps && summary.asnIps[key]) || noIps;
                 return {
                     asn,
-                    asn_org: asnOrg,
-                    count,
-                    hits: count,
-                    percentage: totalRequests ? ((count / totalRequests) * 100).toFixed(1) : '0.0'
+                    asn_org: (summary.asnOrgMap && summary.asnOrgMap[key]) || (asn > 0 && typeof GeoIP !== 'undefined' && GeoIP.lookupASNOrg ? GeoIP.lookupASNOrg(asn) : '') || 'Unknown',
+                    hits,
+                    unique_ips: ips.unique_ips,
+                    ip_details: ips.ip_details,
                 };
             })
-            .sort((a, b) => b.hits - a.hits);
+            .sort((a, b) => b.hits - a.hits || a.asn - b.asn);
 
         // Traffic classes and bot groups. The worker classifies every client
         // and sends the result as `summary.traffic`. A summary without it
@@ -940,6 +952,7 @@ const Analyzer = (() => {
             .sort((a, b) => b.count - a.count);
 
         const referrerSites = referrerSiteList(summary.referrerSites || [], totalRequests);
+        const size = summary.responseSize || {};
 
         const workerPaths = summary.paths || { top_paths: [], other_paths: { paths: 0, count: 0, percentage: '0.0' }, distinct_paths: 0, sections: [] };
 
@@ -969,33 +982,30 @@ const Analyzer = (() => {
             ua_field_missing: Boolean(summary.uaFieldMissing),
             ip_log_entries: new Map(),
             http_metrics: {
-                total_bandwidth_bytes: summary.totalBytes || 0,
-                // The upload engine keeps no per-request list, so there is no
-                // median, minimum or maximum.
-                response_size: {
-                    total: summary.totalBytes || 0,
-                    average: totalRequests ? Math.round((summary.totalBytes || 0) / totalRequests) : 0,
-                    avg: totalRequests ? Math.round((summary.totalBytes || 0) / totalRequests) : 0,
-                    median: null, min: null, max: null,
-                },
-                avg_response_size: totalRequests ? Math.round((summary.totalBytes || 0) / totalRequests) : 0,
                 status_categories: statusCategories,
                 status_hits: statusHits,
                 method_hits: methodHits,
-                top_paths: workerPaths.top_paths,
                 top_urls: workerPaths.top_paths.slice(0, 20).map(p => ({ url: p.path, count: p.count, percentage: p.percentage, status_breakdown: p.status_breakdown })),
+                top_paths: workerPaths.top_paths,
                 other_paths: workerPaths.other_paths,
                 distinct_paths: workerPaths.distinct_paths,
                 path_sections: workerPaths.sections,
-                top_referrers: [],
-                request_rate: reqRateObj
+                response_size: {
+                    total: summary.totalBytes || 0,
+                    average: totalRequests ? Math.round((summary.totalBytes || 0) / totalRequests) : 0,
+                    median: size.median || 0,
+                    min: size.min || 0,
+                    max: size.max || 0,
+                },
             },
-            // The upload engine keeps the site of each referrer, not its full address.
-            referrers: referrerSites.sites.map(s => ({ referrer: s.site, hits: s.hits, pct: s.pct })),
+            temporal_distribution: temporalDistribution(summary.hourly, summary.daily, totalRequests),
+            request_rate: reqRateObj,
+            // `referrers` (full addresses) exists only where the requests are
+            // kept in memory; the upload engine keeps the site of each one.
             referrer_sites: referrerSites.sites,
             referrer_site_count: summary.referrerSiteCount ?? referrerSites.count,
             direct_requests: referrerSites.direct,
-            request_rate: reqRateObj
+            security_metrics: securityMetrics(statusCategories, totalRequests),
         };
     }
 

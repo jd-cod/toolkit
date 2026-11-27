@@ -134,3 +134,43 @@ describe('ColumnarStorage', () => {
         assert.equal(topIps[1].hits, 1);
     });
 });
+
+describe('ColumnarStorage summary numbers', () => {
+    test('selectNth gives the value a sort would put at that index', () => {
+        let seed = 3;
+        const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+        for (const size of [1, 2, 3, 10, 101, 1000, 5000]) {
+            for (const spread of [3, 50, 1e9]) {
+                const values = Float64Array.from({ length: size }, () => Math.floor(rnd() * spread));
+                const sorted = Float64Array.from(values).sort();
+                for (const n of [0, Math.floor(size / 2), size - 1]) {
+                    const copy = Float64Array.from(values);
+                    assert.equal(ColumnarStorage.selectNth(copy, n), sorted[n], `size ${size}, spread ${spread}, index ${n}`);
+                    for (let i = 0; i < n; i++) assert.ok(copy[i] <= copy[n]);
+                    for (let i = n + 1; i < size; i++) assert.ok(copy[i] >= copy[n]);
+                }
+            }
+        }
+    });
+
+    test('median, smallest and largest response size, hours and weekdays', () => {
+        const storage = new ColumnarStorage(10);
+        // Friday 27 November 2026, 10:00, 10:30 and 23:59 UTC; then Saturday 00:00.
+        const t = Date.UTC(2026, 10, 27, 10, 0, 0) / 1000;
+        storage.appendRow('1.1.1.1', t, 200, 500, '/a', 'None', '-', 0);
+        storage.appendRow('1.1.1.2', t + 1800, 200, 100, '/b', 'None', '-', 0);
+        storage.appendRow('1.1.1.3', t + 50340, 404, 0, '/c', 'None', '-', 0);
+        storage.appendRow('1.1.1.4', t + 50400, 200, 5 * 2 ** 32, '/d', 'None', '-', 0);
+        let r = storage.query({});
+        assert.deepEqual(r.responseSize, { median: 300, min: 0, max: 5 * 2 ** 32 });
+        assert.equal(r.hourly[10], 2);
+        assert.equal(r.hourly[23], 1);
+        assert.equal(r.hourly[0], 1);
+        assert.equal(r.daily[5], 3, 'Friday');
+        assert.equal(r.daily[6], 1, 'Saturday');
+        r = storage.query({ statusCategory: '2xx' });
+        assert.deepEqual(r.responseSize, { median: 500, min: 100, max: 5 * 2 ** 32 });
+        r = storage.query({ statusCategory: '5xx' });
+        assert.deepEqual(r.responseSize, { median: 0, min: 0, max: 0 });
+    });
+});

@@ -47,7 +47,8 @@ describe('Analyzer.analyzeFromWorkerSummary', () => {
         assert.equal(data.unique_countries, 3);
         assert.equal(data.country_hits.length, 3);
         assert.equal(data.country_hits[0].country, 'US');
-        assert.equal(data.country_hits[0].count, 600);
+        assert.equal(data.country_hits[0].hits, 600);
+        assert.deepEqual(data.asn_hits.map(a => [a.asn, a.hits]), [[15169, 200], [16509, 150]]);
         assert.equal(data.http_metrics.status_categories['2xx'], 850);
         assert.equal(data.http_metrics.status_categories['4xx'], 80);
         assert.equal(data.http_metrics.status_categories['5xx'], 20);

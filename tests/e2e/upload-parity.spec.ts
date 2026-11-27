@@ -107,6 +107,41 @@ test.describe('Pasted text and an uploaded file give the same dashboard', () => 
     expect(seen.upload).toEqual(seen.paste);
   });
 
+  test('the downloaded report has the same tables in both modes', async ({ browser }) => {
+    const sections: Record<string, Record<string, string>> = {};
+    for (const mode of MODES) {
+      const page = await browser.newPage();
+      await analyse(page, mode);
+      await page.click('#dash-download-btn');
+      const [download] = await Promise.all([page.waitForEvent('download', { timeout: 30_000 }), page.click('#dl-start-btn')]);
+      const chunks: Buffer[] = [];
+      for await (const chunk of await download.createReadStream()) chunks.push(chunk as Buffer);
+      const html = Buffer.concat(chunks).toString('utf8');
+      await page.route('**/parity-report.html', route => route.fulfill({ contentType: 'text/html', body: html }));
+      await page.goto('/parity-report.html', { waitUntil: 'domcontentloaded' });
+      sections[mode] = await page.evaluate(() => {
+        const text = (el: Element | null | undefined) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+        const section = (title: string) => text([...document.querySelectorAll('.section')].find(s => text(s.querySelector('.section-header')).includes(title)));
+        return {
+          cards: text(document.querySelector('.container > .stat-cards')),
+          http: section('HTTP'),
+          rate: [...document.querySelectorAll('.stat-cards')].map(text).find(t => t.includes('Peak Rate')) || '',
+          countries: section('Country Breakdown'),
+          networks: section('ASN Breakdown'),
+          addresses: section('Top'),
+          bots: section('Bot'),
+        };
+      });
+      await page.close();
+    }
+    // The tables carry the numbers that used to be missing after an upload.
+    expect(sections.paste.countries).toMatch(/IPs from /);
+    expect(sections.paste.http).toMatch(/Median: ?[\d,]+ bytes/);
+    expect(sections.paste.rate).toContain('Busiest second');
+    for (const [name, text] of Object.entries(sections.paste)) expect(text, name).not.toBe('');
+    expect(sections.upload).toEqual(sections.paste);
+  });
+
   for (const mode of MODES) {
     test(`${mode}: each filter keeps exactly the requests it names`, async ({ page, console: watcher }) => {
       await analyse(page, mode);
