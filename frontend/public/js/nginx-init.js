@@ -624,6 +624,12 @@ window.initNginxPage = function () {
             };
             if (inputWarnings.length) parseResult.inputWarnings = inputWarnings.slice();
 
+            // The dashboard that asked for this analysis may be gone by now.
+            if (typeof options?.isCurrent === 'function' && !options.isCurrent()) {
+                try { worker.terminate(); } catch { /* already gone */ }
+                return;
+            }
+
             // Stage 4: Render
             Dashboard.render(data, '', parseResult, {
                 source: inputSource,
@@ -631,6 +637,10 @@ window.initNginxPage = function () {
                 sourceLabel: options?.sourceLabel || '',
                 skip403,
                 skipInternal,
+                // A file can be read again with other exclusions; a stream cannot.
+                reanalyze: isFile
+                    ? (next) => executeAnalysis(rawLogInput, inputSource, currentUrl, { ...(options || {}), inputWarnings: [], skip403: next.skip403, skipInternal: next.skipInternal, isCurrent: next.isCurrent })
+                    : null,
                 worker,
                 summary: result.summary,
                 pageResult: result.pageResult,

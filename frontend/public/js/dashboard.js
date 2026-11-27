@@ -34,6 +34,8 @@ const Dashboard = (() => {
     let originalTimeRange = null;
     let uploadFilterOptions = null;
     let uploadTotalRequests = 0;
+    let uploadRateSeries = null; // requests over time of the whole uploaded log
+    let currentReanalyze = null; // re-reads an uploaded file with other exclusions, when it can be
     let timelineDragEvents = null;
     let currentFilteredEntries = [];
     let activeFilters = {
@@ -880,6 +882,7 @@ const Dashboard = (() => {
         }
 
         if (!options.preserveFilters) {
+            currentReanalyze = typeof options.reanalyze === 'function' ? options.reanalyze : null;
             originalEnrichedEntries = (parseResult?.logEntries || []).slice();
             originalParseResult = parseResult;
             originalTimeRange = null;
@@ -948,6 +951,7 @@ const Dashboard = (() => {
             if (!uploadFilterOptions || !options.preserveFilters || !hasActiveFilters()) {
                 uploadFilterOptions = filterOptions;
                 uploadTotalRequests = data?.total_requests || 0;
+                uploadRateSeries = (options.summary || latestSummary)?.rateSeries || null;
             } else {
                 filterOptions = uploadFilterOptions;
             }
@@ -1371,9 +1375,10 @@ const Dashboard = (() => {
 
     function renderExclusionsHtml(parseResult) {
         const counts = parseResult?.skipCounts || {};
-        // An uploaded file is read once and not kept, so there is nothing to
-        // recalculate from: the options are fixed at the start of the analysis.
-        const fixed = !originalEnrichedEntries.length && latestSummary ? 'disabled title="Set before the analysis: start a new analysis to change this for an uploaded file."' : '';
+        // An upload is not kept in memory. One file can be read again with
+        // other exclusions; a session of several sources or a stream cannot,
+        // and its options stay as they were set before the analysis.
+        const fixed = !originalEnrichedEntries.length && latestSummary && !currentReanalyze ? 'disabled title="Set before the analysis: start a new analysis to change this."' : '';
         return `
             <fieldset class="signal-nginx-options signal-dashboard-exclusions" id="dashboard-exclusions">
                 <legend>Analysis exclusions</legend>
@@ -1383,7 +1388,7 @@ const Dashboard = (() => {
                 </div>
                 <p class="signal-exclusion-counts" id="exclusion-counts">Skipped: <strong>${numberWithCommas(counts.privateIP || 0)}</strong> private/local IP · <strong>${numberWithCommas(counts.healthCheck || 0)}</strong> health-check path · <strong>${numberWithCommas(counts.forbidden || 0)}</strong> ordinary 403 · <strong>${numberWithCommas(counts.invalid || 0)}</strong> invalid</p>
                 <details class="signal-nginx-option-help"><summary>What is excluded?</summary><p>Internal requests: private, loopback, link-local, CGNAT and IPv6 unique-local IPs (including mapped IPv4), plus exact paths /health, /healthz, /healthcheck, /health-check, /health_check, /readyz, /livez and /_health. Query strings and trailing slashes are ignored. Every User-Agent and response status is covered. Unknown ASN alone is not an exclusion.</p><p>403 filtering retains recognized crawlers for bot analysis. Each skipped line is counted once: private/local IP first, then health-check path, then ordinary 403. Changing an exclusion recalculates the loaded log and resets result filters. The input time span still includes excluded rows.</p></details>
-                <p id="dash-exclusion-status" role="status">${parseResult?.validLines > 0 && !parseResult.parsedLines.length ? (fixed ? 'All valid requests are excluded. Start a new analysis with the options changed to include them.' : 'All valid requests are excluded. Adjust the options above to include them.') : (fixed ? 'For an uploaded file these options are set before the analysis.' : '')}</p>
+                <p id="dash-exclusion-status" role="status">${parseResult?.validLines > 0 && !parseResult.parsedLines.length ? (fixed ? 'All valid requests are excluded. Start a new analysis with the options changed to include them.' : 'All valid requests are excluded. Adjust the options above to include them.') : (fixed ? 'These options were set before the analysis and cannot be changed for this source.' : '')}</p>
             </fieldset>`;
     }
 
@@ -1395,6 +1400,31 @@ const Dashboard = (() => {
         fieldset.disabled = true;
         fieldset.setAttribute('aria-busy', 'true');
         document.getElementById('dash-exclusion-status').textContent = 'Recalculating exclusions…';
+        if (!originalEnrichedEntries.length && latestSummary && currentReanalyze) {
+            // Upload: read the file again. A successful run renders a new dashboard.
+            try {
+                await currentReanalyze({ skip403, skipInternal, isCurrent: () => revision === exclusionRevision });
+            } catch (err) {
+                console.error('Re-reading the file failed:', err);
+            }
+            if (document.getElementById('dashboard-exclusions') !== fieldset) {
+                // A new dashboard was rendered from the file.
+                for (const [id, value] of [['nginx-skip-403', skip403], ['nginx-skip-internal', skipInternal]]) {
+                    const input = document.getElementById(id);
+                    if (input) input.checked = value;
+                }
+                document.getElementById(focusId)?.focus({ preventScroll: true });
+                return;
+            }
+            if (revision !== exclusionRevision) return;
+            // Nothing was rendered: the file could not be read again.
+            fieldset.disabled = false;
+            fieldset.removeAttribute('aria-busy');
+            document.getElementById('dash-skip-403').checked = currentSkip403;
+            document.getElementById('dash-skip-internal').checked = currentSkipInternal;
+            document.getElementById('dash-exclusion-status').textContent = 'Could not read the file again. Start a new analysis to change the exclusions.';
+            return;
+        }
         try {
             const parseResult = await LogParser.parseAsync(currentLogText, { skip403, skipInternal });
             if (revision !== exclusionRevision) return;
@@ -1617,7 +1647,9 @@ const Dashboard = (() => {
         const resolution = (activeRpsResolution && activeRpsResolution !== 'auto') ? activeRpsResolution : undefined;
         const reqRate = (originalEnrichedEntries && originalEnrichedEntries.length > 0)
             ? Analyzer.computeRequestRate(originalEnrichedEntries, { resolution })
-            : (currentData?.request_rate || { buckets: [] });
+            : (uploadRateSeries
+                ? Analyzer.requestRateFromSeries(uploadRateSeries, { resolution })
+                : (currentData?.request_rate || { buckets: [] }));
         const rawBuckets = reqRate?.buckets || reqRate?.data_points || [];
         const buckets = Array.isArray(rawBuckets) ? rawBuckets : [];
         const range = getGlobalTimeRange();
@@ -1993,10 +2025,30 @@ const Dashboard = (() => {
     let sliderEndPct = 100;
     let customHoursVal = 1;
 
+    // Choices for the status filter: the classes that occur, then the most
+    // frequent single codes.
+    function statusOptions(statusHits) {
+        const classes = new Map();
+        const codes = [];
+        for (const item of statusHits || []) {
+            const code = Number(item.code);
+            const count = Number(item.count) || 0;
+            if (!(code >= 100 && code <= 599) || count <= 0) continue;
+            const cls = `${Math.floor(code / 100)}xx`;
+            classes.set(cls, (classes.get(cls) || 0) + count);
+            codes.push({ value: String(code), count });
+        }
+        return {
+            classes: [...classes.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, count })),
+            codes: codes.sort((a, b) => b.count - a.count || Number(a.value) - Number(b.value)).slice(0, 12),
+        };
+    }
+
     function getFilterOptions(entries, data) {
         if (!entries || entries.length === 0) {
             return {
                 methods: (data?.http_metrics?.method_hits || []).map(m => m.method).sort(),
+                statuses: statusOptions(data?.http_metrics?.status_hits),
                 countries: (data?.country_hits || []).map(c => ({ country: c.country, count: c.hits })),
                 asns: (data?.asn_hits || []).map(a => ({
                     asn: /^AS/i.test(String(a.asn)) ? String(a.asn) : 'AS' + a.asn,
@@ -2019,9 +2071,11 @@ const Dashboard = (() => {
         const asns = new Map();
         const paths = new Map();
         const classCounts = { human: 0, verified: 0, spoofed: 0, unverified: 0, automated: 0, suspected: 0 };
+        const statusCounts = new Map();
 
         entries.forEach(e => {
             if (e.method) methods.add(e.method);
+            if (e.status_code) statusCounts.set(e.status_code, (statusCounts.get(e.status_code) || 0) + 1);
             if (e.country) countries.set(e.country, (countries.get(e.country) || 0) + 1);
             // e.asn is ALREADY prefixed ('AS15169', see Analyzer.enrichLogEntries),
             // so the label must not add a second 'AS'.
@@ -2046,6 +2100,7 @@ const Dashboard = (() => {
 
         return {
             methods: [...methods].sort(),
+            statuses: statusOptions([...statusCounts.entries()].map(([code, count]) => ({ code, count }))),
             // Highest-hit country first, matching the ASN and Path dropdowns.
             countries: [...countries.entries()]
                 .map(([country, count]) => ({ country, count }))
@@ -2119,7 +2174,8 @@ const Dashboard = (() => {
                 if (filters.statusCategory === '3xx') return s >= 300 && s < 400;
                 if (filters.statusCategory === '4xx') return s >= 400 && s < 500;
                 if (filters.statusCategory === '5xx') return s >= 500 && s < 600;
-                return true;
+                const code = Number(filters.statusCategory);
+                return code > 0 ? s === code : true;
             });
         }
 
@@ -2151,8 +2207,8 @@ const Dashboard = (() => {
             result = result.filter(e => e.ip && matchesIp(e.ip));
         }
 
-        if (filters.uaSearch) {
-            const term = filters.uaSearch.toLowerCase();
+        if (filters.uaSearch && filters.uaSearch.trim()) {
+            const term = filters.uaSearch.trim().toLowerCase();
             result = result.filter(e => (e.user_agent || '').toLowerCase().includes(term));
         }
 
@@ -2439,10 +2495,11 @@ const Dashboard = (() => {
         // listeners before attaching handlers to the new handles.
         timelineDragEvents?.abort();
         timelineDragEvents = new AbortController();
-        ['filter-method', 'filter-country', 'filter-asn', 'filter-bot', 'filter-path-select'].forEach(id => {
+        ['filter-method', 'filter-status', 'filter-country', 'filter-asn', 'filter-bot', 'filter-path-select'].forEach(id => {
             document.getElementById(id)?.addEventListener('change', (e) => {
                 const val = e.target.value;
                 if (id === 'filter-method') activeFilters.method = val;
+                else if (id === 'filter-status') activeFilters.statusCategory = val;
                 else if (id === 'filter-country') activeFilters.country = val;
                 else if (id === 'filter-asn') activeFilters.asn = val;
                 else if (id === 'filter-bot') { activeFilters.bot = val; activeFilters.botGroup = ''; }
@@ -2456,12 +2513,13 @@ const Dashboard = (() => {
         });
 
         // Search text inputs
-        ['filter-ip', 'filter-path'].forEach(id => {
+        ['filter-ip', 'filter-path', 'filter-ua'].forEach(id => {
             const el = document.getElementById(id);
             if (el) {
                 el.addEventListener('input', (e) => {
                     if (id === 'filter-ip') activeFilters.ipSearch = e.target.value;
                     if (id === 'filter-path') activeFilters.pathSearch = e.target.value;
+                    if (id === 'filter-ua') activeFilters.uaSearch = e.target.value;
                     if (_filterDebounceTimer) clearTimeout(_filterDebounceTimer);
                     _filterDebounceTimer = setTimeout(() => applyAndRenderFilters(), 150);
                 });
@@ -2721,8 +2779,10 @@ const Dashboard = (() => {
     function getActiveFilterCount() {
         let count = 0;
         if (activeFilters.method && activeFilters.method !== 'all') count++;
+        if (activeFilters.statusCategory && activeFilters.statusCategory !== 'all') count++;
         if (activeFilters.country && activeFilters.country !== 'all') count++;
         if (activeFilters.pathSearch) count++;
+        if (activeFilters.uaSearch && activeFilters.uaSearch.trim()) count++;
         if (activeFilters.asn && activeFilters.asn !== 'all') count++;
         if (activeFilters.bot && activeFilters.bot !== 'all') count++;
         if (activeFilters.ipSearch) count++;
@@ -3032,26 +3092,32 @@ const Dashboard = (() => {
                 <div class="card-table-wrap" style="background:var(--bg-card);border:1px solid var(--border-color);border-radius:12px;padding:16px;">
                     <div class="table-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
                         <span style="font-weight:700;font-size:0.86rem;"><i class="bi bi-link-45deg" style="color:var(--accent-cyan);margin-right:6px;"></i>6. Top Referrers</span>
-                        <span class="pill pill-muted" style="font-size:0.7rem;">${(data.referrers || []).length} Sites</span>
+                        <span class="pill pill-muted" style="font-size:0.7rem;">${numberWithCommas(data.referrer_site_count ?? (data.referrer_sites || []).length)} Sites</span>
                     </div>
                     <div style="max-height:260px;overflow-y:auto;">
                         <table class="table-clean" style="width:100%;border-collapse:collapse;font-size:0.76rem;">
                             <thead>
                                 <tr style="border-bottom:1px solid var(--border-color);">
-                                    <th style="padding:6px 8px;text-align:left;color:var(--text-muted);">Referrer URL</th>
+                                    <th style="padding:6px 8px;text-align:left;color:var(--text-muted);">Referring site</th>
                                     <th style="padding:6px 8px;text-align:right;color:var(--text-muted);">Hits</th>
                                     <th style="padding:6px 8px;text-align:right;color:var(--text-muted);">Share</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                ${(data.referrers || []).slice(0, 15).map(r => `
-                                    <tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
-                                        <td style="padding:6px 8px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><code>${escapeHtml(r.referrer)}</code></td>
+                                ${(data.referrer_sites || []).slice(0, 15).map(r => `
+                                    <tr class="referrer-site-row" data-site="${escapeHtml(r.site)}" style="border-bottom:1px solid rgba(255,255,255,0.03);">
+                                        <td style="padding:6px 8px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(r.site)}"><code>${escapeHtml(r.site)}</code></td>
                                         <td style="padding:6px 8px;text-align:right;font-weight:700;">${numberWithCommas(r.hits)}</td>
                                         <td style="padding:6px 8px;text-align:right;color:var(--text-muted);">${r.pct}%</td>
                                     </tr>
                                 `).join('')}
-                                ${(!data.referrers || data.referrers.length === 0) ? '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:10px;">Direct traffic only</td></tr>' : ''}
+                                ${(!data.referrer_sites || data.referrer_sites.length === 0) ? '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:10px;">Direct traffic only</td></tr>' : ''}
+                                ${(data.direct_requests > 0 && (data.referrer_sites || []).length > 0) ? `
+                                    <tr id="referrer-direct-row" style="color:var(--text-muted);">
+                                        <td style="padding:6px 8px;">No referrer (direct, bookmarks, most bots)</td>
+                                        <td style="padding:6px 8px;text-align:right;">${numberWithCommas(data.direct_requests)}</td>
+                                        <td style="padding:6px 8px;text-align:right;">${totalRequests ? (data.direct_requests / totalRequests * 100).toFixed(1) : '0.0'}%</td>
+                                    </tr>` : ''}
                             </tbody>
                         </table>
                     </div>
@@ -3215,6 +3281,14 @@ const Dashboard = (() => {
                         ${filterOptions.methods.map(m => `<option value="${escapeHtml(m)}" ${activeFilters.method === m ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('')}
                     </select>
 
+                    <!-- Status class or code -->
+                    <select class="filter-select" id="filter-status" aria-label="Response status">
+                        <option value="all" ${activeFilters.statusCategory === 'all' ? 'selected' : ''}>All Statuses</option>
+                        ${(filterOptions.statuses?.classes || []).length ? `<optgroup label="Class">${filterOptions.statuses.classes.map(o => `<option value="${o.value}" ${activeFilters.statusCategory === o.value ? 'selected' : ''}>${o.value} (${numberWithCommas(o.count)})</option>`).join('')}</optgroup>` : ''}
+                        ${(filterOptions.statuses?.codes || []).length ? `<optgroup label="Code">${filterOptions.statuses.codes.map(o => `<option value="${o.value}" ${activeFilters.statusCategory === o.value ? 'selected' : ''}>${o.value} (${numberWithCommas(o.count)})</option>`).join('')}</optgroup>` : ''}
+                        ${activeFilters.statusCategory !== 'all' && ![...(filterOptions.statuses?.classes || []), ...(filterOptions.statuses?.codes || [])].some(o => o.value === activeFilters.statusCategory) ? `<option value="${escapeHtml(activeFilters.statusCategory)}" selected>${escapeHtml(activeFilters.statusCategory)}</option>` : ''}
+                    </select>
+
                     <!-- 2. All Countries -->
                     <select class="filter-select" id="filter-country">
                         <option value="all" ${activeFilters.country === 'all' ? 'selected' : ''}>All Countries</option>
@@ -3249,6 +3323,7 @@ const Dashboard = (() => {
                     <!-- Search Fields -->
                     <input type="text" class="search-field" id="filter-ip" placeholder="🔍 Search IP..." value="${escapeHtml(activeFilters.ipSearch)}" />
                     <input type="text" class="search-field" id="filter-path" placeholder="🔗 Search Path..." title="Text found anywhere in the URL. =/a/b matches that exact path, ^/a everything under /a." value="${escapeHtml(activeFilters.pathSearch)}" />
+                    <input type="text" class="search-field" id="filter-ua" placeholder="🧭 Search User-Agent..." style="min-width:190px;" title="Text found anywhere in the User-Agent, in any letter case." aria-label="User-Agent contains" value="${escapeHtml(activeFilters.uaSearch || '')}" />
                 </div>
 
                 <!-- Match Counter -->

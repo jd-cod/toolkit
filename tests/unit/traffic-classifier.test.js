@@ -387,6 +387,26 @@ describe('Both analysis paths classify the same', () => {
         assert.deepEqual(worker.spoofed_bot_ips, memory.spoofed_bot_ips);
     });
 
+    test('both paths group referrers by site and count requests without one', () => {
+        const parsed = LogParser.parseIPs(text, { skip403: false, skipInternal: false });
+        Analyzer.enrichLogEntries(parsed.logEntries);
+        const memory = Analyzer.analyzeEnhancedLogs(parsed.logEntries);
+        const { enriched, filter } = runWorker();
+        const worker = Analyzer.analyzeFromWorkerSummary(enriched.summary);
+        // 30 pages named the shop's home page, 30 stylesheets one product page each: one site.
+        assert.deepEqual(memory.referrer_sites, [{ site: 'shop.example', hits: 60, pct: 66.7 }]);
+        assert.equal(memory.direct_requests, 30);
+        assert.equal(memory.referrer_site_count, 1);
+        assert.deepEqual(worker.referrer_sites, memory.referrer_sites);
+        assert.equal(worker.direct_requests, memory.direct_requests);
+        assert.equal(worker.referrer_site_count, memory.referrer_site_count);
+        // The full list is unchanged in the in-memory engine.
+        assert.equal(memory.referrers.find(r => r.referrer === '-').hits, 30);
+
+        const bots = Analyzer.analyzeFromWorkerSummary(filter({ bot: 'all_bots' }).summary);
+        assert.deepEqual([bots.referrer_sites, bots.direct_requests], [[], 30]);
+    });
+
     test('worker traffic filters return exactly the class counts', () => {
         const { filter } = runWorker();
         for (const [cls, count] of Object.entries(expected)) {
@@ -406,6 +426,23 @@ describe('Both analysis paths classify the same', () => {
         assert.ok(res.pageResult.rows.every(r => r.traffic_class === 'human' && r.status_code === 404 && r.user_agent === CHROME));
 
         assert.equal(filter({ bot: 'all_bots', statusCategory: '4xx' }).summary.matchingCount, 16);
+    });
+
+    test('worker User-Agent and status-code filters', () => {
+        const { filter } = runWorker();
+        assert.equal(filter({ uaSearch: 'googlebot' }).summary.matchingCount, 13);
+        assert.equal(filter({ uaSearch: '  CURL/8 ' }).summary.matchingCount, 7);
+        assert.equal(filter({ uaSearch: 'chrome/128' }).summary.matchingCount, 64);
+        assert.equal(filter({ uaSearch: 'no such agent' }).summary.matchingCount, 0);
+        assert.equal(filter({ uaSearch: 'googlebot', bot: 'spoofed' }).summary.matchingCount, 5);
+        const rows = filter({ uaSearch: 'bingbot' }).pageResult.rows;
+        assert.equal(rows.length, 6);
+        assert.ok(rows.every(r => /bingbot/.test(r.user_agent)));
+
+        assert.equal(filter({ statusCategory: '404' }).summary.matchingCount, 12);
+        assert.equal(filter({ statusCategory: '401' }).summary.matchingCount, 7);
+        assert.equal(filter({ statusCategory: '4xx' }).summary.matchingCount, 19);
+        assert.equal(filter({ statusCategory: '404', uaSearch: 'googlebot' }).summary.matchingCount, 5);
     });
 });
 

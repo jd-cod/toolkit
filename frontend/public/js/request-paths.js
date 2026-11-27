@@ -226,9 +226,37 @@ const RequestPaths = (() => {
         };
     }
 
+
+    /**
+     * The site a referrer names, for grouping: `https://www.Example.com:443/a?b`
+     * is `www.example.com`. Empty when there is no referrer ("-") or it names
+     * no site (a path on its own).
+     */
+    function referrerSite(referrer) {
+        if (!referrer || typeof referrer !== 'string') return '';
+        let site = referrer.trim();
+        if (!site || site === '-') return '';
+        const scheme = site.indexOf('://');
+        if (scheme !== -1) site = site.slice(scheme + 3);
+        else if (site.startsWith('//')) site = site.slice(2);
+        else if (site[0] === '/') return '';
+        const end = site.search(/[/?#]/);
+        if (end !== -1) site = site.slice(0, end);
+        const at = site.lastIndexOf('@');
+        if (at !== -1) site = site.slice(at + 1);
+        if (site[0] === '[') {
+            const close = site.indexOf(']');
+            if (close !== -1) site = site.slice(0, close + 1);
+        } else {
+            const colon = site.lastIndexOf(':');
+            if (colon !== -1 && /^\d*$/.test(site.slice(colon + 1))) site = site.slice(0, colon);
+        }
+        return site.toLowerCase().replace(/\.$/, '');
+    }
+
     return {
         splitTarget, normalizePath, sectionOf, resourceKind, isAuthRequest, attackSignature, isScriptPath,
-        pathMatcher, describeFilter, summarize,
+        pathMatcher, describeFilter, summarize, referrerSite,
     };
 })();
 

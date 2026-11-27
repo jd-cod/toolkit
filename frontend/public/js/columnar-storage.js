@@ -24,6 +24,10 @@ class ColumnarStorage {
         // Client (IP + User-Agent) of each row, as numbered by the traffic
         // classifier. Unused until a caller passes a client id to appendRow().
         this.col_client = new Uint32Array(this.capacity);
+        // Site of the referrer (see RequestPaths.referrerSite), '-' for none.
+        this.col_ref = new Uint32Array(this.capacity);
+        this.refDict = [];
+        this.refMap = new Map();
         this.hasClients = false;
         this.clientClass = null;   // Uint8Array: class index per client
         this.clientGroup = null;   // string per client: bot group, '' for humans
@@ -67,6 +71,7 @@ class ColumnarStorage {
         this.col_asn = realloc(this.col_asn, Uint32Array);
         this.col_method = realloc(this.col_method, Uint8Array);
         this.col_client = realloc(this.col_client, Uint32Array);
+        this.col_ref = realloc(this.col_ref, Uint32Array);
 
         this.capacity = newCap;
     }
@@ -82,7 +87,7 @@ class ColumnarStorage {
         return id;
     }
 
-    appendRow(ip, timeSec, status, bytes, url, bot, country, asn, method = '-', clientId) {
+    appendRow(ip, timeSec, status, bytes, url, bot, country, asn, method = '-', clientId, refSite = '') {
         this._ensureCapacity(this.rowCount + 1);
         const idx = this.rowCount;
 
@@ -99,6 +104,7 @@ class ColumnarStorage {
             this.col_client[idx] = clientId;
             this.hasClients = true;
         }
+        this.col_ref[idx] = this._getOrSetId(refSite, this.refDict, this.refMap);
 
         this.rowCount++;
     }
@@ -293,6 +299,20 @@ class ColumnarStorage {
             if (!any) return null;
         }
 
+        // User-Agent filter, decided once per client (a client is one address
+        // with one User-Agent).
+        let uaMatch = null;
+        if (filters.uaSearch && String(filters.uaSearch).trim()) {
+            if (!this.clientUa || !this.clientClass || !this.hasClients) return null;
+            const term = String(filters.uaSearch).trim().toLowerCase();
+            uaMatch = new Uint8Array(this.clientClass.length);
+            let any = false;
+            for (let id = 0; id < uaMatch.length; id++) {
+                if ((this.clientUa(id) || '').toLowerCase().includes(term)) { uaMatch[id] = 1; any = true; }
+            }
+            if (!any) return null;
+        }
+
         let targetMethodId;
         if (filters.method && filters.method !== 'all') {
             targetMethodId = this.methodMap.get(String(filters.method).toUpperCase());
@@ -375,6 +395,7 @@ class ColumnarStorage {
         const matches = i => {
             if (ipMatch !== null && ipMatch[col_ip[i]] === 0) return false;
             if (urlMatch !== null && urlMatch[col_url[i]] === 0) return false;
+            if (uaMatch !== null && uaMatch[col_client[i]] === 0) return false;
             if (targetMethodId !== undefined && col_method[i] !== targetMethodId) return false;
             if (targetBotId !== undefined && col_bot[i] !== targetBotId) return false;
             if (classMask !== 0 && !((classMask >> clientClass[col_client[i]]) & 1)) return false;
@@ -387,6 +408,71 @@ class ColumnarStorage {
             return true;
         };
         return { matches };
+    }
+
+    /**
+     * Seconds per slot of the rate series: the finest of these steps that
+     * keeps the series at 20,000 slots or fewer. Every chart interval the page
+     * offers for a span is a multiple of the step chosen for that span.
+     */
+    static rateSeriesBase(minSec, maxSec) {
+        const slots = step => Math.floor(maxSec / step) - Math.floor(minSec / step) + 1;
+        for (const step of [1, 5, 10, 30, 60, 300, 900, 3600]) {
+            if (slots(step) <= 20000) return step;
+        }
+        return Math.ceil((maxSec - minSec + 1) / 20000 / 3600) * 3600;
+    }
+
+    /**
+     * Requests per time slot, by status class, of the rows marked in `matched`
+     * (see RateSeries in analyzer.js). Rows without a time, or outside
+     * minSec..maxSec, are left out.
+     */
+    _rateSeries(matched, minSec, maxSec) {
+        if (!(minSec > 0) || !(maxSec >= minSec)) return null;
+        const base = ColumnarStorage.rateSeriesBase(minSec, maxSec);
+        const first = Math.floor(minSec / base);
+        const slots = Math.floor(maxSec / base) - first + 1;
+        const total = new Uint32Array(slots);
+        const s2 = new Uint32Array(slots), s3 = new Uint32Array(slots), s4 = new Uint32Array(slots), s5 = new Uint32Array(slots);
+        const col_time = this.col_time;
+        const col_status = this.col_status;
+        let requests = 0, used = 0;
+        for (let i = 0; i < this.rowCount; i++) {
+            const t = col_time[i];
+            if (matched[i] === 0 || t < minSec || t > maxSec) continue;
+            const slot = Math.floor(t / base) - first;
+            if (total[slot]++ === 0) used++;
+            requests++;
+            const st = col_status[i];
+            if (st >= 200 && st < 300) s2[slot]++;
+            else if (st >= 300 && st < 400) s3[slot]++;
+            else if (st >= 400 && st < 500) s4[slot]++;
+            else if (st >= 500 && st < 600) s5[slot]++;
+        }
+        // Only slots with requests are passed on.
+        const out = { base, times: new Uint32Array(used), total: new Uint32Array(used), s2: new Uint32Array(used), s3: new Uint32Array(used), s4: new Uint32Array(used), s5: new Uint32Array(used), minMs: minSec * 1000, maxMs: maxSec * 1000, requests, stray: 0 };
+        for (let slot = 0, k = 0; slot < slots; slot++) {
+            if (total[slot] === 0) continue;
+            out.times[k] = (first + slot) * base;
+            out.total[k] = total[slot]; out.s2[k] = s2[slot]; out.s3[k] = s3[slot]; out.s4[k] = s4[slot]; out.s5[k] = s5[slot];
+            k++;
+        }
+        return out;
+    }
+
+    // The busiest referring sites, requests without a referrer ('-'), and
+    // how many sites there are in all.
+    _referrerSites(refHits) {
+        const sites = [];
+        let direct = 0;
+        for (let id = 0; id < refHits.length; id++) {
+            if (refHits[id] === 0) continue;
+            if (this.refDict[id] === '-') direct += refHits[id];
+            else sites.push([this.refDict[id], refHits[id]]);
+        }
+        sites.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+        return { referrerSites: [['-', direct], ...sites.slice(0, 50)], referrerSiteCount: sites.length };
     }
 
     query(filters = {}) {
@@ -427,6 +513,8 @@ class ColumnarStorage {
         // Requests per distinct URL, for the caller to turn into paths.
         const urlHits = new Uint32Array(this.urlDict.length);
         const col_url = this.col_url;
+        const refHits = new Uint32Array(this.refDict.length);
+        const col_ref = this.col_ref;
 
         const col_ip = this.col_ip;
         const col_time = this.col_time;
@@ -437,13 +525,16 @@ class ColumnarStorage {
         const col_asn = this.col_asn;
         const col_method = this.col_method;
 
+        const matched = new Uint8Array(total);
         for (let i = 0; i < total; i++) {
             if (!matches(i)) continue;
 
+            matched[i] = 1;
             matchingCount++;
             totalBytes += col_bytes[i];
             if (clientCounts) clientCounts[col_client[i]]++;
             urlHits[col_url[i]]++;
+            refHits[col_ref[i]]++;
             const ipId = col_ip[i];
             if (ipSeen[ipId] === 0) {
                 ipSeen[ipId] = 1;
@@ -480,9 +571,11 @@ class ColumnarStorage {
         // One line with a wrong year would stretch the timeline over years:
         // hours far away from where the log's requests are do not count.
         const hours = Object.keys(timeBuckets).map(Number).sort((x, y) => x - y);
-        if (hours.length > 2 && hours[hours.length - 1] - hours[0] > 2 * 86400) {
-            let timed = 0;
-            for (const h of hours) timed += timeBuckets[h];
+        let timed = 0;
+        for (const h of hours) timed += timeBuckets[h];
+        // Same rule as LogParser.timeBounds, by the hour: from 20 requests on,
+        // when first and last are more than two days apart.
+        if (timed >= 20 && hours.length >= 2 && hours[hours.length - 1] - hours[0] > 2 * 86400) {
             const at = share => {
                 let seen = 0;
                 for (const h of hours) { seen += timeBuckets[h]; if (seen > timed * share) return h; }
@@ -496,11 +589,20 @@ class ColumnarStorage {
                 if (first === null) first = h;
                 last = h;
             }
-            if (first !== null) {
-                if (minTimeSec < first) minTimeSec = first;
-                if (maxTimeSec > last + 3599) maxTimeSec = last + 3599;
+            if (first !== null && (minTimeSec < first || maxTimeSec > last + 3599)) {
+                // First and last request among those that are left.
+                let lowest = 0, highest = 0;
+                for (let i = 0; i < total; i++) {
+                    const t = col_time[i];
+                    if (matched[i] === 0 || t < first || t > last + 3599) continue;
+                    if (lowest === 0 || t < lowest) lowest = t;
+                    if (t > highest) highest = t;
+                }
+                minTimeSec = lowest;
+                maxTimeSec = highest;
             }
         }
+        const rateSeries = this._rateSeries(matched, minTimeSec, maxTimeSec);
 
         // Map IDs back to dictionary strings
         const botCounts = {};
@@ -553,6 +655,8 @@ class ColumnarStorage {
             ipGeoMap,
             topIps,
             timeBuckets,
+            ...this._referrerSites(refHits),
+            rateSeries,
             minTimeSec,
             maxTimeSec,
             urlHits,

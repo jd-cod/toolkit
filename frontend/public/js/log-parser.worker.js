@@ -136,6 +136,8 @@ function createWorkerHandler(postMessageFn) {
             activeFormat = parser.detectFormat(lines.slice(0, DETECT_LINES));
         }
         const lineParser = (activeFormat && activeFormat.parseLine) || parser.parseLine;
+        const paths = globalThis.RequestPaths || (typeof RequestPaths !== 'undefined' ? RequestPaths : null);
+        const referrerSite = paths && paths.referrerSite;
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
             if (!line || !line.trim() || line[0] === '#') continue;
@@ -159,7 +161,8 @@ function createWorkerHandler(postMessageFn) {
                     '-',
                     0,
                     res.method || '-',
-                    clientId
+                    clientId,
+                    referrerSite ? referrerSite(res.referrer) : ''
                 );
                 totalLinesParsed++;
                 if (res.viaForwarded) forwardedLines++;

@@ -266,6 +266,14 @@ const Analyzer = (() => {
                 hits,
                 pct: totalRequests ? Math.round(hits / totalRequests * 1000) / 10 : 0,
             }));
+        // The same counted by site: one site with many pages is one row, and
+        // requests without a referrer are not a site.
+        const siteCounter = new Map();
+        for (const [referrer, hits] of referrerCounter) {
+            const site = RequestPaths.referrerSite(referrer);
+            siteCounter.set(site, (siteCounter.get(site) || 0) + hits);
+        }
+        const referrerSites = referrerSiteList(siteCounter.entries(), totalRequests);
 
         let avgResponseSize = 0, medianResponseSize = 0;
         let minResponseSize = 0, maxResponseSize = 0;
@@ -304,6 +312,9 @@ const Analyzer = (() => {
             },
             request_rate: computeRequestRate(logEntries),
             referrers: referrers,
+            referrer_sites: referrerSites.sites,
+            referrer_site_count: referrerSites.count,
+            direct_requests: referrerSites.direct,
             security_metrics: {
                 error_rate: statusCategories['4xx'] + statusCategories['5xx'],
                 error_percentage: totalRequests ? ((statusCategories['4xx'] + statusCategories['5xx']) / totalRequests * 100).toFixed(1) : 0,
@@ -376,41 +387,111 @@ const Analyzer = (() => {
         };
     }
 
-    function computeRequestRate(logEntries, options = {}) {
-        if (!logEntries || logEntries.length === 0) return emptyRequestRate();
+    /**
+     * @param {Iterable<[string, number]>} siteHits - Requests per referring site; '' or '-' is "no referrer".
+     * @returns {{ sites: {site: string, hits: number, pct: number}[], count: number, direct: number }}
+     */
+    function referrerSiteList(siteHits, totalRequests) {
+        const sites = [];
+        let direct = 0;
+        for (const [site, hits] of siteHits) {
+            if (!hits) continue;
+            if (!site || site === '-') direct += hits;
+            else sites.push({ site, hits, pct: totalRequests ? Math.round(hits / totalRequests * 1000) / 10 : 0 });
+        }
+        sites.sort((a, b) => b.hits - a.hits || (a.site < b.site ? -1 : 1));
+        return { sites: sites.slice(0, 20), count: sites.length, direct };
+    }
 
-        const validEntries = [];
+    /**
+     * Requests per second of a log, counted by status class.
+     *
+     * This is what the two engines have in common: the paste engine builds it
+     * from its entries, the upload engine's worker from its columns, and one
+     * function turns either into the numbers and chart buckets on the page.
+     *
+     * @typedef {object} RateSeries
+     * @property {number} base - Seconds per slot. Chart intervals are multiples of it.
+     * @property {ArrayLike<number>} times - Start of each slot that has requests, in seconds. Any order.
+     * @property {ArrayLike<number>} total - Requests per slot; s2 to s5 by status class.
+     * @property {number} minMs - Time of the first request, maxMs of the last.
+     * @property {number} requests - Requests that have a time.
+     * @property {number} [stray] - Requests left out because their date is far from the rest.
+     */
+
+    /** @returns {RateSeries|null} */
+    function rateSeriesFromEntries(logEntries) {
+        const stamps = [];
+        const codes = [];
         let minTs = Infinity;
         let maxTs = -Infinity;
-
-        for (const entry of logEntries) {
+        for (const entry of logEntries || []) {
             if (!entry.timestamp) continue;
             const ts = entry.timestamp instanceof Date
                 ? entry.timestamp.getTime()
                 : (typeof entry.timestamp === 'number' ? entry.timestamp : new Date(entry.timestamp).getTime());
-            if (!isNaN(ts)) {
-                validEntries.push({ ...entry, _ts: ts });
-                if (ts < minTs) minTs = ts;
-                if (ts > maxTs) maxTs = ts;
-            }
+            if (isNaN(ts)) continue;
+            stamps.push(ts);
+            codes.push(entry.status_code);
+            if (ts < minTs) minTs = ts;
+            if (ts > maxTs) maxTs = ts;
         }
-
-        if (validEntries.length === 0) return emptyRequestRate();
+        if (stamps.length === 0) return null;
 
         // A stray date (one line with a wrong year) must not set the scale.
-        let strayTimestamps = 0;
+        let stray = 0;
         const parser = typeof LogParser !== 'undefined' ? LogParser : (typeof globalThis !== 'undefined' ? globalThis.LogParser : null);
         if (parser && parser.timeBounds && maxTs - minTs > 2 * 86400000) {
-            const bounds = parser.timeBounds(validEntries.map(e => e._ts));
+            const bounds = parser.timeBounds(stamps);
             if (bounds && bounds.outliers > 0) {
-                strayTimestamps = bounds.outliers;
+                stray = bounds.outliers;
                 minTs = bounds.min;
                 maxTs = bounds.max;
-                let kept = 0;
-                for (const e of validEntries) if (e._ts >= minTs && e._ts <= maxTs) validEntries[kept++] = e;
-                validEntries.length = kept;
             }
         }
+
+        const slot = new Map();
+        const series = { base: 1, times: [], total: [], s2: [], s3: [], s4: [], s5: [], minMs: minTs, maxMs: maxTs, requests: 0, stray };
+        for (let i = 0; i < stamps.length; i++) {
+            const ts = stamps[i];
+            if (ts < minTs || ts > maxTs) continue;
+            const sec = Math.floor(ts / 1000);
+            let at = slot.get(sec);
+            if (at === undefined) {
+                at = series.times.length;
+                slot.set(sec, at);
+                series.times.push(sec);
+                series.total.push(0); series.s2.push(0); series.s3.push(0); series.s4.push(0); series.s5.push(0);
+            }
+            series.total[at]++;
+            series.requests++;
+            const code = codes[i];
+            if (code >= 200 && code < 300) series.s2[at]++;
+            else if (code >= 300 && code < 400) series.s3[at]++;
+            else if (code >= 400 && code < 500) series.s4[at]++;
+            else if (code >= 500 && code < 600) series.s5[at]++;
+        }
+        return series;
+    }
+
+    function computeRequestRate(logEntries, options = {}) {
+        if (!logEntries || logEntries.length === 0) return emptyRequestRate();
+        return requestRateFromSeries(rateSeriesFromEntries(logEntries), options);
+    }
+
+    /**
+     * Chart buckets, peak and average rate from a rate series.
+     * @param {RateSeries|null} series
+     * @param {{ resolution?: number|string }} [options] - Seconds per chart
+     *   bucket; chosen from the span of the log when absent or 'auto'.
+     */
+    function requestRateFromSeries(series, options = {}) {
+        if (!series || !(series.requests > 0)) return emptyRequestRate();
+        const minTs = series.minMs;
+        const maxTs = series.maxMs;
+        const base = series.base > 0 ? series.base : 1;
+        const strayTimestamps = series.stray || 0;
+        const requests = series.requests;
 
         const durationSeconds = Math.max(1, Math.round((maxTs - minTs) / 1000));
         const spanCrossesDays = (new Date(minTs).toISOString().slice(0, 10) !== new Date(maxTs).toISOString().slice(0, 10));
@@ -422,18 +503,22 @@ const Analyzer = (() => {
         // Exactly 1,500 seconds can require 1,501 buckets at 1s resolution.
         const bucketCount = seconds => Math.floor(maxTs / (seconds * 1000)) - Math.floor(minTs / (seconds * 1000)) + 1;
 
+        // A chart bucket is made of whole slots of the series.
+        const usable = seconds => seconds % base === 0;
+        const wholeSlots = seconds => Math.ceil(seconds / base) * base;
+
         if (requestedRes && requestedRes !== 'auto' && Number(requestedRes) > 0) {
             const desired = Number(requestedRes);
-            if (bucketCount(desired) <= 1500) {
+            if (usable(desired) && bucketCount(desired) <= 1500) {
                 bucketSeconds = desired;
             } else {
-                const safe = CANDIDATE_RESOLUTIONS.find(r => bucketCount(r.seconds) <= 1500);
-                bucketSeconds = safe ? safe.seconds : Math.ceil(durationSeconds / 1499);
+                const safe = CANDIDATE_RESOLUTIONS.find(r => usable(r.seconds) && bucketCount(r.seconds) <= 1500);
+                bucketSeconds = safe ? safe.seconds : wholeSlots(Math.ceil(durationSeconds / 1499));
             }
         } else {
             // Auto resolution targeting ~40 to 160 buckets
-            const autoMatch = CANDIDATE_RESOLUTIONS.find(r => bucketCount(r.seconds) <= 160);
-            bucketSeconds = autoMatch ? autoMatch.seconds : Math.ceil(durationSeconds / 159);
+            const autoMatch = CANDIDATE_RESOLUTIONS.find(r => usable(r.seconds) && bucketCount(r.seconds) <= 160);
+            bucketSeconds = autoMatch ? autoMatch.seconds : wholeSlots(Math.ceil(durationSeconds / 159));
         }
 
         const bucketMs = bucketSeconds * 1000;
@@ -454,17 +539,15 @@ const Analyzer = (() => {
             };
         }
 
-        for (let i = 0; i < validEntries.length; i++) {
-            const entry = validEntries[i];
-            const idx = Math.floor((entry._ts - startBucketTs) / bucketMs);
+        for (let i = 0; i < series.times.length; i++) {
+            const idx = Math.floor((series.times[i] * 1000 - startBucketTs) / bucketMs);
             if (idx >= 0 && idx < totalBuckets) {
                 const b = buckets[idx];
-                b.count++;
-                const code = entry.status_code;
-                if (code >= 200 && code < 300) b.status_2xx++;
-                else if (code >= 300 && code < 400) b.status_3xx++;
-                else if (code >= 400 && code < 500) b.status_4xx++;
-                else if (code >= 500 && code < 600) b.status_5xx++;
+                b.count += series.total[i];
+                b.status_2xx += series.s2[i];
+                b.status_3xx += series.s3[i];
+                b.status_4xx += series.s4[i];
+                b.status_5xx += series.s5[i];
             }
         }
 
@@ -490,7 +573,7 @@ const Analyzer = (() => {
             }
         }
 
-        const avgRps = Number((validEntries.length / durationSeconds).toFixed(2));
+        const avgRps = Number((requests / durationSeconds).toFixed(2));
         const spikeRatio = avgRps > 0 ? Number((peakRps / avgRps).toFixed(1)) : 1;
 
         let burstSeverity = 'normal';
@@ -520,7 +603,7 @@ const Analyzer = (() => {
         const availableResolutions = standardUIResolutions.map(r => ({
             seconds: r.seconds,
             label: r.label,
-            enabled: bucketCount(r.seconds) <= 1500 && bucketCount(r.seconds) >= 2,
+            enabled: usable(r.seconds) && bucketCount(r.seconds) <= 1500 && bucketCount(r.seconds) >= 2,
         }));
 
         const topSpikes = [...buckets]
@@ -542,7 +625,7 @@ const Analyzer = (() => {
             bucket_seconds: bucketSeconds,
             bucket_label: bucketLabel,
             total_buckets: totalBuckets,
-            total_requests: validEntries.length,
+            total_requests: requests,
             stray_timestamps: strayTimestamps,
             duration_seconds: durationSeconds,
             start_time: formatBucketTime(minTs, bucketSeconds, spanCrossesDays),
@@ -755,46 +838,45 @@ const Analyzer = (() => {
             })
             .sort((a, b) => b.count - a.count);
 
-        let rateBuckets = [];
-        if (Array.isArray(summary.timeBuckets)) {
-            rateBuckets = summary.timeBuckets.map(b => ({
-                timestamp: b.timestamp || (b.time ? b.time * 1000 : 0),
-                count: b.count || b.total || 0,
-                rps: b.rps || 0,
-                status_2xx: b.status_2xx || 0,
-                status_3xx: b.status_3xx || 0,
-                status_4xx: b.status_4xx || b.error || 0,
-                status_5xx: b.status_5xx || 0,
-                label: b.label || ''
-            }));
-        } else if (summary.timeBuckets && typeof summary.timeBuckets === 'object') {
-            const entries = Object.entries(summary.timeBuckets).sort((a, b) => Number(a[0]) - Number(b[0]));
-            rateBuckets = entries.map(([secStr, count]) => {
-                const sec = Number(secStr);
-                const ts = sec * 1000;
-                return {
-                    timestamp: ts,
-                    count: count || 0,
-                    rps: Number(((count || 0) / 3600).toFixed(2)),
-                    status_2xx: 0,
-                    status_3xx: 0,
-                    status_4xx: 0,
-                    status_5xx: 0,
-                    label: new Date(ts).toISOString().slice(11, 16)
-                };
-            });
+        // The worker sends requests per time slot; summaries from before it
+        // did have hourly counts only.
+        let reqRateObj;
+        if (summary.rateSeries) {
+            reqRateObj = requestRateFromSeries(summary.rateSeries);
+        } else {
+            const rateBuckets = Array.isArray(summary.timeBuckets)
+                ? summary.timeBuckets.map(b => ({
+                    timestamp: b.timestamp || (b.time ? b.time * 1000 : 0),
+                    count: b.count || b.total || 0,
+                    rps: b.rps || 0,
+                    status_2xx: b.status_2xx || 0,
+                    status_3xx: b.status_3xx || 0,
+                    status_4xx: b.status_4xx || b.error || 0,
+                    status_5xx: b.status_5xx || 0,
+                    label: b.label || ''
+                }))
+                : Object.entries(summary.timeBuckets || {})
+                    .sort((a, b) => Number(a[0]) - Number(b[0]))
+                    .map(([secStr, count]) => {
+                        const ts = Number(secStr) * 1000;
+                        return {
+                            timestamp: ts,
+                            count: count || 0,
+                            rps: Number(((count || 0) / 3600).toFixed(2)),
+                            status_2xx: 0, status_3xx: 0, status_4xx: 0, status_5xx: 0,
+                            label: new Date(ts).toISOString().slice(11, 16)
+                        };
+                    });
+            reqRateObj = {
+                ...emptyRequestRate(),
+                buckets: rateBuckets,
+                data_points: rateBuckets,
+                bucket_seconds: 3600,
+                bucket_label: '1h',
+                total_buckets: rateBuckets.length,
+                peak_rps: rateBuckets.length ? Math.max(...rateBuckets.map(b => b.rps)) : 0,
+            };
         }
-
-        const reqRateObj = {
-            buckets: rateBuckets,
-            data_points: rateBuckets,
-            bucket_seconds: 3600,
-            bucket_label: '1h',
-            total_buckets: rateBuckets.length,
-            peak_rps: rateBuckets.length ? Math.max(...rateBuckets.map(b => b.rps)) : 0,
-            avg_rps: 0,
-            top_spikes: []
-        };
 
         const topIps = (summary.topIps || []).map(item => {
             const geo = (summary.ipGeoMap && summary.ipGeoMap[item.ip]) || {};
@@ -816,6 +898,8 @@ const Analyzer = (() => {
                 percentage: totalRequests ? ((count / totalRequests) * 100).toFixed(1) : '0.0'
             }))
             .sort((a, b) => b.count - a.count);
+
+        const referrerSites = referrerSiteList(summary.referrerSites || [], totalRequests);
 
         const workerPaths = summary.paths || { top_paths: [], other_paths: { paths: 0, count: 0, percentage: '0.0' }, distinct_paths: 0, sections: [] };
 
@@ -866,11 +950,16 @@ const Analyzer = (() => {
                 top_referrers: [],
                 request_rate: reqRateObj
             },
+            // The upload engine keeps the site of each referrer, not its full address.
+            referrers: referrerSites.sites.map(s => ({ referrer: s.site, hits: s.hits, pct: s.pct })),
+            referrer_sites: referrerSites.sites,
+            referrer_site_count: summary.referrerSiteCount ?? referrerSites.count,
+            direct_requests: referrerSites.direct,
             request_rate: reqRateObj
         };
     }
 
-    return { analyzeLogs, analyzeEnhancedLogs, analyzeFromWorkerSummary, computeRequestRate, enrichLogEntries, generateNginxDeny, generateAwsWafRule, generateCloudflareRule, generateIpsetCommands };
+    return { analyzeLogs, analyzeEnhancedLogs, analyzeFromWorkerSummary, computeRequestRate, requestRateFromSeries, rateSeriesFromEntries, enrichLogEntries, generateNginxDeny, generateAwsWafRule, generateCloudflareRule, generateIpsetCommands };
 })();
 
 if (typeof window !== 'undefined') window.Analyzer = Analyzer;

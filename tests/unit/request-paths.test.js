@@ -99,3 +99,16 @@ test('login attempts', () => {
     assert.ok(!RequestPaths.isAuthRequest('POST', '/wp-admin/admin-ajax.php'));
     assert.ok(!RequestPaths.isAuthRequest('POST', '/blog/login-tips'));
 });
+
+test('the site of a referrer', () => {
+    const site = RequestPaths.referrerSite;
+    assert.equal(site('https://www.Example.com:443/a/b?c=1#d'), 'www.example.com');
+    assert.equal(site('http://example.com'), 'example.com');
+    assert.equal(site('https://example.com./'), 'example.com');
+    assert.equal(site('https://user:secret@site.test:8080/x'), 'site.test');
+    assert.equal(site('http://[2001:db8::1]:8080/x'), '[2001:db8::1]');
+    assert.equal(site('android-app://com.google.android.gm/'), 'com.google.android.gm');
+    assert.equal(site('//cdn.test/x'), 'cdn.test');
+    assert.equal(site('example.org/page'), 'example.org');
+    for (const none of ['-', '', ' ', '/local/path', null, undefined]) assert.equal(site(none), '', String(none));
+});
