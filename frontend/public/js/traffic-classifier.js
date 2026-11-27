@@ -12,8 +12,7 @@
  *   suspected   a browser User-Agent whose requests look automated
  *
  * A request is judged as part of a client (one IP address with one User-Agent),
- * because behaviour only shows across several requests. Both analysis paths
- * (in-memory and the streaming worker) use this file, so they agree.
+ * because behaviour only shows across several requests.
  *
  * Depends on BotDetector (bot-detector.js) for User-Agent and address checks
  * and on RequestPaths (request-paths.js) for what a request path means.

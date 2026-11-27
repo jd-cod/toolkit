@@ -28,6 +28,15 @@ class ColumnarStorage {
         this.col_ref = new Uint32Array(this.capacity);
         this.refDict = [];
         this.refMap = new Map();
+        // Protocol version of the request ('HTTP/2.0'), '-' when the line has none.
+        this.col_proto = new Uint8Array(this.capacity);
+        this.protoDict = [];
+        this.protoMap = new Map();
+        // True while every row is at or after the one before it, as in a log
+        // written by one server. Then newest-first needs no sorting.
+        this.timeOrdered = true;
+        this._lastTime = 0;
+        this._timeOrder = null;
         this.hasClients = false;
         this.clientClass = null;   // Uint8Array: class index per client
         this.clientGroup = null;   // string per client: bot group, '' for humans
@@ -72,6 +81,7 @@ class ColumnarStorage {
         this.col_method = realloc(this.col_method, Uint8Array);
         this.col_client = realloc(this.col_client, Uint32Array);
         this.col_ref = realloc(this.col_ref, Uint32Array);
+        this.col_proto = realloc(this.col_proto, Uint8Array);
 
         this.capacity = newCap;
     }
@@ -87,12 +97,16 @@ class ColumnarStorage {
         return id;
     }
 
-    appendRow(ip, timeSec, status, bytes, url, bot, country, asn, method = '-', clientId, refSite = '') {
+    appendRow(ip, timeSec, status, bytes, url, bot, country, asn, method = '-', clientId, refSite = '', httpVersion = '') {
         this._ensureCapacity(this.rowCount + 1);
         const idx = this.rowCount;
 
+        const time = (timeSec >>> 0) || 0;
+        if (time < this._lastTime) this.timeOrdered = false;
+        this._lastTime = time;
+
         this.col_ip[idx] = this._getOrSetId(ip, this.ipDict, this.ipMap);
-        this.col_time[idx] = (timeSec >>> 0) || 0;
+        this.col_time[idx] = time;
         this.col_status[idx] = (status >>> 0) || 0;
         this.col_bytes[idx] = bytes > 0 ? bytes : 0;
         this.col_url[idx] = this._getOrSetId(url, this.urlDict, this.urlMap);
@@ -105,8 +119,41 @@ class ColumnarStorage {
             this.hasClients = true;
         }
         this.col_ref[idx] = this._getOrSetId(refSite, this.refDict, this.refMap);
+        // A line can carry any text there; the column holds 255 different ones.
+        let proto = this.protoMap.get(httpVersion || '-');
+        if (proto === undefined) proto = this.protoDict.length < 255 ? this._getOrSetId(httpVersion, this.protoDict, this.protoMap) : this._getOrSetId('-', this.protoDict, this.protoMap);
+        this.col_proto[idx] = proto;
 
         this.rowCount++;
+    }
+
+    /**
+     * Row numbers from the oldest request to the newest; requests of the same
+     * second stay in the order they were read. Only needed for a log that is
+     * not in time order (several files, several servers). Sorted in two
+     * passes over the 16-bit halves of the time, so ten million rows take a
+     * fraction of a second.
+     */
+    _rowsByTime() {
+        const n = this.rowCount;
+        if (this._timeOrder && this._timeOrder.length === n) return this._timeOrder;
+        const time = this.col_time;
+        let from = new Uint32Array(n);
+        let to = new Uint32Array(n);
+        for (let i = 0; i < n; i++) from[i] = i;
+        const starts = new Uint32Array(65537);
+        for (const shift of [0, 16]) {
+            starts.fill(0);
+            for (let i = 0; i < n; i++) starts[((time[from[i]] >>> shift) & 0xFFFF) + 1]++;
+            for (let k = 1; k <= 65536; k++) starts[k] += starts[k - 1];
+            for (let i = 0; i < n; i++) {
+                const row = from[i];
+                to[starts[(time[row] >>> shift) & 0xFFFF]++] = row;
+            }
+            const swap = from; from = to; to = swap;
+        }
+        this._timeOrder = from;
+        return from;
     }
 
     /**
@@ -395,6 +442,9 @@ class ColumnarStorage {
 
         let minTime = 0;
         let maxTime = 4294967295;
+        // "The last 30 minutes" lets requests without a readable time through;
+        // a chosen stretch of the timeline does not.
+        const keepUntimed = Boolean(filters.keepUntimed);
         if (filters.timeRange && Array.isArray(filters.timeRange)) {
             minTime = filters.timeRange[0] || 0;
             maxTime = filters.timeRange[1] || 4294967295;
@@ -417,7 +467,7 @@ class ColumnarStorage {
             if (col_status[i] < minStatus || col_status[i] > maxStatus) return false;
             if (otherStatus && col_status[i] >= 100 && col_status[i] <= 599) return false;
             if (targetAsn !== -1 && col_asn[i] !== targetAsn) return false;
-            if (col_time[i] < minTime || col_time[i] > maxTime) return false;
+            if ((col_time[i] < minTime || col_time[i] > maxTime) && !(keepUntimed && col_time[i] === 0)) return false;
             return true;
         };
         return { matches };
@@ -452,6 +502,35 @@ class ColumnarStorage {
             else break;
         }
         return values[n];
+    }
+
+    /**
+     * One line with a wrong year would stretch the timeline over years: hours
+     * far away from where the log's requests are do not belong to it. From 20
+     * requests on, when first and last are more than two days apart.
+     *
+     * @param {Object<number, number>} hourCounts - Requests per hour, by the start of the hour in seconds.
+     * @returns {{ first: number, last: number }|null} First and last hour of the log; null when every hour belongs to it.
+     */
+    static logHours(hourCounts) {
+        const hours = Object.keys(hourCounts).map(Number).sort((x, y) => x - y);
+        let timed = 0;
+        for (const h of hours) timed += hourCounts[h];
+        if (timed < 20 || hours.length < 2 || hours[hours.length - 1] - hours[0] <= 2 * 86400) return null;
+        const at = share => {
+            let seen = 0;
+            for (const h of hours) { seen += hourCounts[h]; if (seen > timed * share) return h; }
+            return hours[hours.length - 1];
+        };
+        const lo = at(0.005), hi = at(0.995);
+        const margin = Math.max(hi - lo, 86400);
+        let first = null, last = null;
+        for (const h of hours) {
+            if (h < lo - margin || h > hi + margin) continue;
+            if (first === null) first = h;
+            last = h;
+        }
+        return first === null ? null : { first, last };
     }
 
     /** Addresses listed per country, network and bot group. The count beside the list is not cut. */
@@ -634,28 +713,12 @@ class ColumnarStorage {
             responseSize = { median, min, max };
         }
 
-        // One line with a wrong year would stretch the timeline over years:
-        // hours far away from where the log's requests are do not count.
-        const hours = Object.keys(timeBuckets).map(Number).sort((x, y) => x - y);
-        let timed = 0;
-        for (const h of hours) timed += timeBuckets[h];
-        // Same rule as LogParser.timeBounds, by the hour: from 20 requests on,
-        // when first and last are more than two days apart.
-        if (timed >= 20 && hours.length >= 2 && hours[hours.length - 1] - hours[0] > 2 * 86400) {
-            const at = share => {
-                let seen = 0;
-                for (const h of hours) { seen += timeBuckets[h]; if (seen > timed * share) return h; }
-                return hours[hours.length - 1];
-            };
-            const lo = at(0.005), hi = at(0.995);
-            const margin = Math.max(hi - lo, 86400);
-            let first = null, last = null;
-            for (const h of hours) {
-                if (h < lo - margin || h > hi + margin) { delete timeBuckets[h]; continue; }
-                if (first === null) first = h;
-                last = h;
-            }
-            if (first !== null && (minTimeSec < first || maxTimeSec > last + 3599)) {
+        // Hours that do not belong to the log (see logHours) do not count.
+        const logHours = ColumnarStorage.logHours(timeBuckets);
+        if (logHours) {
+            const { first, last } = logHours;
+            for (const h of Object.keys(timeBuckets)) if (h < first || h > last) delete timeBuckets[h];
+            if (minTimeSec < first || maxTimeSec > last + 3599) {
                 // First and last request among those that are left.
                 let lowest = 0, highest = 0;
                 for (let i = 0; i < total; i++) {
@@ -802,24 +865,34 @@ class ColumnarStorage {
         const col_country = this.col_country;
         const col_asn = this.col_asn;
         const col_method = this.col_method;
+        const col_proto = this.col_proto;
 
-        for (let i = 0; i < total; i++) {
+        // 'newest': latest request first, and of two in the same second the
+        // one read later. Otherwise the order the lines were read in.
+        const newestFirst = filters.order === 'newest';
+        const byTime = newestFirst && !this.timeOrdered ? this._rowsByTime() : null;
+
+        for (let at = 0; at < total; at++) {
+            const i = newestFirst ? (byTime ? byTime[total - 1 - at] : total - 1 - at) : at;
             if (!matches(i)) continue;
 
             if (matchedCount >= startIndex && matchedCount < endIndex) {
+                const countryCode = this.countryDict[col_country[i]];
+                const hasCountry = countryCode && countryCode !== '-' && countryCode !== '--';
+                const proto = this.protoDict[col_proto[i]];
                 const row = {
                     ip: this.ipDict[col_ip[i]],
                     timeSec: col_time[i],
-                    status: col_status[i],
+                    timestamp: col_time[i] > 0 ? col_time[i] * 1000 : null,
+                    status_code: col_status[i],
                     bytes: col_bytes[i],
                     method: this.methodDict[col_method[i]] || '-',
                     url: this.urlDict[col_url[i]],
+                    http_version: proto && proto !== '-' ? proto : null,
                     bot: this.botDict[col_bot[i]],
-                    country: this.countryDict[col_country[i]],
+                    country: this._countryName(countryCode),
+                    country_code: hasCountry ? countryCode : '--',
                     asn: col_asn[i],
-                    // Names the Log Explorer reads, shared with in-memory entries.
-                    timestamp: col_time[i] > 0 ? col_time[i] * 1000 : null,
-                    status_code: col_status[i]
                 };
                 if (clientClass && this.hasClients) {
                     const clientId = col_client[i];

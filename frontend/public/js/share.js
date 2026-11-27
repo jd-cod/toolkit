@@ -12,6 +12,7 @@ const ShareModal = (() => {
     let _parseResult = null;
     let _inputSource = null;  // 'url' | 'text' | 'file' | 'sample'
     let _logText = '';        // Original log content
+    let _readLogText = null;  // Reads it when it is not held as text (uploaded files)
 
     async function safeJson(resp) {
         const text = await resp.text();
@@ -116,11 +117,12 @@ const ShareModal = (() => {
 
         if (!r2Key) {
             try {
+                const content = _logText || (_readLogText ? await _readLogText() : '');
                 const uploadResp = await safeJson(await fetch('/api/storage/upload', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        content: _logText,
+                        content,
                         title: title
                     })
                 }));
@@ -171,6 +173,7 @@ const ShareModal = (() => {
         _parseResult = parseResult;
         _inputSource = options.inputSource || options.source || 'text';
         _logText = options.logText || '';
+        _readLogText = options.readLogText || null;
 
         if (_inputSource === 'terminal_ingest') {
             alert('Sharing is disabled for terminal-ingested logs to enforce our Zero-Data Retention policy. Use \'Download Report\' for self-contained offline reports.');

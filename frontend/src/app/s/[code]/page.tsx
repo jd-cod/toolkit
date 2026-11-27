@@ -130,11 +130,10 @@ export default function SharePage() {
 
       const runtimeWindow = window as AnalysisWindow;
       const GeoIP = runtimeWindow.GeoIP;
-      const LogParser = runtimeWindow.LogParser;
-      const Analyzer = runtimeWindow.Analyzer;
+      const LogEngine = runtimeWindow.LogEngine;
       const Dashboard = runtimeWindow.Dashboard;
 
-      if (!GeoIP || !LogParser || !Analyzer || !Dashboard) {
+      if (!GeoIP || !LogEngine || !Dashboard) {
         throw new Error('Analysis engine scripts failed to load.');
       }
 
@@ -156,29 +155,28 @@ export default function SharePage() {
       setAnalysisState('parsing');
       await new Promise((resolve) => setTimeout(resolve, 50));
       GeoIP.clearCache?.();
-      const parseResult = LogParser.parseIPs(logText, { skip403: true, skipInternal: true });
-      if (parseResult.validLines === 0) {
+      const result = await LogEngine.analyze(logText, { skip403: true, skipInternal: true });
+      if (result.parseResult.validLines === 0) {
+        result.worker.terminate();
         throw new Error('No valid access-log lines found in the shared logs.');
       }
 
-      // Step 5: Analyze
-      setAnalysisState('analyzing');
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      Analyzer.enrichLogEntries(parseResult.logEntries);
-      const data = Analyzer.analyzeEnhancedLogs(parseResult.logEntries);
-
-      // Step 6: Render dashboard (read-only mode)
+      // Step 5: Render dashboard (read-only mode)
       setAnalysisState('done');
 
       // Make input section hidden and dashboard visible
       const inputSection = document.getElementById('nginx-input-section');
       if (inputSection) inputSection.style.display = 'none';
 
-      Dashboard.render(data, logText, parseResult, {
+      Dashboard.render(result.data, logText, result.parseResult, {
         source: 'gist',
         gistUrl: sourceUrl, // Dashboard still labels this source 'gist'; see dashboard.js
         skip403: true,
         skipInternal: true,
+        sources: [logText],
+        worker: result.worker,
+        summary: result.summary,
+        pageResult: result.pageResult,
       });
 
       // Hide all action buttons (read-only mode)
@@ -425,35 +423,40 @@ interface GistFetchResponse {
   error?: string;
 }
 
-interface ParseResult {
-  ips: unknown[];
-  logEntries: unknown[];
-  validLines: number;
+interface LogAnalysis {
+  worker: { terminate: () => void };
+  summary: unknown;
+  pageResult: unknown;
+  data: unknown;
+  parseResult: { validLines: number };
 }
 
-interface LogParserRuntime {
-  parseIPs: (text: string, options?: { skip403?: boolean; skipInternal?: boolean }) => ParseResult;
-}
-
-interface AnalyzerRuntime {
-  enrichLogEntries: (entries: unknown[]) => void;
-  analyzeEnhancedLogs: (entries: unknown[]) => unknown;
+interface LogEngineRuntime {
+  analyze: (input: string, options?: { skip403?: boolean; skipInternal?: boolean }) => Promise<LogAnalysis>;
 }
 
 interface DashboardRuntime {
   render: (
     data: unknown,
     logText: string,
-    parseResult: ParseResult,
-    options: { source: 'gist'; gistUrl: string; skip403?: boolean; skipInternal?: boolean }
+    parseResult: LogAnalysis['parseResult'],
+    options: {
+      source: 'gist';
+      gistUrl: string;
+      skip403?: boolean;
+      skipInternal?: boolean;
+      sources: string[];
+      worker: LogAnalysis['worker'];
+      summary: unknown;
+      pageResult: unknown;
+    }
   ) => void;
 }
 
 interface AnalysisWindow extends Window {
   BotDetector?: { init: () => Promise<void> };
   GeoIP?: GeoIPRuntime;
-  LogParser?: LogParserRuntime;
-  Analyzer?: AnalyzerRuntime;
+  LogEngine?: LogEngineRuntime;
   Dashboard?: DashboardRuntime;
 }
 

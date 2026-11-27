@@ -1,316 +1,15 @@
 /**
- * Log Analysis Engine — Client-Side
- * 
- * Port of Python analyze_logs() function.
- * Takes parsed IPs + user agents + GeoIP lookups and produces
- * country hits, ASN hits, top IPs, bot breakdown (with sub-groups), etc.
+ * Traffic Analyzer — from the engine's summary to the numbers on the page.
  *
- * Needs GeoIP, RequestPaths, BotDetector and TrafficClassifier to be loaded first.
+ * The engine (log-parser.worker.js, ColumnarStorage) counts the requests of a
+ * view. This turns its summary into what the dashboard and the report show:
+ * countries, networks, addresses, traffic classes, statuses, paths, request
+ * rate.
+ *
+ * Needs TrafficClassifier to be loaded first; GeoIP when it is there.
  */
 
 const Analyzer = (() => {
-    // Addresses listed per country and per network; `unique_ips` is the full count.
-    const IP_DETAIL_LIMIT = 100;
-
-    /**
-     * Group requests into clients (IP + User-Agent) with their traffic class.
-     *
-     * Entries carry their class from enrichLogEntries(), which judges each
-     * client over the whole log. Reading it back here keeps a request in the
-     * same class when only a filtered part of the log is analysed.
-     */
-    function classifiedClients(ips, userAgents, logEntries) {
-        let entries = logEntries;
-        if (!entries || entries.length !== ips.length) {
-            entries = ips.map((ip, i) => ({ ip, user_agent: userAgents[i] === '-' ? null : userAgents[i] }));
-        }
-        if (entries.some(e => e.traffic_class === undefined)) enrichLogEntries(entries);
-
-        const items = new Map();
-        for (const e of entries) {
-            const key = e.ip + '\u0000' + (e.user_agent || '');
-            let item = items.get(key);
-            if (!item) {
-                item = {
-                    client: {
-                        ip: e.ip,
-                        ua: e.user_agent || '',
-                        cls: e.traffic_class,
-                        name: e.bot_name,
-                        group: e.bot_group,
-                        reason: e.bot_reason,
-                        verified: e.bot_verified,
-                    },
-                    count: 0,
-                };
-                items.set(key, item);
-            }
-            item.count++;
-        }
-        return items.values();
-    }
-
-    // True when the log format has no User-Agent column (see TrafficClassifier).
-    function uaFieldMissing(userAgents) {
-        if (userAgents.length < 20) return false;
-        let missing = 0;
-        for (const ua of userAgents) if (!ua || ua === '-') missing++;
-        return missing / userAgents.length >= 0.9;
-    }
-
-    /**
-     * Analyze extracted IPs and produce security-focused metrics.
-     */
-    function analyzeLogs(ips, userAgents, logEntries) {
-        if (!ips || ips.length === 0) return emptyResult();
-        if (!userAgents) userAgents = new Array(ips.length).fill('-');
-
-        // Count hits per IP
-        const ipCounter = new Map();
-        for (const ip of ips) {
-            ipCounter.set(ip, (ipCounter.get(ip) || 0) + 1);
-        }
-
-        // Store raw log lines per IP for access log viewer
-        const ipLogEntries = new Map();
-        if (logEntries) {
-            for (const entry of logEntries) {
-                if (!ipLogEntries.has(entry.ip)) ipLogEntries.set(entry.ip, []);
-                ipLogEntries.get(entry.ip).push(entry);
-            }
-        }
-
-        // GeoIP lookups for unique IPs
-        const countryCounter = new Map();
-        const asnCounter = new Map();
-        const countryIPs = new Map();
-        const asnIPs = new Map();
-        const asnOrgMap = new Map();
-
-        for (const [ipStr, count] of ipCounter) {
-            const info = GeoIP.lookupIP(ipStr);
-            const countryKey = info.country;
-            const asnKey = info.asn;
-
-            countryCounter.set(countryKey, (countryCounter.get(countryKey) || 0) + count);
-            asnCounter.set(asnKey, (asnCounter.get(asnKey) || 0) + count);
-
-            if (!countryIPs.has(countryKey)) countryIPs.set(countryKey, new Set());
-            countryIPs.get(countryKey).add(ipStr);
-
-            if (!asnIPs.has(asnKey)) asnIPs.set(asnKey, new Set());
-            asnIPs.get(asnKey).add(ipStr);
-
-            asnOrgMap.set(asnKey, info.asn_org);
-        }
-
-        // Traffic classes, bot groups and spoofed-bot lists
-        const traffic = TrafficClassifier.aggregate(classifiedClients(ips, userAgents, logEntries), {
-            geo: ip => GeoIP.lookupIP(ip),
-        });
-
-        // Build sorted country hits
-        const countryHits = [...countryCounter.entries()]
-            .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0)))
-            .map(([country, hits]) => {
-                let countryCode = '--';
-                const ipsInCountry = countryIPs.get(country);
-                if (ipsInCountry) {
-                    for (const ip of ipsInCountry) {
-                        const info = GeoIP.lookupCountry(ip);
-                        if (info.country_code !== '--') { countryCode = info.country_code; break; }
-                    }
-                }
-                return {
-                    country, country_code: countryCode, hits,
-                    unique_ips: ipsInCountry ? ipsInCountry.size : 0,
-                    ip_details: ipsInCountry ?
-                        [...ipsInCountry].map(ip => ({ ip, hits: ipCounter.get(ip) || 0 }))
-                            .sort((a, b) => b.hits - a.hits).slice(0, IP_DETAIL_LIMIT) : [],
-                };
-            });
-
-        // Build sorted ASN hits
-        const asnHits = [...asnCounter.entries()]
-            .sort((a, b) => b[1] - a[1] || a[0] - b[0])
-            .map(([asn, hits]) => ({
-                asn, asn_org: asnOrgMap.get(asn) || 'Unknown', hits,
-                unique_ips: asnIPs.get(asn) ? asnIPs.get(asn).size : 0,
-                ip_details: asnIPs.get(asn) ?
-                    [...asnIPs.get(asn)].map(ip => ({ ip, hits: ipCounter.get(ip) || 0 }))
-                        .sort((a, b) => b.hits - a.hits).slice(0, IP_DETAIL_LIMIT) : [],
-            }));
-
-        // Top 50 IPs
-        const topIPs = [...ipCounter.entries()]
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 50)
-            .map(([ipStr, hits]) => {
-                const info = GeoIP.lookupIP(ipStr);
-                return { ip: ipStr, hits, country: info.country, country_code: info.country_code, asn: info.asn, asn_org: info.asn_org };
-            });
-
-        const totalRequests = ips.length;
-
-        return {
-            total_requests: totalRequests,
-            unique_ips: ipCounter.size,
-            // "Unknown" is not a country and AS0 is not a network.
-            unique_countries: [...countryIPs.keys()].filter(c => c && c !== 'Unknown').length,
-            unique_asns: [...asnIPs.keys()].filter(a => Number(a) > 0).length,
-            country_hits: countryHits,
-            asn_hits: asnHits,
-            top_ips: topIPs,
-            bot_groups: traffic.bot_groups,
-            bot_hits: traffic.bot_groups, // backward compat alias
-            traffic_classes: traffic.traffic_classes,
-            human_requests: traffic.human_requests,
-            verified_bots_count: traffic.verified_bots_count,
-            spoofed_bots_count: traffic.spoofed_bots_count,
-            unverified_bots_count: traffic.unverified_bots_count,
-            automated_count: traffic.automated_count,
-            suspected_count: traffic.suspected_count,
-            other_bots_count: traffic.other_bots_count,
-            verified_bot_ips_count: traffic.verified_bot_ips_count,
-            spoofed_bot_ips_count: traffic.spoofed_bot_ips_count,
-            spoofed_bot_attackers: traffic.spoofed_bot_attackers,
-            spoofed_bot_ips: traffic.spoofed_bot_ips,
-            suspected_clients: traffic.suspected_clients,
-            ua_field_missing: (logEntries && logEntries.length && logEntries[0].ua_field_missing !== undefined)
-                ? logEntries[0].ua_field_missing
-                : uaFieldMissing(userAgents),
-            ip_log_entries: ipLogEntries, // Map<ip, logEntry[]> for access log viewer
-        };
-    }
-
-    /**
-     * Enhanced log analysis using full log entries with HTTP method, status, URL, etc.
-     */
-    function analyzeEnhancedLogs(logEntries) {
-        if (!logEntries || logEntries.length === 0) return emptyEnhancedResult();
-
-        const totalRequests = logEntries.length;
-        const ips = logEntries.map(e => e.ip);
-        const userAgents = logEntries.map(e => e.user_agent || '-');
-
-        // Run basic analysis with logEntries passed for per-IP log tracking
-        const basicResult = analyzeLogs(ips, userAgents, logEntries);
-
-        // HTTP Status Code Analysis
-        const statusCounter = new Map();
-        const methodCounter = new Map();
-        // URL -> { count, statuses }, turned into paths by RequestPaths.
-        const urlCounter = new Map();
-        let totalResponseSize = 0;
-        const responseSizes = [];
-        const hourlyCounter = new Array(24).fill(0);
-        const dailyCounter = new Array(7).fill(0);
-
-        for (const entry of logEntries) {
-            if (entry.status_code !== null && !isNaN(entry.status_code)) {
-                statusCounter.set(entry.status_code, (statusCounter.get(entry.status_code) || 0) + 1);
-            }
-            // The parser writes real methods in capitals; anything else that stood
-            // in the method position is counted as it was sent.
-            if (entry.method) methodCounter.set(entry.method, (methodCounter.get(entry.method) || 0) + 1);
-            if (entry.url) {
-                let rec = urlCounter.get(entry.url);
-                if (!rec) { rec = { count: 0, statuses: new Map() }; urlCounter.set(entry.url, rec); }
-                rec.count++;
-                if (entry.status_code !== null && !isNaN(entry.status_code)) {
-                    rec.statuses.set(entry.status_code, (rec.statuses.get(entry.status_code) || 0) + 1);
-                }
-            }
-            if (entry.response_size !== null && !isNaN(entry.response_size)) {
-                totalResponseSize += entry.response_size;
-                responseSizes.push(entry.response_size);
-            }
-            if (entry.timestamp) {
-                const date = new Date(entry.timestamp);
-                hourlyCounter[date.getUTCHours()]++;
-                dailyCounter[date.getUTCDay()]++;
-            }
-        }
-
-        const statusCategories = statusCategoriesOf(statusCounter.entries());
-
-        const statusHits = [...statusCounter.entries()]
-            .sort((a, b) => b[1] - a[1])
-            .map(([code, count]) => ({ code, count, percentage: totalRequests ? (count / totalRequests * 100).toFixed(1) : 0 }));
-
-        const methodHits = [...methodCounter.entries()]
-            .sort((a, b) => b[1] - a[1])
-            .map(([method, count]) => ({ method, count, percentage: totalRequests ? (count / totalRequests * 100).toFixed(1) : 0 }));
-
-        // Paths: every request counts once, under its normalised path.
-        const paths = RequestPaths.summarize(
-            (function* () { for (const [url, rec] of urlCounter) yield [url, rec.count, rec.statuses]; })(),
-            totalRequests
-        );
-        const topPaths = paths.top_paths;
-        const topUrls = topPaths.slice(0, 20).map(p => ({ url: p.path, count: p.count, percentage: p.percentage, status_breakdown: p.status_breakdown }));
-
-        // Referrers Counter
-        const referrerCounter = new Map();
-        for (let i = 0; i < logEntries.length; i++) {
-            const ref = logEntries[i].referrer || '-';
-            referrerCounter.set(ref, (referrerCounter.get(ref) || 0) + 1);
-        }
-        const referrers = [...referrerCounter.entries()]
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 20)
-            .map(([referrer, hits]) => ({
-                referrer,
-                hits,
-                pct: totalRequests ? Math.round(hits / totalRequests * 1000) / 10 : 0,
-            }));
-        // The same counted by site: one site with many pages is one row, and
-        // requests without a referrer are not a site.
-        const siteCounter = new Map();
-        for (const [referrer, hits] of referrerCounter) {
-            const site = RequestPaths.referrerSite(referrer);
-            siteCounter.set(site, (siteCounter.get(site) || 0) + hits);
-        }
-        const referrerSites = referrerSiteList(siteCounter.entries(), totalRequests);
-
-        let avgResponseSize = 0, medianResponseSize = 0;
-        let minResponseSize = 0, maxResponseSize = 0;
-        if (responseSizes.length > 0) {
-            avgResponseSize = Math.round(totalResponseSize / responseSizes.length);
-            const sorted = [...responseSizes].sort((a, b) => a - b);
-            const mid = Math.floor(sorted.length / 2);
-            medianResponseSize = sorted.length % 2 !== 0 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
-            minResponseSize = sorted[0];
-            maxResponseSize = sorted[sorted.length - 1];
-        }
-
-        return {
-            ...basicResult,
-            http_metrics: {
-                status_categories: statusCategories,
-                status_hits: statusHits,
-                method_hits: methodHits,
-                top_urls: topUrls,
-                top_paths: topPaths,
-                other_paths: paths.other_paths,
-                distinct_paths: paths.distinct_paths,
-                path_sections: paths.sections,
-                response_size: {
-                    total: totalResponseSize, average: avgResponseSize, median: medianResponseSize,
-                    min: minResponseSize,
-                    max: maxResponseSize,
-                },
-            },
-            temporal_distribution: temporalDistribution(hourlyCounter, dailyCounter, totalRequests),
-            request_rate: computeRequestRate(logEntries),
-            referrers: referrers,
-            referrer_sites: referrerSites.sites,
-            referrer_site_count: referrerSites.count,
-            direct_requests: referrerSites.direct,
-            security_metrics: securityMetrics(statusCategories, totalRequests),
-        };
-    }
-
     const CANDIDATE_RESOLUTIONS = [
         { seconds: 1, label: '1s' },
         { seconds: 2, label: '2s' },
@@ -436,9 +135,9 @@ const Analyzer = (() => {
     /**
      * Requests per second of a log, counted by status class.
      *
-     * This is what the two engines have in common: the paste engine builds it
-     * from its entries, the upload engine's worker from its columns, and one
-     * function turns either into the numbers and chart buckets on the page.
+     * The engine builds it from its columns (ColumnarStorage), for the whole
+     * log or a filtered view; requestRateFromSeries turns it into the numbers
+     * and chart buckets on the page.
      *
      * @typedef {object} RateSeries
      * @property {number} base - Seconds per slot. Chart intervals are multiples of it.
@@ -449,66 +148,10 @@ const Analyzer = (() => {
      * @property {number} [stray] - Requests left out because their date is far from the rest.
      */
 
-    /** @returns {RateSeries|null} */
-    function rateSeriesFromEntries(logEntries) {
-        const stamps = [];
-        const codes = [];
-        let minTs = Infinity;
-        let maxTs = -Infinity;
-        for (const entry of logEntries || []) {
-            if (!entry.timestamp) continue;
-            const ts = entry.timestamp instanceof Date
-                ? entry.timestamp.getTime()
-                : (typeof entry.timestamp === 'number' ? entry.timestamp : new Date(entry.timestamp).getTime());
-            if (isNaN(ts)) continue;
-            stamps.push(ts);
-            codes.push(entry.status_code);
-            if (ts < minTs) minTs = ts;
-            if (ts > maxTs) maxTs = ts;
-        }
-        if (stamps.length === 0) return null;
-
-        // A stray date (one line with a wrong year) must not set the scale.
-        let stray = 0;
-        const parser = typeof LogParser !== 'undefined' ? LogParser : (typeof globalThis !== 'undefined' ? globalThis.LogParser : null);
-        if (parser && parser.timeBounds && maxTs - minTs > 2 * 86400000) {
-            const bounds = parser.timeBounds(stamps);
-            if (bounds && bounds.outliers > 0) {
-                stray = bounds.outliers;
-                minTs = bounds.min;
-                maxTs = bounds.max;
-            }
-        }
-
-        const slot = new Map();
-        const series = { base: 1, times: [], total: [], s2: [], s3: [], s4: [], s5: [], minMs: minTs, maxMs: maxTs, requests: 0, stray };
-        for (let i = 0; i < stamps.length; i++) {
-            const ts = stamps[i];
-            if (ts < minTs || ts > maxTs) continue;
-            const sec = Math.floor(ts / 1000);
-            let at = slot.get(sec);
-            if (at === undefined) {
-                at = series.times.length;
-                slot.set(sec, at);
-                series.times.push(sec);
-                series.total.push(0); series.s2.push(0); series.s3.push(0); series.s4.push(0); series.s5.push(0);
-            }
-            series.total[at]++;
-            series.requests++;
-            const code = codes[i];
-            if (code >= 200 && code < 300) series.s2[at]++;
-            else if (code >= 300 && code < 400) series.s3[at]++;
-            else if (code >= 400 && code < 500) series.s4[at]++;
-            else if (code >= 500 && code < 600) series.s5[at]++;
-        }
-        return series;
-    }
-
     /**
-     * The shortest stretch both engines can count for a log of this length:
-     * one second up to 20,000 seconds of log, then 5 s, 10 s and so on. The
-     * same steps as ColumnarStorage.rateSeriesBase, which the upload engine
-     * stores its series in.
+     * The shortest stretch counted for a log of this length: one second up to
+     * 20,000 seconds of log, then 5 s, 10 s and so on. The same steps as
+     * ColumnarStorage.rateSeriesBase, which the engine stores its series in.
      */
     function busiestWindowSeconds(minSec, maxSec) {
         const slots = step => Math.floor(maxSec / step) - Math.floor(minSec / step) + 1;
@@ -532,11 +175,6 @@ const Analyzer = (() => {
             if (count > best || (count === best && key < bestKey)) { best = count; bestKey = key; }
         }
         return { count: best, timestamp: bestKey * seconds * 1000 };
-    }
-
-    function computeRequestRate(logEntries, options = {}) {
-        if (!logEntries || logEntries.length === 0) return emptyRequestRate();
-        return requestRateFromSeries(rateSeriesFromEntries(logEntries), options);
     }
 
     /**
@@ -750,66 +388,7 @@ const Analyzer = (() => {
             automated_count: 0, suspected_count: 0, other_bots_count: 0,
             verified_bot_ips_count: 0, spoofed_bot_ips_count: 0,
             spoofed_bot_attackers: [], spoofed_bot_ips: [], suspected_clients: [],
-            ip_log_entries: new Map(),
         };
-    }
-
-    /**
-     * Add GeoIP and traffic-class fields to parsed log entries, in place.
-     *
-     * Call it with the whole log: a client is judged by all of its requests,
-     * so enriching a filtered part would judge it on less evidence.
-     *
-     * Fields set: country, country_code, asn ('AS15169'), asn_num, asn_org,
-     * traffic_class (see TrafficClassifier.CLASSES), is_bot, bot_name,
-     * bot_group, bot_verified, bot_status, bot_reason.
-     */
-    function enrichLogEntries(logEntries) {
-        if (!logEntries || !Array.isArray(logEntries)) return;
-        const ipGeoCache = new Map();
-        const session = TrafficClassifier.createSession();
-        const clientIds = new Array(logEntries.length);
-
-        for (let i = 0; i < logEntries.length; i++) {
-            const entry = logEntries[i];
-            let geo = ipGeoCache.get(entry.ip);
-            if (!geo) {
-                geo = GeoIP.lookupIP(entry.ip);
-                ipGeoCache.set(entry.ip, geo);
-            }
-            entry.country = geo.country || 'Unknown';
-            entry.country_code = geo.country_code || '--';
-            entry.asn = geo.asn ? `AS${geo.asn}` : 'AS0';
-            entry.asn_num = geo.asn || 0;
-            entry.asn_org = geo.asn_org || 'Unknown';
-
-            const t = entry.timestamp;
-            const ms = t instanceof Date ? t.getTime() : (t ? new Date(t).getTime() : 0);
-            clientIds[i] = session.add(entry.ip, entry.user_agent, {
-                timeSec: Number.isFinite(ms) ? Math.floor(ms / 1000) : 0,
-                status: entry.status_code || 0,
-                method: entry.method ? String(entry.method).toUpperCase() : '',
-                url: entry.url || '',
-                hasReferrer: Boolean(entry.referrer && entry.referrer !== '-'),
-                httpVersion: entry.http_version || '',
-            });
-        }
-
-        session.finalize(ip => (ipGeoCache.get(ip) || {}).asn || 0);
-
-        for (let i = 0; i < logEntries.length; i++) {
-            const entry = logEntries[i];
-            const client = session.client(clientIds[i]);
-            entry.traffic_class = client.cls;
-            entry.is_bot = client.cls !== 'human';
-            entry.bot_name = client.name;
-            entry.bot_group = client.group;
-            entry.bot_verified = client.verified;
-            entry.bot_status = TrafficClassifier.STATUS_BY_CLASS[client.cls];
-            entry.bot_reason = client.reason;
-            // Decided on the whole log, so it stays true for a filtered part.
-            entry.ua_field_missing = session.uaFieldMissing;
-        }
     }
 
     function analyzeFromWorkerSummary(summary) {
@@ -818,7 +397,6 @@ const Analyzer = (() => {
         const totalRequests = summary.matchingCount || 0;
         const uniqueIps = summary.uniqueIps || 0;
 
-        // Countries and networks, in the shape analyzeLogs gives them.
         const noIps = { unique_ips: 0, ip_details: [] };
         const countryHits = Object.entries(summary.countryCounts || {})
             .map(([code, hits]) => {
@@ -979,7 +557,6 @@ const Analyzer = (() => {
             spoofed_bot_ips: traffic.spoofed_bot_ips,
             suspected_clients: traffic.suspected_clients,
             ua_field_missing: Boolean(summary.uaFieldMissing),
-            ip_log_entries: new Map(),
             http_metrics: {
                 status_categories: statusCategories,
                 status_hits: statusHits,
@@ -999,8 +576,6 @@ const Analyzer = (() => {
             },
             temporal_distribution: temporalDistribution(summary.hourly, summary.daily, totalRequests),
             request_rate: reqRateObj,
-            // `referrers` (full addresses) exists only where the requests are
-            // kept in memory; the upload engine keeps the site of each one.
             referrer_sites: referrerSites.sites,
             referrer_site_count: summary.referrerSiteCount ?? referrerSites.count,
             direct_requests: referrerSites.direct,
@@ -1008,7 +583,7 @@ const Analyzer = (() => {
         };
     }
 
-    return { analyzeLogs, analyzeEnhancedLogs, analyzeFromWorkerSummary, computeRequestRate, requestRateFromSeries, rateSeriesFromEntries, enrichLogEntries };
+    return { analyzeFromWorkerSummary, requestRateFromSeries };
 })();
 
 if (typeof window !== 'undefined') window.Analyzer = Analyzer;

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { test, expect, waitForEngineReady } from './fixtures/dashboard';
+import { test, expect, waitForEngineReady, readLogLines } from './fixtures/dashboard';
 
 const FIXTURE_DIR = path.resolve(__dirname, '..', 'fixtures');
 const GOLD_LOG_PATH = path.join(FIXTURE_DIR, 'nginx-release-golden.log');
@@ -24,11 +24,13 @@ async function loadGolden(page: Parameters<typeof waitForEngineReady>[0], skip40
 }
 
 async function engineSnapshot(page: Parameters<typeof waitForEngineReady>[0], skip403: boolean) {
-  return page.evaluate(({ log, skip }) => {
-    const parseResult = (window as any).LogParser.parseIPs(log, { skip403: skip });
-    const entries = parseResult.logEntries;
-    (window as any).Analyzer.enrichLogEntries(entries);
-    const data = (window as any).Analyzer.analyzeEnhancedLogs(entries);
+  return page.evaluate(async ({ log, skip }) => {
+    const analysis = await (window as any).LogEngine.analyze(log, { skip403: skip });
+    analysis.worker.terminate();
+    const parseResult = analysis.parseResult;
+    const data = analysis.data;
+    // The reason each kind of skipped line is given.
+    const REASONS: Record<string, string> = { privateIP: 'Private/reserved IP', healthCheck: 'Health-check endpoint', forbidden: '403 Forbidden (blocked)', invalid: 'Invalid IP format' };
     const countMap = (items: Array<{ [key: string]: unknown }>, key: string, value: string) =>
       Object.fromEntries(items.map((item) => [String(item[key]), item[value]]));
     const nonzero = (items: Array<{ [key: string]: unknown }>, key: string) =>
@@ -36,12 +38,10 @@ async function engineSnapshot(page: Parameters<typeof waitForEngineReady>[0], sk
 
     return {
       parse: {
-        parsedLines: parseResult.parsedLines.length,
-        skippedLines: parseResult.skippedLines.length,
-        skipReasons: parseResult.skippedLines.reduce((acc: Record<string, number>, item: { reason: string }) => {
-          acc[item.reason] = (acc[item.reason] || 0) + 1;
-          return acc;
-        }, {}),
+        parsedLines: parseResult.parsedCount,
+        skippedLines: parseResult.skippedCount,
+        skipReasons: Object.fromEntries(Object.entries(parseResult.skipCounts as Record<string, number>)
+          .filter(([, count]) => count > 0).map(([kind, count]) => [REASONS[kind], count])),
         minIso: new Date(parseResult.minTimestamp).toISOString(),
         maxIso: new Date(parseResult.maxTimestamp).toISOString(),
         spanMinutes: parseResult.logSpanMinutes,
@@ -65,7 +65,8 @@ async function engineSnapshot(page: Parameters<typeof waitForEngineReady>[0], sk
         countryHits: countMap(data.country_hits, 'country', 'hits'),
         asnHits: countMap(data.asn_hits, 'asn', 'hits'),
         ipHits: countMap(data.top_ips, 'ip', 'hits'),
-        referrers: countMap(data.referrers, 'referrer', 'hits'),
+        referrerSites: countMap(data.referrer_sites, 'site', 'hits'),
+        directRequests: data.direct_requests,
         urls: countMap(data.http_metrics.top_urls, 'url', 'count'),
         paths: countMap(data.http_metrics.top_paths, 'path', 'count'),
         hourlyNonzeroUtc: nonzero(data.temporal_distribution.hourly, 'hour'),
@@ -94,6 +95,16 @@ async function engineSnapshot(page: Parameters<typeof waitForEngineReady>[0], sk
       },
     };
   }, { log: GOLD_LOG, skip: skip403 });
+}
+
+function referrerSites(referrers: Record<string, number>) {
+  const sites: Record<string, number> = {};
+  let directRequests = 0;
+  for (const [referrer, hits] of Object.entries(referrers)) {
+    if (referrer === '-') directRequests += hits;
+    else sites[new URL(referrer).hostname] = (sites[new URL(referrer).hostname] || 0) + hits;
+  }
+  return { referrerSites: sites, directRequests };
 }
 
 function expectEngineSnapshot(snapshot: any, mode: GoldenMode) {
@@ -129,7 +140,8 @@ function expectEngineSnapshot(snapshot: any, mode: GoldenMode) {
       spoofedBots: expected.spoofed_bots,
       statusHits: expected.status_hits,
       ipHits: expected.ip_hits,
-      referrers: expected.referrers,
+      // The oracle lists every referrer; the page shows them by site.
+      ...referrerSites(expected.referrers),
       urls: expected.top_urls,
       paths: expected.top_paths,
       hourlyNonzeroUtc: expected.hourly_nonzero_utc,
@@ -250,23 +262,27 @@ test.describe('Nginx release golden analysis', () => {
 
   test('every parser field, enriched verdict, and visible log row agrees with the oracle', async ({ page, console: watcher }) => {
     await loadGolden(page);
-    const entries = await page.evaluate(log => {
-      const entries = (window as any).LogParser.parseIPs(log).logEntries;
-      (window as any).Analyzer.enrichLogEntries(entries);
-      return entries.map((e: any) => ({ ...e, timestamp: e.timestamp.toISOString() }));
+    // The requests as the engine holds them, in the order of the log, and
+    // the same lines as the parser reads them.
+    const entries = await page.evaluate(async log => {
+      const analysis = await (window as any).LogEngine.analyze(log);
+      const page = await (window as any).LogEngine.rows(analysis.worker, { filters: {}, order: 'file', pageSize: 1000 });
+      analysis.worker.terminate();
+      return page.rows.map((row: any) => ({ ...row, timestamp: new Date(row.timestamp).toISOString() }));
     }, GOLD_LOG);
+    const read = (await readLogLines(page, GOLD_LOG)).filter(r => r.valid);
     const lines = GOLD_LOG.trim().split('\n');
+    expect(entries).toHaveLength(MANIFEST.default_entries.length);
     for (const [index, expected] of MANIFEST.default_entries.entries()) {
       const [line, ip, timestamp, method, url, status, size, country, asn, bot] = expected;
       expect(entries[index]).toMatchObject({ ip, timestamp, method, url, status_code: status,
-        response_size: size, country, asn_num: asn, raw_line: lines[line - 1],
-        bot_status: bot === 'unverified' ? 'unverified_publisher' : bot });
-      expect(entries[index].traffic_class).toBe(bot);
+        bytes: size, country, asn, traffic_class: bot });
+      expect(read[index]).toMatchObject({ ip, timestamp, method, url, statusCode: status, responseSize: size, line: lines[line - 1] });
       // The literal quoted fixture fields are the oracle for preservation, not
       // the application's parser result.
       const quoted = lines[line - 1].split('"');
       expect(entries[index].http_version).toBe(quoted[1].split(' ')[2]);
-      expect(entries[index].referrer).toBe(quoted[3] === '-' ? null : quoted[3]);
+      expect(read[index].referrer).toBe(quoted[3] === '-' ? null : quoted[3]);
       expect(entries[index].user_agent).toBe(quoted[5]);
     }
     const cells = await page.locator('#explorer-rows-body tr').evaluateAll(rows =>
@@ -339,21 +355,9 @@ test.describe('Nginx release golden analysis', () => {
     watcher.assertClean();
   });
 
-  test('worker parsing and a gzip file upload preserve the golden dataset', async ({ page, console: watcher }) => {
+  test('a gzip file upload preserves the golden dataset', async ({ page, console: watcher }) => {
     await page.goto('/nginx', { waitUntil: 'domcontentloaded' });
     await waitForEngineReady(page);
-    const results = await page.evaluate(async log => {
-      const worker = new Worker('/js/log-parser.worker.js');
-      try {
-        const workerResult: any = await new Promise((resolve, reject) => {
-          worker.onmessage = e => e.data.type === 'success' ? resolve(e.data.result) : reject(new Error(e.data.error));
-          worker.onerror = reject;
-          worker.postMessage({ action: 'parse', logText: log });
-        });
-        return { worker: JSON.stringify(workerResult), direct: JSON.stringify((window as any).LogParser.parseIPs(log)) };
-      } finally { worker.terminate(); }
-    }, GOLD_LOG);
-    expect(results.worker).toBe(results.direct);
     await page.locator('#nginx-logfile').setInputFiles({ name: 'golden.log.gz', mimeType: 'application/gzip', buffer: gzipSync(GOLD_LOG) });
     await page.locator('#nginx-analyze-btn').click();
     await expect(page.locator('.kpi-card-total .stat-value')).toHaveText('15', { timeout: 45000 });

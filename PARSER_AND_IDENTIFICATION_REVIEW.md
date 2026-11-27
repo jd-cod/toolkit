@@ -102,7 +102,7 @@ What changed after the table above was first written, each with its tests:
 | Area | Change | Checked by |
 |---|---|---|
 | Time zones | Times are shown as written, never converted (decision 1) | `tests/unit/log-time-as-written.test.js`, `upload-parity.spec.ts` |
-| Result object | Both engines give the same result. Uploads had no addresses per country or network, no median, minimum or maximum response size, no hours or weekdays, country codes instead of names. Only `referrers` (full addresses) and the lines per address exist for pasted logs alone | `tests/unit/engine-parity.test.js` compares the whole result, unfiltered and under nine filters |
+| Result object | Both engines gave the same result (there is one engine since section 1c). Uploads had no addresses per country or network, no median, minimum or maximum response size, no hours or weekdays, country codes instead of names. Only `referrers` (full addresses) and the lines per address exist for pasted logs alone | `tests/unit/engine-result.test.js` (was `engine-parity.test.js`) checks the whole result, unfiltered and under filters |
 | Report | Could not be built after an upload; its country and network tables were empty for uploads | `upload-parity.spec.ts` compares the report's tables of both modes |
 | Filters | The address window follows the filters; the search boxes above the log table and in the filter bar are one filter; "No status" and 1xx can be filtered; AS0 can be filtered in uploads | `upload-parity.spec.ts`, `tests/unit/dashboard-filters.test.js` |
 | Code | `dashboard.js` (3,430 lines) is now `dashboard.js` (state, events, charts; 2,490), `dashboard-filters.js` (filter logic, no page access) and `dashboard-views.js` (markup, no page access) | `tests/unit/dashboard-filters.test.js`, `tests/unit/dashboard-views.test.js` |
@@ -111,13 +111,42 @@ What changed after the table above was first written, each with its tests:
 | Tests and CI | `npm run test:unit` passes completely; the golden and bot-intel specs run; `npx playwright test` needs no exclusions; `.github/workflows/ci.yml` | Each CI job was run in a Node container; the workflow has not run on GitHub |
 | Removed | The unused world map, the mitigation stage without markup, 670 lines of unused CSS | End-to-end suite |
 
-Not done: the two engines are still two. They now share the line parser, the path and classifier functions, the timeline function and the result shape, and tests hold them to the same output. What is still written twice is the counting (`analyzeEnhancedLogs` and `ColumnarStorage.query`) and the filtering (`DashboardFilters.apply` and `ColumnarStorage._parseFilters`). Making it one means deciding what pasted logs keep that uploads cannot afford to: every request with its raw line, the full referrer addresses, the lines per address in the report.
+## 1c. One engine (2026-11-27)
+
+The owner's decision: one engine, the fast one. Every log now takes the path that uploads took: it is read in chunks by `log-parser.worker.js` into the columns of `ColumnarStorage`, which answers every filter and serves the rows of the Log Explorer. A pasted text is read like a file. The page never holds the requests, so a pasted sample and a file of many gigabytes behave the same.
+
+| Was | Is |
+|---|---|
+| Pasted text, samples, remote URLs, several files and shared links were parsed and counted on the page (`LogParser.parseIPs`, `Analyzer.analyzeEnhancedLogs`, `DashboardFilters.apply`) | Removed. `LogEngine.analyze` (`log-engine.js`) is the one way in for every source |
+| Several files were joined into one text in memory | Each file is streamed; each may have its own format |
+| A browser without Web Workers fell back to the second engine | The same engine runs on the page (`engine-fallback.spec.ts`) |
+| Switching an exclusion re-read one uploaded file, or re-parsed the pasted text | The sources (text, files) are read again by the engine; several files and added files too. A stream cannot be read again, as before |
+
+What pasted logs had and uploads did not, now in the engine for both:
+
+- The Log Explorer lists the newest request first, also when the log is not in time order (two servers, added files).
+- A row shows the protocol of its request (`HTTP/2.0`) and the country by name. Uploads showed `HTTP/1.1` on every row.
+- The time span of the log includes excluded lines, so it does not move when an exclusion is switched.
+- "Last 30 minutes" keeps requests without a readable time.
+- A log whose requests are all excluded gives a dashboard that says so, not an error.
+
+Not carried over, because nothing on the page or in the report used it:
+
+- The list of full referrer addresses (`referrers`). The page and the report show referring sites.
+- The raw text of each line.
+- The requests grouped by address (`ip_log_entries`). Only the "AbuseIPDB Results" table of the report read it, and that table is never drawn: it needs an `abuse_score` on each address, and the scan on the page keeps its scores elsewhere (`scannedAbuseData`). This was so before the change. The window that lists the requests of one address asks the engine.
+
+Cost: a pasted text stays in memory next to the columns, because sharing and re-reading need it.
+
+Sharing: uploaded files are not held as text, so they are read when the share link is made (`LogEngine.readText`, up to 400 MB, the limit of `/api/storage/upload`). This also makes sharing work after a single uploaded file, which sent an empty text before (`upload-parity.spec.ts`).
+
+The tests that compared the two engines with each other (`engine-parity.test.js`, parts of `request-rate.test.js`) now compare the engine with the log: each test log is generated from a list of requests, and every number is recounted from that list (`tests/unit/engine-result.test.js`).
 
 Seen while generating sample logs and not changed: a flood spread over many addresses stays "human" as long as each address stays under 120 page requests a minute (`THRESHOLDS.floodPerMinute`).
 
 ## 2. How this was checked
 
-- The browser scripts were loaded into Node and driven through both engines (paste and upload) with small logs whose correct answer is known in advance.
+- The browser scripts were loaded into Node and driven through both engines of that time (paste and upload) with small logs whose correct answer is known in advance.
 - The eleven parser scripts of the 2026-11-26 review were run again against this branch. Their output is unchanged except where the classifier branch changed behaviour on purpose.
 - Path numbers on the page were read in a real browser (Playwright) from the build on `http://127.0.0.1:3020/nginx`.
 

@@ -314,7 +314,7 @@ describe('TrafficClassifier.aggregate', () => {
     });
 });
 
-describe('Both analysis paths classify the same', () => {
+describe('The engine classifies a whole log', () => {
     const lines = [];
     for (let i = 0; i < 30; i++) {
         lines.push(line('82.132.214.10', { url: `/products/item-${i}`, ref: 'https://shop.example/', status: i % 10 === 0 ? 404 : 200 }));
@@ -353,55 +353,45 @@ describe('Both analysis paths classify the same', () => {
 
     const classCounts = data => Object.fromEntries(data.traffic_classes.map(c => [c.key, c.requests]));
 
-    test('in-memory path', () => {
-        const parsed = LogParser.parseIPs(text, { skip403: false, skipInternal: false });
-        Analyzer.enrichLogEntries(parsed.logEntries);
-        const data = Analyzer.analyzeEnhancedLogs(parsed.logEntries);
-        assert.deepEqual(classCounts(data), expected);
-        assert.equal(data.human_requests, 60);
-        assert.equal(data.other_bots_count, 17);
-
-        // A filtered part of the log keeps each request in its class.
-        const errors = parsed.logEntries.filter(e => e.status_code >= 400);
-        assert.deepEqual(classCounts(Analyzer.analyzeEnhancedLogs(errors)), {
+    test('a filtered part of the log keeps each request in its class', () => {
+        // Every response from 400 up in this log is a 401 or a 404.
+        const errors = Analyzer.analyzeFromWorkerSummary(runWorker().filter({ statusCategory: '4xx' }).summary);
+        assert.deepEqual(classCounts(errors), {
             human: 3, verified: 0, unverified: 0, spoofed: 5, automated: 7, suspected: 4,
         });
     });
 
-    test('streaming worker path', () => {
+    test('every request is in one class', () => {
         const { enriched } = runWorker();
         const data = Analyzer.analyzeFromWorkerSummary(enriched.summary);
         assert.deepEqual(classCounts(data), expected);
         assert.equal(data.total_requests, 90);
         assert.equal(data.human_requests, 60);
+        assert.equal(data.other_bots_count, 17);
         assert.ok(!data.bot_groups.some(g => g.group_name === 'None'), 'humans must not be listed as a bot');
     });
 
-    test('both paths list the same bot groups', () => {
-        const parsed = LogParser.parseIPs(text, { skip403: false, skipInternal: false });
-        Analyzer.enrichLogEntries(parsed.logEntries);
-        const memory = Analyzer.analyzeEnhancedLogs(parsed.logEntries);
-        const worker = Analyzer.analyzeFromWorkerSummary(runWorker().enriched.summary);
-        const shape = data => data.bot_groups.map(g => [g.group_name, g.requests, g.unique_ips, g.verification_status, g.sub_bots.map(b => [b.bot_name, b.requests])]);
-        assert.deepEqual(shape(worker), shape(memory));
-        assert.deepEqual(worker.spoofed_bot_ips, memory.spoofed_bot_ips);
+    test('bot groups, with their bots and addresses', () => {
+        const data = Analyzer.analyzeFromWorkerSummary(runWorker().enriched.summary);
+        const shape = data.bot_groups.map(g => [g.group_name, g.requests, g.unique_ips, g.verification_status, g.sub_bots.map(b => [b.bot_name, b.requests])]);
+        assert.deepEqual(shape, [
+            // 8 requests from Google's range and 5 from elsewhere under the same name.
+            ['Google', 13, 2, 'mixed', [['Googlebot', 13]]],
+            ['Scripts & HTTP libraries', 7, 1, 'automated', [['cURL / Wget', 7]]],
+            // No ranges are known for Bing, so its name cannot be checked.
+            ['Microsoft', 6, 1, 'unverified', [['Bingbot', 6]]],
+            ['Suspected automation', 4, 1, 'suspected', [['Vulnerability probing', 4]]],
+        ]);
+        assert.deepEqual(data.spoofed_bot_ips, ['185.220.101.5']);
     });
 
-    test('both paths group referrers by site and count requests without one', () => {
-        const parsed = LogParser.parseIPs(text, { skip403: false, skipInternal: false });
-        Analyzer.enrichLogEntries(parsed.logEntries);
-        const memory = Analyzer.analyzeEnhancedLogs(parsed.logEntries);
+    test('referrers are grouped by site, and requests without one are counted', () => {
         const { enriched, filter } = runWorker();
-        const worker = Analyzer.analyzeFromWorkerSummary(enriched.summary);
+        const data = Analyzer.analyzeFromWorkerSummary(enriched.summary);
         // 30 pages named the shop's home page, 30 stylesheets one product page each: one site.
-        assert.deepEqual(memory.referrer_sites, [{ site: 'shop.example', hits: 60, pct: 66.7 }]);
-        assert.equal(memory.direct_requests, 30);
-        assert.equal(memory.referrer_site_count, 1);
-        assert.deepEqual(worker.referrer_sites, memory.referrer_sites);
-        assert.equal(worker.direct_requests, memory.direct_requests);
-        assert.equal(worker.referrer_site_count, memory.referrer_site_count);
-        // The full list is unchanged in the in-memory engine.
-        assert.equal(memory.referrers.find(r => r.referrer === '-').hits, 30);
+        assert.deepEqual(data.referrer_sites, [{ site: 'shop.example', hits: 60, pct: 66.7 }]);
+        assert.equal(data.direct_requests, 30);
+        assert.equal(data.referrer_site_count, 1);
 
         const bots = Analyzer.analyzeFromWorkerSummary(filter({ bot: 'all_bots' }).summary);
         assert.deepEqual([bots.referrer_sites, bots.direct_requests], [[], 30]);

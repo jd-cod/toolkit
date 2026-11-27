@@ -30,26 +30,29 @@ const Dashboard = (() => {
 
 
     // Filter Bar & Log Explorer state
-    let originalEnrichedEntries = [];
     let originalParseResult = null;
     let originalTimeRange = null;
-    // Dropdown choices of the whole log, kept while a filter narrows the result.
+    // Of the whole log, kept while a filter narrows the result: the dropdown
+    // choices, the number of requests and the requests over time.
     let wholeLogOptions = null;
-    let uploadTotalRequests = 0;
-    let uploadRateSeries = null; // requests over time of the whole uploaded log
-    let currentReanalyze = null; // re-reads an uploaded file with other exclusions, when it can be
+    let wholeLogRequests = 0;
+    let wholeLogRateSeries = null;
+    // The sources of the log (text, files), to read again when an exclusion is
+    // switched. Null when one of them was a stream, which is gone once read.
+    let currentSources = null;
     let timelineDragEvents = null;
     let modalKeyEvents = null;
-    let currentFilteredEntries = [];
     let activeFilters = DashboardFilters.none();
     let activeTimeMinutes = 0;
     let maxLogTimestamp = 0;
     let explorerPage = 1;
     let explorerPerPage = 25;
-    let explorerSortField = 'timestamp';
-    let explorerSortDir = 'desc';
     let _filterDebounceTimer = null;
+    // The engine that holds the log (see LogEngine).
     let activeWorker = null;
+    let filterRequests = 0;
+    let explorerRequests = 0;
+    let ipLogRequests = 0;
     let latestPageResult = null;
     let latestSummary = null;
     let activeSessionId = null;
@@ -624,85 +627,32 @@ const Dashboard = (() => {
         renderToastNotification();
     }
 
-    /** @param {Blob|ReadableStream} input - A File where there is one, so a gzip archive can be read completely. */
+    /**
+     * Add a source to the analysis shown.
+     * @param {string|Blob|ReadableStream} input - A File where there is one, so a gzip archive can be read completely.
+     */
     async function appendLogStream(input) {
-        const warnings = [];
-        const isFile = typeof Blob !== 'undefined' && input instanceof Blob;
-        const decompressed = typeof peekAndDecompressStream === 'function'
-            ? await peekAndDecompressStream(input, { onWarning: message => warnings.push(isFile && input.name ? `${input.name}: ${message}` : message) })
-            : (isFile ? input.stream() : input);
-        const inputWarnings = () => [...(originalParseResult?.inputWarnings || []), ...warnings];
-
-        if (activeWorker && typeof appendStreamToWorker === 'function') {
-            const result = await appendStreamToWorker(decompressed, activeWorker, parserOptions(currentSkip403, currentSkipInternal, currentClientIp));
-            currentNodeCount++;
-            const mergedData = Analyzer.analyzeFromWorkerSummary(result.summary);
-            latestSummary = result.summary;
-            latestPageResult = result.pageResult;
-            const mergedParseResult = {
-                parsedLines: new Array(result.summary.matchingCount || 0),
-                // The worker counts excluded lines; it does not keep their text.
-                skippedLines: new Array(result.totalLinesSkipped || 0),
-                skipCounts: result.skipCounts || {},
-                forwardedLines: result.forwardedLines || 0,
-                validLines: (result.summary.matchingCount || 0) + (result.totalLinesSkipped || 0) - ((result.skipCounts && result.skipCounts.invalid) || 0),
-                minTimestamp: result.summary.minTimeSec ? result.summary.minTimeSec * 1000 : 0,
-                maxTimestamp: result.summary.maxTimeSec ? result.summary.maxTimeSec * 1000 : 0,
-                logSpanMinutes: result.summary.minTimeSec && result.summary.maxTimeSec
-                    ? Math.floor((result.summary.maxTimeSec - result.summary.minTimeSec) / 60)
-                    : 0,
-                logStart: result.summary.minTimeSec ? new Date(result.summary.minTimeSec * 1000).toUTCString() : '',
-                logEnd: result.summary.maxTimeSec ? new Date(result.summary.maxTimeSec * 1000).toUTCString() : '',
-                inputWarnings: inputWarnings(),
-            };
-            originalParseResult = mergedParseResult;
-            render(mergedData, currentLogText, mergedParseResult, {
-                preserveFilters: false,
-                worker: activeWorker,
-                summary: result.summary,
-                pageResult: result.pageResult,
-                nodeCount: currentNodeCount,
-                sessionId: activeSessionId
-            });
-            return;
-        }
-
-        // In-memory fallback
-        const text = typeof readStreamAsText === 'function' ? await readStreamAsText(decompressed) : await new Response(decompressed).text();
-        await appendLogText(text, warnings);
-    }
-
-    async function appendLogText(text, warnings = []) {
-        if (activeWorker && typeof appendStreamToWorker === 'function') {
-            const blob = new Blob([text]);
-            await appendLogStream(blob.stream());
-            return;
-        }
-
-        // In-memory path
-        currentLogText = (currentLogText ? currentLogText + '\n' : '') + text;
-        const appendParse = await LogParser.parseAsync(text, parserOptions(currentSkip403, currentSkipInternal, currentClientIp));
-        // A client is judged by all of its requests, so classify the merged log.
-        originalEnrichedEntries = originalEnrichedEntries.concat(appendParse.logEntries);
-        Analyzer.enrichLogEntries(originalEnrichedEntries);
-        const mergedData = Analyzer.analyzeEnhancedLogs(originalEnrichedEntries);
+        const result = await LogEngine.append(activeWorker, input, parserOptions(currentSkip403, currentSkipInternal, currentClientIp));
         currentNodeCount++;
-
-        const mergedParseResult = {
-            ...(originalParseResult || {}),
-            logEntries: originalEnrichedEntries,
-            parsedLines: new Array(mergedData.total_requests),
-            validLines: mergedData.total_requests,
-            skippedLines: (originalParseResult?.skippedLines || []).concat(appendParse.skippedLines || []),
-            inputWarnings: [...(originalParseResult?.inputWarnings || []), ...warnings]
-        };
-        originalParseResult = mergedParseResult;
-
-        render(mergedData, currentLogText, mergedParseResult, {
+        if (typeof input === 'string' && currentLogText) currentLogText += '\n' + input;
+        const sources = currentSources && LogEngine.canReread(input) ? [...currentSources, input] : null;
+        const warnings = [...(originalParseResult?.inputWarnings || []), ...(result.parseResult.inputWarnings || [])];
+        if (warnings.length) result.parseResult.inputWarnings = warnings;
+        render(result.data, currentLogText, result.parseResult, {
             preserveFilters: false,
+            source: currentInputSource, sourceLabel: currentSourceLabel, readOnly: currentReadOnly,
+            skip403: currentSkip403, skipInternal: currentSkipInternal, clientIp: currentClientIp,
+            sources,
+            worker: activeWorker,
+            summary: result.summary,
+            pageResult: result.pageResult,
             nodeCount: currentNodeCount,
             sessionId: activeSessionId
         });
+    }
+
+    async function appendLogText(text) {
+        await appendLogStream(text);
     }
 
     async function appendLogFile(file) {
@@ -720,9 +670,9 @@ const Dashboard = (() => {
     function viewState() {
         return {
             activeFilters, activeRpsResolution, sliderStartPct, sliderEndPct, latestSummary,
-            activeTimeMinutes, explorerPerPage, originalEnrichedEntries, currentClientIp, originalParseResult,
-            latestPageResult, currentFilteredEntries, uploadTotalRequests, hasActiveFilters, getSelectedTimeRange,
-            getGlobalTimeRange, customHoursVal, currentSkipInternal, currentSkip403, currentReanalyze,
+            activeTimeMinutes, explorerPerPage, currentClientIp, originalParseResult,
+            latestPageResult, wholeLogRequests, hasActiveFilters, getSelectedTimeRange,
+            getGlobalTimeRange, customHoursVal, currentSkipInternal, currentSkip403, currentSources,
         };
     }
 
@@ -826,37 +776,12 @@ const Dashboard = (() => {
         if (options.worker) {
             releaseWorker(options.worker);
             activeWorker = options.worker;
-            activeWorker.onmessage = (e) => {
-                const msg = e.data || {};
-                if (msg.reqId === 'ip_logs') {
-                    renderIPLogsModal(msg.ip, msg.pageResult);
-                } else if (msg.type === 'page_result') {
-                    latestPageResult = msg.pageResult;
-                    renderExplorerRowsAndPagination(msg.pageResult);
-                } else if (msg.type === 'filter_result') {
-                    latestSummary = msg.summary;
-                    latestPageResult = msg.pageResult;
-                    const filteredData = Analyzer.analyzeFromWorkerSummary(msg.summary);
-                    render(filteredData, currentLogText, originalParseResult, {
-                        preserveFilters: true,
-                        worker: activeWorker,
-                        summary: msg.summary,
-                        pageResult: msg.pageResult
-                    });
-                }
-            };
         }
         if (options.pageResult) {
             latestPageResult = options.pageResult;
         }
         if (options.summary) {
             latestSummary = options.summary;
-        }
-        if (!options.preserveFilters && !options.worker) {
-            releaseWorker(null);
-            activeWorker = null;
-            latestPageResult = null;
-            latestSummary = null;
         }
 
         if (options.sessionId) {
@@ -885,8 +810,7 @@ const Dashboard = (() => {
         }
 
         if (!options.preserveFilters) {
-            currentReanalyze = typeof options.reanalyze === 'function' ? options.reanalyze : null;
-            originalEnrichedEntries = (parseResult?.logEntries || []).slice();
+            currentSources = Array.isArray(options.sources) && options.sources.length ? options.sources : null;
             originalParseResult = parseResult;
             originalTimeRange = null;
             sliderStartPct = 0;
@@ -894,36 +818,16 @@ const Dashboard = (() => {
             activeFilters = DashboardFilters.none();
             activeTimeMinutes = 0;
             maxLogTimestamp = parseResult?.maxTimestamp || 0;
-            if (!maxLogTimestamp && originalEnrichedEntries.length > 0) {
-                for (let i = 0; i < originalEnrichedEntries.length; i++) {
-                    const t = originalEnrichedEntries[i].timestamp;
-                    if (!t) continue;
-                    const ms = t instanceof Date ? t.getTime() : (typeof t === 'number' ? t : new Date(t).getTime());
-                    if (!isNaN(ms) && ms > maxLogTimestamp) maxLogTimestamp = ms;
-                }
-            }
             explorerPage = 1;
             explorerPerPage = 25;
-            explorerSortField = 'timestamp';
-            explorerSortDir = 'desc';
             activeRpsResolution = '1'; // QA13: fixed resolution set
-            currentFilteredEntries = originalEnrichedEntries.slice();
-            sortExplorerEntries();
-        } else if (data && activeRpsResolution !== 'auto') {
-            // QA5: intentionally NOT recomputing request_rate from
-            // currentFilteredEntries here — renderRequestRateChart reads the
-            // full originalEnrichedEntries itself, so a re-render never
-            // overwrites the chart data with a subset.
         }
 
-        // The choices offered are those of the whole log. `data` is the whole
-        // log whenever no filter is active.
+        // `data` is the whole log whenever no filter is active.
         if (!wholeLogOptions || !options.preserveFilters || !hasActiveFilters()) {
             wholeLogOptions = DashboardFilters.options(data);
-            if (!originalEnrichedEntries.length) {
-                uploadTotalRequests = data?.total_requests || 0;
-                uploadRateSeries = (options.summary || latestSummary)?.rateSeries || null;
-            }
+            wholeLogRequests = data?.total_requests || 0;
+            wholeLogRateSeries = (options.summary || latestSummary)?.rateSeries || null;
         }
         const filterOptions = wholeLogOptions;
         const container = document.getElementById('nginx-dashboard');
@@ -936,7 +840,7 @@ const Dashboard = (() => {
         document.querySelectorAll('.sample-bar').forEach(el => el.style.setProperty('display', 'none'));
 
         const totalRequests = data.total_requests;
-        const skippedLines = parseResult ? parseResult.skippedLines.length : 0;
+        const skippedLines = parseResult ? parseResult.skippedCount : 0;
         const humanPct = totalRequests ? Math.round(data.human_requests / totalRequests * 100) : 0;
         const verifiedCount = data.verified_bots_count || 0;
         const spoofedCount = data.spoofed_bots_count || 0;
@@ -949,9 +853,11 @@ const Dashboard = (() => {
         const errorCount = (data.http_metrics?.status_categories?.['4xx'] || 0) + (data.http_metrics?.status_categories?.['5xx'] || 0);
         const errorPct = totalRequests ? (errorCount / totalRequests * 100).toFixed(1) : '0.0';
 
-        // A filter change rebuilds the page. Keep the caret in the box being typed in.
-        const typingIn = options.preserveFilters && container.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && document.activeElement.type === 'text'
-            ? { id: document.activeElement.id, caret: document.activeElement.selectionStart } : null;
+        // A filter change rebuilds the page. Keep the focus where it is, and
+        // the caret in a box being typed in.
+        const active = document.activeElement;
+        const focused = options.preserveFilters && active && active.id && container.contains(active)
+            ? { id: active.id, caret: active.tagName === 'INPUT' && active.type === 'text' ? active.selectionStart : null } : null;
 
         container.innerHTML = `
             <header class="signal-dashboard-heading"><div><p class="signal-eyebrow">Traffic intelligence</p><h1>Traffic log overview</h1><p>The story behind your requests. Traffic, patterns, and what needs a closer look.</p></div></header>
@@ -999,7 +905,7 @@ const Dashboard = (() => {
                     </button>
                 </div>
                 <div style="font-size:0.78rem;color:var(--text-muted);display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-                    <span><strong style="color:var(--text-primary);">Parsed:</strong> ${numberWithCommas(parseResult ? parseResult.parsedLines.length : totalRequests)} lines</span>
+                    <span><strong style="color:var(--text-primary);">Parsed:</strong> ${numberWithCommas(parseResult ? parseResult.parsedCount : totalRequests)} lines</span>
                     <span style="color:rgba(255,255,255,0.2);">|</span>
                     <span><strong style="color:var(--text-primary);">Skipped:</strong> ${numberWithCommas(skippedLines)} lines</span>
                     ${parseResult?.forwardedLines > 0 ? `
@@ -1141,7 +1047,7 @@ const Dashboard = (() => {
             <!-- Floating Clear Active Filters Capsule Button -->
             <div id="floating-clear-filters-btn" class="floating-clear-pill" style="display:${hasActiveFilters() ? 'flex' : 'none'};">
                 <span style="width:8px;height:8px;border-radius:50%;background:var(--accent-red);box-shadow:0 0 8px var(--accent-red);"></span>
-                <span style="font-size:0.76rem;font-weight:700;color:#fff;">✕ Clear Active Filters (${getActiveFilterCount()} active · ${numberWithCommas(latestPageResult ? latestPageResult.totalRows : (latestSummary ? latestSummary.matchingCount : currentFilteredEntries.length))} hits)</span>
+                <span style="font-size:0.76rem;font-weight:700;color:#fff;">✕ Clear Active Filters (${getActiveFilterCount()} active · ${numberWithCommas(latestPageResult ? latestPageResult.totalRows : (latestSummary ? latestSummary.matchingCount : 0))} hits)</span>
             </div>
             
             <!-- IP Access Log Modal (hidden) -->
@@ -1161,12 +1067,14 @@ const Dashboard = (() => {
         if (currentReadOnly) ['dash-back-btn', 'dash-share-btn', 'dash-download-btn'].forEach(id => { container.querySelector(`#${id}`).hidden = true; });
         ensureAddLogsModal();
         bindEvents(data, parseResult);
-        if (typingIn && typingIn.id) {
-            const box = document.getElementById(typingIn.id);
-            if (box && box !== document.activeElement) {
-                box.focus({ preventScroll: true });
-                const caret = Math.min(typingIn.caret ?? box.value.length, box.value.length);
-                try { box.setSelectionRange(caret, caret); } catch { /* not a text box */ }
+        if (focused) {
+            const element = document.getElementById(focused.id);
+            if (element && element !== document.activeElement) {
+                element.focus({ preventScroll: true });
+                if (focused.caret !== null) {
+                    const caret = Math.min(focused.caret, element.value.length);
+                    try { element.setSelectionRange(caret, caret); } catch { /* not a text box */ }
+                }
             }
         }
         // All result sections share one view; initialize every visualization immediately.
@@ -1210,47 +1118,32 @@ const Dashboard = (() => {
         fieldset.disabled = true;
         fieldset.setAttribute('aria-busy', 'true');
         document.getElementById('dash-exclusion-status').textContent = 'Recalculating exclusions…';
-        if (!originalEnrichedEntries.length && latestSummary && currentReanalyze) {
-            // Upload: read the file again. A successful run renders a new dashboard.
-            try {
-                await currentReanalyze({ skip403, skipInternal, clientIp, isCurrent: () => revision === exclusionRevision });
-            } catch (err) {
-                console.error('Re-reading the file failed:', err);
-            }
-            if (document.getElementById('dashboard-exclusions') !== fieldset) {
-                // A new dashboard was rendered from the file.
-                showAnalysisOptions(skip403, skipInternal, clientIp);
-                document.getElementById(focusId)?.focus({ preventScroll: true });
+        try {
+            // The sources are read again: these are choices about the log, not view filters.
+            const result = await LogEngine.analyze(currentSources, parserOptions(skip403, skipInternal, clientIp));
+            if (revision !== exclusionRevision) {
+                result.worker.terminate();
                 return;
             }
-            if (revision !== exclusionRevision) return;
-            // Nothing was rendered: the file could not be read again.
-            fieldset.disabled = false;
-            fieldset.removeAttribute('aria-busy');
-            showAnalysisOptions(...before);
-            document.getElementById('dash-exclusion-status').textContent = 'Could not read the file again. Start a new analysis to change these options.';
-            return;
-        }
-        try {
-            const parseResult = await LogParser.parseAsync(currentLogText, parserOptions(skip403, skipInternal, clientIp));
-            if (revision !== exclusionRevision) return;
-            if (originalParseResult?.inputWarnings?.length) parseResult.inputWarnings = originalParseResult.inputWarnings;
-            Analyzer.enrichLogEntries(parseResult.logEntries);
-            const data = Analyzer.analyzeEnhancedLogs(parseResult.logEntries);
             showAnalysisOptions(skip403, skipInternal, clientIp);
-            // Do not re-fetch a remote/one-time source: the original text is
-            // already in memory. These are dataset policies, not view filters.
-            render(data, currentLogText, parseResult, {
+            render(result.data, currentLogText, result.parseResult, {
                 source: currentInputSource, sourceLabel: currentSourceLabel,
                 gistUrl: currentGistUrl, readOnly: currentReadOnly, skip403, skipInternal, clientIp,
+                sources: currentSources,
+                worker: result.worker,
+                summary: result.summary,
+                pageResult: result.pageResult,
+                nodeCount: currentNodeCount,
+                sessionId: activeSessionId,
             });
             document.getElementById(focusId)?.focus({ preventScroll: true });
-        } catch {
+        } catch (err) {
             if (revision !== exclusionRevision) return;
+            console.error('Reading the log again failed:', err);
             fieldset.disabled = false;
             fieldset.removeAttribute('aria-busy');
             showAnalysisOptions(...before);
-            document.getElementById('dash-exclusion-status').textContent = 'Could not recalculate exclusions. Please try again.';
+            document.getElementById('dash-exclusion-status').textContent = 'Could not read the log again. Start a new analysis to change these options.';
         }
     }
 
@@ -1330,8 +1223,11 @@ const Dashboard = (() => {
         // Share button
         document.getElementById('dash-share-btn')?.addEventListener('click', () => {
             if (currentData && typeof ShareModal !== 'undefined') {
+                const sources = currentSources;
                 ShareModal.open(currentData, parseResult, {
                     logText: currentLogText,
+                    // Uploaded files are not held as text; they are read when the link is made.
+                    readLogText: sources ? () => readSourcesForSharing(sources) : null,
                     gistUrl: currentGistUrl,
                     inputSource: currentInputSource,
                 });
@@ -1445,11 +1341,9 @@ const Dashboard = (() => {
         // filter. Rebuilding it from the time-filtered subset on every drag
         // made the graph morph under the handles.
         const resolution = (activeRpsResolution && activeRpsResolution !== 'auto') ? activeRpsResolution : undefined;
-        const reqRate = (originalEnrichedEntries && originalEnrichedEntries.length > 0)
-            ? Analyzer.computeRequestRate(originalEnrichedEntries, { resolution })
-            : (uploadRateSeries
-                ? Analyzer.requestRateFromSeries(uploadRateSeries, { resolution })
-                : (currentData?.request_rate || { buckets: [] }));
+        const reqRate = wholeLogRateSeries
+            ? Analyzer.requestRateFromSeries(wholeLogRateSeries, { resolution })
+            : (currentData?.request_rate || { buckets: [] });
         const rawBuckets = reqRate?.buckets || reqRate?.data_points || [];
         const buckets = Array.isArray(rawBuckets) ? rawBuckets : [];
         const range = getGlobalTimeRange();
@@ -1675,9 +1569,7 @@ const Dashboard = (() => {
 
                 activeRpsResolution = btn.dataset.res;
                 if (currentData) {
-                    // QA5: renderRequestRateChart reads the full
-                    // originalEnrichedEntries itself, so no need to pre-compute
-                    // request_rate from the filtered subset here.
+                    // QA5: renderRequestRateChart shows the whole log, whatever the filters.
                     renderRequestRateChart();
                 }
             };
@@ -1807,6 +1699,14 @@ const Dashboard = (() => {
         document.getElementById('ip-log-modal-show-all')?.addEventListener('click', () => showIPLogs(ip, { all: true }));
     }
 
+    const SHARE_LIMIT_BYTES = 400 * 1024 * 1024; // what /api/storage/upload accepts
+
+    function readSourcesForSharing(sources) {
+        const bytes = sources.reduce((sum, source) => sum + (typeof source === 'string' ? source.length : source.size || 0), 0);
+        if (bytes > SHARE_LIMIT_BYTES) return Promise.reject(new Error('the log is larger than 400 MB, the limit for a shared link.'));
+        return LogEngine.readText(sources);
+    }
+
     function showIPLogs(ip, options = {}) {
         const modal = document.getElementById('ip-log-modal');
         const title = document.getElementById('ip-log-modal-title');
@@ -1814,24 +1714,20 @@ const Dashboard = (() => {
         if (!modal || !body) return;
         ipLogsFiltered = !options.all && filtersNarrowAnAddress();
 
-        if (activeWorker) {
-            title.innerHTML = `<i class="bi bi-journal-text" style="margin-right:8px;"></i>Access Logs for <span class="ip-code">${escapeHtml(ip)}</span>`;
-            body.innerHTML = `<div style="padding:16px;color:var(--text-muted);font-family:var(--font-mono);font-size:0.75rem;">Loading logs for ${escapeHtml(ip)}...</div>`;
-            modal.style.display = 'flex';
-            activeWorker.postMessage({
-                action: 'get_page',
-                reqId: 'ip_logs',
-                ip,
-                pageNumber: 1,
-                pageSize: 100,
-                filters: ipLogsFiltered ? Object.assign(currentWorkerFilters(), { ipSearch: ip }) : { ipSearch: ip }
-            });
-            return;
-        }
-
-        const entries = (ipLogsFiltered ? currentFilteredEntries : originalEnrichedEntries).filter(e => e.ip === ip);
-        renderIPLogsModal(ip, { rows: entries, totalRows: entries.length });
+        title.innerHTML = `<i class="bi bi-journal-text" style="margin-right:8px;"></i>Access Logs for <span class="ip-code">${escapeHtml(ip)}</span>`;
+        body.innerHTML = `<div style="padding:16px;color:var(--text-muted);font-family:var(--font-mono);font-size:0.75rem;">Loading logs for ${escapeHtml(ip)}...</div>`;
         modal.style.display = 'flex';
+        const worker = activeWorker;
+        if (!worker) return;
+        const request = ++ipLogRequests;
+        // In the order of the log: what the address did, step by step.
+        LogEngine.rows(worker, {
+            pageSize: 100,
+            order: 'file',
+            filters: ipLogsFiltered ? Object.assign(currentWorkerFilters(), { ipSearch: ip }) : { ipSearch: ip },
+        }).then(pageResult => {
+            if (request === ipLogRequests && worker === activeWorker) renderIPLogsModal(ip, pageResult);
+        }).catch(err => console.error('The requests of the address could not be read:', err));
     }
 
 
@@ -1844,7 +1740,7 @@ const Dashboard = (() => {
     // Traffic class of a log entry. Entries enriched before the classifier
     // existed only carry bot_status.
 
-    // The chosen stretch of the log, or null for all of it (see DashboardFilters.apply).
+    // The chosen stretch of the log, or null for all of it (see DashboardFilters.forWorker).
     function currentTimeWindow() {
         if (sliderStartPct > 0 || sliderEndPct < 100) {
             const window = getSelectedTimeRange();
@@ -1864,7 +1760,7 @@ const Dashboard = (() => {
         return DashboardFilters.count(activeFilters) + (sliderStartPct > 0 || sliderEndPct < 100 ? 1 : 0);
     }
 
-    // The active filters in the form the worker takes.
+    // The active filters in the form the engine takes.
     function currentWorkerFilters() {
         return DashboardFilters.forWorker(activeFilters, currentTimeWindow());
     }
@@ -1879,21 +1775,7 @@ const Dashboard = (() => {
             originalTimeRange = { minTs: parsedMin, maxTs: parsedMax, totalSpan: parsedMax - parsedMin };
             return originalTimeRange;
         }
-        if (!originalEnrichedEntries || originalEnrichedEntries.length === 0) return null;
-        let minTs = Infinity;
-        let maxTs = -Infinity;
-        for (let i = 0; i < originalEnrichedEntries.length; i++) {
-            const t = originalEnrichedEntries[i].timestamp;
-            if (t == null) continue;
-            const ms = t instanceof Date ? t.getTime() : (typeof t === 'number' ? t : new Date(t).getTime());
-            if (!isNaN(ms)) {
-                if (ms < minTs) minTs = ms;
-                if (ms > maxTs) maxTs = ms;
-            }
-        }
-        if (minTs === Infinity || maxTs === -Infinity) return null;
-        originalTimeRange = { minTs, maxTs, totalSpan: maxTs - minTs };
-        return originalTimeRange;
+        return null;
     }
 
 
@@ -2033,39 +1915,23 @@ const Dashboard = (() => {
 
     function requestExplorerPage(pageNumber) {
         explorerPage = pageNumber;
-        if (activeWorker) {
-            const workerFilters = currentWorkerFilters();
-            activeWorker.postMessage({
-                action: 'get_page',
-                pageNumber: explorerPage,
-                pageSize: explorerPerPage,
-                filters: workerFilters
-            });
-            return;
-        }
-        updateExplorerView();
+        const worker = activeWorker;
+        if (!worker) return;
+        const request = ++explorerRequests;
+        LogEngine.rows(worker, { page: explorerPage, pageSize: explorerPerPage, filters: currentWorkerFilters() }).then(pageResult => {
+            // A later request, or another analysis, has taken over.
+            if (request !== explorerRequests || worker !== activeWorker) return;
+            latestPageResult = pageResult;
+            renderExplorerRowsAndPagination(pageResult);
+        }).catch(err => console.error('The page of requests could not be read:', err));
     }
 
     function updateExplorerView() {
-        if (activeWorker && latestPageResult) {
-            if (latestPageResult.page === explorerPage && latestPageResult.pageSize === explorerPerPage) {
-                renderExplorerRowsAndPagination(latestPageResult);
-                return;
-            }
-            requestExplorerPage(explorerPage);
+        if (latestPageResult && latestPageResult.page === explorerPage && latestPageResult.pageSize === explorerPerPage) {
+            renderExplorerRowsAndPagination(latestPageResult);
             return;
         }
-        const startIdx = (explorerPage - 1) * explorerPerPage;
-        const pageEntries = currentFilteredEntries.slice(startIdx, startIdx + explorerPerPage);
-        const totalRows = currentFilteredEntries.length;
-        const totalPages = Math.ceil(totalRows / explorerPerPage) || 1;
-        renderExplorerRowsAndPagination({
-            page: explorerPage,
-            pageSize: explorerPerPage,
-            totalPages,
-            totalRows,
-            rows: pageEntries
-        });
+        requestExplorerPage(explorerPage);
     }
 
     function bindExplorerTableEvents() {
@@ -2305,42 +2171,25 @@ const Dashboard = (() => {
                     else sliderEndPct = Math.min(100, Math.max(next, sliderStartPct + minimumGap));
                     activeTimeMinutes = 0;
                     applyAndRenderFilters();
-                    document.getElementById(`handle-${side}`)?.focus();
                 }, listenerOptions);
             }
         }
     }
 
-    function sortExplorerEntries() {
-        currentFilteredEntries.sort((a, b) => {
-            let valA = a[explorerSortField];
-            let valB = b[explorerSortField];
-            if (explorerSortField === 'timestamp') {
-                valA = valA instanceof Date ? valA.getTime() : new Date(valA).getTime() || 0;
-                valB = valB instanceof Date ? valB.getTime() : new Date(valB).getTime() || 0;
-            }
-            if (valA < valB) return explorerSortDir === 'asc' ? -1 : 1;
-            if (valA > valB) return explorerSortDir === 'asc' ? 1 : -1;
-            return 0;
-        });
-    }
-
     function applyAndRenderFilters() {
-        if (activeWorker) {
-            explorerPage = 1;
-            const workerFilters = currentWorkerFilters();
-            activeWorker.postMessage({
-                action: 'filter',
-                filters: workerFilters
-            });
-            return;
-        }
-        currentFilteredEntries = DashboardFilters.apply(originalEnrichedEntries, activeFilters, currentTimeWindow());
-        sortExplorerEntries();
+        const worker = activeWorker;
+        if (!worker) return;
         explorerPage = 1;
-
-        const newData = Analyzer.analyzeEnhancedLogs(currentFilteredEntries);
-        render(newData, currentLogText, originalParseResult, { preserveFilters: true });
+        const request = ++filterRequests;
+        LogEngine.filter(worker, currentWorkerFilters()).then(result => {
+            // A later filter change, or another analysis, has taken over.
+            if (request !== filterRequests || worker !== activeWorker) return;
+            render(result.data, currentLogText, originalParseResult, {
+                preserveFilters: true,
+                summary: result.summary,
+                pageResult: result.pageResult,
+            });
+        }).catch(err => console.error('The filters could not be applied:', err));
     }
 
     
@@ -2423,7 +2272,7 @@ const Dashboard = (() => {
 
 
 
-    // A parser worker holds the whole uploaded log. One that no dashboard
+    // The engine holds the whole log. One that no dashboard
     // uses any more is stopped, or each analysis would leave its copy behind.
     function releaseWorker(next) {
         if (activeWorker && activeWorker !== next) {
@@ -2461,8 +2310,7 @@ const Dashboard = (() => {
         countryChart = asnChart = rpsChart = null;
         currentData = null;
         currentLogText = '';
-        originalEnrichedEntries = [];
-        currentFilteredEntries = [];
+        currentSources = null;
         originalParseResult = null;
         originalTimeRange = null;
     }

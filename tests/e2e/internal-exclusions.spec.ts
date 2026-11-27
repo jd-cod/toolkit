@@ -36,7 +36,7 @@ async function analyze(page: Page, log = LOG) {
   await expect(page.locator('#dashboard-exclusions')).toBeVisible();
 }
 
-test('internal IP ranges and exact health paths are excluded identically in main thread and worker', async ({ page, console: watcher }) => {
+test('internal IP ranges and exact health paths are excluded by the engine', async ({ page, console: watcher }) => {
   await page.goto('/nginx', { waitUntil: 'domcontentloaded' });
   await waitForEngineReady(page);
   const internal = PRIVATE.map(ip => line(ip, '/internal', 200, 'curl/8.4.0'));
@@ -48,21 +48,31 @@ test('internal IP ranges and exact health paths are excluded identically in main
   const log = [...internal, ...health, ...external, privateBot403, public403, publicBot403].join('\n');
   for (const skipInternal of [true, false]) {
     for (const skip403 of [true, false]) {
-      const result = await page.evaluate(async ({ log, skipInternal, skip403 }) => {
-        const parser = (window as any).LogParser;
-        const options = { skipInternal, skip403 };
-        const direct = parser.parseIPs(log, options);
-        const worker = await parser.parseAsync(log, options);
-        return { equal: JSON.stringify(direct) === JSON.stringify(worker),
-          kept: direct.parsedLines.map((r: any) => r.line), counts: direct.skipCounts,
-          options: direct.options, private: direct.ips.filter((ip: string) => parser.isPrivateIP(ip)) };
-      }, { log, skipInternal, skip403 });
-      expect(result.equal).toBe(true);
-      expect(result.options).toEqual({ skipInternal, skip403 });
-      expect(result.kept).toEqual([
+      const expectedLines = [
         ...(!skipInternal ? [...internal, ...health] : []), ...external,
         ...(!skipInternal ? [privateBot403] : []), ...(!skip403 ? [public403] : []), publicBot403,
-      ]);
+      ];
+      const result = await page.evaluate(async ({ log, skipInternal, skip403, expectedLines }) => {
+        const runtime = window as any;
+        const parser = runtime.LogParser;
+        const analysis = await runtime.LogEngine.analyze(log, { skipInternal, skip403 });
+        const rows = await runtime.LogEngine.rows(analysis.worker, { filters: {}, order: 'file', pageSize: 1000 });
+        analysis.worker.terminate();
+        const key = (ip: string, url: string, status: number) => `${ip} ${url} ${status}`;
+        return {
+          total: analysis.data.total_requests,
+          kept: rows.rows.map((r: any) => key(r.ip, r.url, r.status_code)),
+          // The same requests, read line by line without any exclusion.
+          expected: expectedLines.map((line: string) => {
+            const read = parser.parseLine(line, { skipInternal: false, skip403: false });
+            return key(read.ip, read.url, read.statusCode);
+          }),
+          counts: analysis.parseResult.skipCounts,
+          private: rows.rows.map((r: any) => r.ip).filter((ip: string) => parser.isPrivateIP(ip)),
+        };
+      }, { log, skipInternal, skip403, expectedLines });
+      expect(result.total).toBe(expectedLines.length);
+      expect(result.kept).toEqual(result.expected);
       expect(result.counts).toEqual({ privateIP: skipInternal ? PRIVATE.length + 1 : 0,
         healthCheck: skipInternal ? HEALTH.length : 0, forbidden: skip403 ? 1 : 0, invalid: 0 });
       if (skipInternal) expect(result.private).toEqual([]);
@@ -142,16 +152,18 @@ test('all-internal logs show an explanatory empty result and can be included wit
 
 test('New Analysis cancels a pending exclusion recalculation without replacing the new input', async ({ page, console: watcher }) => {
   await analyze(page);
-  // Hold the asynchronous parse result so this interaction is deterministic,
-  // even on fast machines. The real parser still supplies the result.
+  // Hold the analysis so this interaction is deterministic, even on fast
+  // machines. The real engine still supplies the result.
   await page.evaluate(() => {
     const runtime = window as any;
-    const parser = runtime.LogParser;
-    const original = parser.parseAsync;
-    parser.parseAsync = (text: string, options: any) => new Promise(resolve => {
+    const engine = runtime.LogEngine;
+    const original = engine.analyze;
+    engine.analyze = (...args: unknown[]) => new Promise(resolve => {
       runtime.finishPendingExclusion = () => {
-        parser.parseAsync = original;
-        resolve(parser.parseIPs(text, options));
+        engine.analyze = original;
+        const analysis = original(...args);
+        resolve(analysis);
+        return analysis;
       };
     });
   });
@@ -162,8 +174,8 @@ test('New Analysis cancels a pending exclusion recalculation without replacing t
   const nextLog = line('8.8.8.8', '/new-analysis');
   await page.locator('#nginx-logtext').fill(nextLog);
   await page.evaluate(async () => {
-    (window as any).finishPendingExclusion();
-    // Let the parse promise and resulting render continuation finish.
+    await (window as any).finishPendingExclusion();
+    // Let what the dashboard does with the analysis finish.
     await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
   });
   await expect(page.locator('#nginx-input-section')).toBeVisible();

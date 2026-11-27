@@ -42,6 +42,7 @@ export async function loadNginxEngine() {
     'bot-detector',
     'traffic-classifier',
     'analyzer',
+    'log-engine',
     'dashboard-filters',
     'dashboard-views',
     'dashboard',

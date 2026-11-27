@@ -243,7 +243,7 @@ Status on 2026-11-27, after the fixes described in `PARSER_AND_IDENTIFICATION_RE
 | 10 | Fixed: the dashboard names the crawlers whose IP ranges are not loaded, and says when the range file could not be loaded at all |
 | 12 | Fixed: one shared GeoIP load that always finishes; a database that cannot be loaded leaves "Unknown" and a notice; only bytes that parse as a database are cached |
 | 13 | Fixed: Escape closes the address log window; Clear empties both pairs of search boxes (F12); the address window lists what the filters let through (F13); the path choices keep their order |
-| A1 | Partly: the engines give the same result object and are held to it by `tests/unit/engine-parity.test.js`; they are still two (see `PARSER_AND_IDENTIFICATION_REVIEW.md` section 1b) |
+| A1 | Fixed: one engine. Every source goes through `LogEngine.analyze` into the worker and its column store; the in-memory engine is removed (see `PARSER_AND_IDENTIFICATION_REVIEW.md` section 1c) |
 | A2 | Fixed: one result shape |
 | A3 | Fixed: `dashboard.js` is split into state, filter logic (`dashboard-filters.js`) and markup (`dashboard-views.js`); the latter two are tested without a browser |
 | A4 | Fixed: the script version is made at build time |

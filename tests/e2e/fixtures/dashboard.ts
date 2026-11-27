@@ -115,3 +115,36 @@ export async function waitForEngineReady(page: Page): Promise<void> {
 
   await expect(page.locator('#nginx-analyze-btn')).toHaveAttribute('data-engine-ready', 'true');
 }
+
+/** One line of a log as the parser reads it. `timestamp` is an ISO string, or null. */
+export type ReadLine = {
+  valid: boolean;
+  reason?: string;
+  reasonType?: string;
+  line: string;
+  ip?: string;
+  timestamp: string | null;
+  method?: string | null;
+  url?: string | null;
+  httpVersion?: string | null;
+  statusCode?: number;
+  responseSize?: number;
+  referrer?: string | null;
+  userAgent?: string | null;
+};
+
+/**
+ * What the page's parser reads from each line of a text, before anything is
+ * counted. The format is decided from the first lines, as the engine decides
+ * it; without options the default exclusions apply.
+ */
+export async function readLogLines(page: Page, text: string, options?: { skip403?: boolean; skipInternal?: boolean }): Promise<ReadLine[]> {
+  return page.evaluate(({ text, options }) => {
+    const lines = text.split(/\r\n|\n|\r/);
+    const format = (window as any).LogParser.detectFormat(lines.slice(0, 200));
+    return lines.filter(line => line && line.trim() && line[0] !== '#').map(line => {
+      const read = format.parseLine(line, options);
+      return { ...read, timestamp: read.timestamp ? read.timestamp.toISOString() : null };
+    });
+  }, { text, options });
+}

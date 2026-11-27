@@ -3,12 +3,11 @@ import type { Page } from '@playwright/test';
 import { test, expect, waitForEngineReady } from './fixtures/dashboard';
 
 /**
- * One log through both engines.
+ * One log, pasted and uploaded.
  *
- * Pasted text is parsed on the page; an uploaded file is parsed in a worker
- * and kept in a column store. The two have separate code for counting and
- * filtering, so every number here is read from the page in both modes and has
- * to be the same, and the totals have to match what the log below contains.
+ * Both go through the same engine: a pasted text is read like a file. Every
+ * number here is read from the page in both modes and has to be the same, and
+ * the totals have to match what the log below contains.
  */
 
 const BROWSER = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
@@ -63,6 +62,20 @@ async function analyse(page: Page, mode: Mode) {
 
 const total = (page: Page) => page.locator('.kpi-card-total .stat-value');
 const badge = (page: Page) => page.locator('#filter-matching-badge');
+
+/** Makes a share link with the storage API answered here; returns the log text the page sent. */
+async function sharedContent(page: Page): Promise<string> {
+  let content = '';
+  await page.route('**/api/storage/upload', route => {
+    content = route.request().postDataJSON().content;
+    return route.fulfill({ json: { r2Key: 'logs/test.gz', shareCode: 'parity' } });
+  });
+  await page.route('**/api/share', route => route.fulfill({ json: { code: 'parity' } }));
+  await page.click('#dash-share-btn');
+  await page.click('#share-submit-btn');
+  await expect(page.locator('#share-url-display')).toContainText('/s/parity');
+  return content;
+}
 
 /** Everything the dashboard counts, as text, so two modes can be compared. */
 async function numbers(page: Page) {
@@ -264,6 +277,35 @@ test.describe('Pasted text and an uploaded file give the same dashboard', () => 
       watcher.assertClean();
     });
 
+    test(`${mode}: the Log Explorer lists the newest request first and names country and protocol`, async ({ page, console: watcher }) => {
+      // Two servers one after the other, so the log is not in time order.
+      const row = (ip: string, time: string, url: string, version: string) => `${ip} - - [27/Nov/2026:${time} +0000] "GET ${url} ${version}" 200 512 "-" "${BROWSER}"`;
+      const text = [
+        row('81.2.69.1', '10:00:20', '/second', 'HTTP/2.0'),
+        row('81.2.69.2', '10:00:40', '/fourth', 'HTTP/1.1'),
+        row('81.2.69.3', '10:00:10', '/first', 'HTTP/1.0'),
+        row('81.2.69.4', '10:00:30', '/third', 'HTTP/3.0'),
+      ].join('\n') + '\n';
+      await page.goto('/nginx', { waitUntil: 'domcontentloaded' });
+      await waitForEngineReady(page);
+      if (mode === 'paste') {
+        await page.getByRole('tab', { name: 'Paste logs' }).click();
+        await page.fill('#nginx-logtext', text);
+      } else {
+        await page.getByRole('tab', { name: 'Upload file' }).click();
+        await page.setInputFiles('#nginx-logfile', { name: 'two-servers.log', mimeType: 'text/plain', buffer: Buffer.from(text) });
+      }
+      await page.click('#nginx-analyze-btn');
+      await expect(total(page)).toHaveText('4', { timeout: 45_000 });
+      const cells = (column: number) => page.locator(`#explorer-rows-body tr td:nth-child(${column})`);
+      await expect(cells(4)).toHaveText(['/fourth', '/third', '/second', '/first']);
+      await expect(cells(7)).toHaveText(['HTTP/1.1', 'HTTP/3.0', 'HTTP/2.0', 'HTTP/1.0']);
+      // A filter keeps that order.
+      await page.locator('#filter-status').selectOption('2xx');
+      await expect(cells(4)).toHaveText(['/fourth', '/third', '/second', '/first']);
+      watcher.assertClean();
+    });
+
     test(`${mode}: the report downloads and carries the page's numbers`, async ({ page, console: watcher }) => {
       await analyse(page, mode);
       await page.click('#dash-download-btn');
@@ -284,5 +326,26 @@ test.describe('Pasted text and an uploaded file give the same dashboard', () => 
       expect(report).toContain(`5xx ${count(r => r.status !== '-' && r.status >= 500)}`);
       watcher.assertClean();
     });
+
+    test(`${mode}: a share link is made from the log that was analysed`, async ({ page, console: watcher }) => {
+      await analyse(page, mode);
+      expect(await sharedContent(page)).toBe(LOG);
+      watcher.assertClean();
+    });
   }
+
+  test('a share link after several files carries all of them, gzip opened', async ({ page, console: watcher }) => {
+    const half = LOG.indexOf('\n', LOG.length / 2) + 1;
+    await page.goto('/nginx', { waitUntil: 'domcontentloaded' });
+    await waitForEngineReady(page);
+    await page.getByRole('tab', { name: 'Upload file' }).click();
+    await page.setInputFiles('#nginx-logfile', [
+      { name: 'shop.log.1.gz', mimeType: 'application/gzip', buffer: gzipSync(LOG.slice(0, half)) },
+      { name: 'shop.log', mimeType: 'text/plain', buffer: Buffer.from(LOG.slice(half)) },
+    ]);
+    await page.click('#nginx-analyze-btn');
+    await expect(total(page)).toHaveText(String(TOTAL), { timeout: 45_000 });
+    expect(await sharedContent(page)).toBe(LOG.slice(0, half) + '\n' + LOG.slice(half));
+    watcher.assertClean();
+  });
 });

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { test, expect, waitForEngineReady } from './fixtures/dashboard';
+import { test, expect, waitForEngineReady, readLogLines } from './fixtures/dashboard';
 import type { Page } from '@playwright/test';
 
 /**
@@ -65,17 +65,15 @@ const LOG_LINES = GOLD_LOG.split('\n').filter(Boolean);
 
 /** Replays the real log-parser in-page to report what it discarded and why. */
 async function parserDiagnostics(page: Page) {
-  return page.evaluate((log: string) => {
-    const r = (window as any).LogParser.parseIPs(log, { skipInternal: false });
-    return {
-      parsed: r.logEntries.length,
-      skipped: r.skippedLines.map((s: { reason: string; line: string }) => ({
-        reason: s.reason,
-        ip: s.line.split(' ')[0],
-        line: s.line.slice(0, 90),
-      })),
-    };
-  }, GOLD_LOG);
+  const read = await readLogLines(page, GOLD_LOG, { skipInternal: false });
+  return {
+    parsed: read.filter(r => r.valid).length,
+    skipped: read.filter(r => !r.valid).map(r => ({
+      reason: r.reason,
+      ip: r.line.trim().split(' ')[0],
+      line: r.line.trim().slice(0, 90),
+    })),
+  };
 }
 
 /** Intercepts the generated report and returns its HTML. */
@@ -288,15 +286,11 @@ test.describe('Bot Intelligence Gold Set → UI', () => {
     // attackers table. Cases marked `parses: false` are rejected by
     // log-parser.js before any verdict exists, so they are legitimately
     // absent — but only those.
-    const parsedIps: string[] = await page.evaluate(
-      (log: string) =>
-        ((window as any).LogParser.parseIPs(log, { skipInternal: false }).logEntries as { ip: string }[]).map((e) =>
-          // Collapse v4-mapped form so it compares equal to the manifest's
-          // `192.168.1.100` form of the same client.
-          e.ip.replace(/^::ffff:/, ''),
-        ),
-      GOLD_LOG,
-    );
+    const parsedIps: string[] = (await readLogLines(page, GOLD_LOG, { skipInternal: false }))
+      .filter(r => r.valid)
+      // Collapse v4-mapped form so it compares equal to the manifest's
+      // `192.168.1.100` form of the same client.
+      .map(r => r.ip!.replace(/^::ffff:/, ''));
     const attBlock = report.slice(report.indexOf('Detected Spoofed Bot Attackers'));
     const declaredUnparseable = new Set(MANIFEST.unparseable_ips || []);
     for (const ip of spoofedClientIps()) {

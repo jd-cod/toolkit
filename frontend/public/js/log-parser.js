@@ -10,8 +10,6 @@
  */
 
 const LogParser = (() => {
-    const TS_REGEX = /\[(\d{2}\/\w{3}\/\d{4}:\d{2}:\d{2}:\d{2}(?:\s+[+-]\d{4})?|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\]/;
-
     function requestPaths() {
         if (typeof RequestPaths !== 'undefined') return RequestPaths;
         return (typeof globalThis !== 'undefined' && globalThis.RequestPaths) || null;
@@ -319,34 +317,6 @@ const LogParser = (() => {
             return wallClock(+m[3], month, +m[1], +m[4], +m[5], +m[6]);
         }
         return null;
-    }
-
-    /**
-     * First and last time of a log, ignoring stray dates (one line with a
-     * wrong year would otherwise stretch the timeline over years).
-     * @param {number[]} times - Milliseconds.
-     * @returns {{ min: number, max: number, outliers: number }|null}
-     */
-    function timeBounds(times) {
-        const n = times.length;
-        if (n === 0) return null;
-        let min = Infinity, max = -Infinity;
-        for (let i = 0; i < n; i++) {
-            const t = times[i];
-            if (t < min) min = t;
-            if (t > max) max = t;
-        }
-        if (n < 20 || max - min <= 2 * 86400000) return { min, max, outliers: 0 };
-        const sorted = Float64Array.from(times).sort();
-        const lo = sorted[Math.floor(n * 0.005)];
-        const hi = sorted[Math.max(0, Math.ceil(n * 0.995) - 1)];
-        const margin = Math.max(hi - lo, 86400000);
-        const from = lo - margin, to = hi + margin;
-        let first = 0, last = n - 1;
-        while (first < n && sorted[first] < from) first++;
-        while (last >= 0 && sorted[last] > to) last--;
-        if (first > last) return { min, max, outliers: 0 };
-        return { min: sorted[first], max: sorted[last], outliers: first + (n - 1 - last) };
     }
 
     /**
@@ -1018,219 +988,15 @@ const LogParser = (() => {
         };
     }
 
-    /**
-     * Parse access-log text.
-     * @param {string} logText
-     * @param {Object} [options]
-     * @param {boolean} [options.skip403=true] - Leave out ordinary 403 responses.
-     * @param {boolean} [options.skipInternal=true] - Leave out private addresses and health checks.
-     * @param {'auto'|'remote'|'forwarded'} [options.clientIp='auto'] - Which address is the client.
-     */
-    function parseIPs(logText, options = {}) {
-        const skip403 = options.skip403 !== false;
-        const skipInternal = options.skipInternal !== false;
-        const ips = [];
-        const userAgents = [];
-        const parsedLines = [];
-        const skippedLines = [];
-        const skipCounts = { privateIP: 0, healthCheck: 0, forbidden: 0, invalid: 0 };
-        let validLines = 0;
-        let forwardedLines = 0;
-        const times = [];
-        const logEntries = [];
-
-        const lines = logText.split(/\r\n|\n|\r/);
-        const format = detectFormat(lines);
-        const lineParser = format.parseLine;
-
-        for (const rawLine of lines) {
-            if (!rawLine || !rawLine.trim() || rawLine[0] === '#') continue;
-            const parsed = lineParser(rawLine, options);
-
-            if (parsed.timestamp) times.push(parsed.timestamp.getTime());
-            if (parsed.reasonType !== 'invalid') validLines++;
-
-            if (!parsed.valid) {
-                skippedLines.push({ reason: parsed.reason, line: rawLine.trim() });
-                if (parsed.reasonType) skipCounts[parsed.reasonType]++;
-                continue;
-            }
-            if (parsed.viaForwarded) forwardedLines++;
-
-            logEntries.push({
-                ip: parsed.ip,
-                timestamp: parsed.timestamp,
-                method: parsed.method,
-                url: parsed.url,
-                http_version: parsed.httpVersion,
-                status_code: parsed.statusCode,
-                response_size: parsed.responseSize,
-                referrer: parsed.referrer,
-                user_agent: parsed.userAgent,
-                raw_line: parsed.line
-            });
-
-            ips.push(parsed.ip);
-            userAgents.push(parsed.userAgent || '-');
-            parsedLines.push({ ip: parsed.ip, line: parsed.line, user_agent: parsed.userAgent || '-' });
-        }
-
-        let logSpanMinutes = 0;
-        let logStart = null;
-        let logEnd = null;
-        let minTimestamp = 0;
-        let maxTimestamp = 0;
-        const bounds = timeBounds(times);
-        if (bounds) {
-            minTimestamp = bounds.min;
-            maxTimestamp = bounds.max;
-            logSpanMinutes = Math.floor((maxTimestamp - minTimestamp) / 60000);
-            logStart = formatTimestamp(new Date(minTimestamp));
-            logEnd = formatTimestamp(new Date(maxTimestamp));
-        }
-
-        return {
-            ips,
-            userAgents,
-            parsedLines,
-            skippedLines,
-            skipCounts,
-            validLines,
-            options: clientIpOption(options) ? { skip403, skipInternal, clientIp: clientIpOption(options) } : { skip403, skipInternal },
-            format: format.type,
-            // How many requests took their client from a forwarded-address field.
-            forwardedLines,
-            strayTimestamps: bounds ? bounds.outliers : 0,
-            logSpanMinutes,
-            logStart,
-            logEnd,
-            minTimestamp,
-            maxTimestamp,
-            logEntries,
-        };
-    }
-
-    function formatTimestamp(date) {
-        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        const d = String(date.getUTCDate()).padStart(2, '0');
-        const m = months[date.getUTCMonth()];
-        const y = date.getUTCFullYear();
-        const h = String(date.getUTCHours()).padStart(2, '0');
-        const min = String(date.getUTCMinutes()).padStart(2, '0');
-        const sec = String(date.getUTCSeconds()).padStart(2, '0');
-        return `${d}/${m}/${y} ${h}:${min}:${sec}`;
-    }
-
-    /**
-     * Filter log text to only lines within last N minutes relative to latest timestamp.
-     */
-    function filterByTime(logText, minutes) {
-        if (minutes <= 0) return logText;
-
-        const lines = logText.split('\n');
-        const timestamped = [];
-
-        for (const line of lines) {
-            const m = line.match(TS_REGEX);
-            if (m) {
-                const ts = parseTimestamp(m[1]);
-                if (ts) timestamped.push({ ts, line });
-            }
-        }
-
-        if (timestamped.length === 0) return logText;
-
-        let maxTs = timestamped[0].ts.getTime();
-        for (let i = 1; i < timestamped.length; i++) {
-            const t = timestamped[i].ts.getTime();
-            if (t > maxTs) maxTs = t;
-        }
-        const latestTs = new Date(maxTs);
-        const cutoff = new Date(latestTs.getTime() - minutes * 60000);
-
-        return timestamped
-            .filter(t => t.ts >= cutoff)
-            .map(t => t.line)
-            .join('\n');
-    }
-
-    /**
-     * Compute dynamic time filter intervals based on log span.
-     */
-    function computeTimeFilters(logSpanMinutes) {
-        const candidates = [
-            [10, '10m'], [20, '20m'], [30, '30m'],
-            [60, '1h'], [120, '2h'], [180, '3h'], [240, '4h'],
-            [360, '6h'], [480, '8h'], [720, '12h'], [1440, '24h'],
-        ];
-
-        const filters = [];
-        for (const [mins, label] of candidates) {
-            if (mins < logSpanMinutes) {
-                filters.push({ minutes: mins, label });
-            }
-        }
-
-        if (logSpanMinutes > 0) {
-            const roundTargets = [10, 20, 30, 60, 120, 180, 240, 360, 480, 720, 1440];
-            let rounded = logSpanMinutes;
-            for (const target of roundTargets) {
-                if (target >= logSpanMinutes && (target - logSpanMinutes) <= 5) {
-                    rounded = target;
-                    break;
-                }
-            }
-
-            let spanLabel;
-            if (rounded < 60) {
-                spanLabel = `${rounded}m`;
-            } else {
-                const h = Math.floor(rounded / 60);
-                const m = rounded % 60;
-                spanLabel = m ? `${h}h${m}m` : `${h}h`;
-            }
-
-            if (filters.length > 0 && filters[filters.length - 1].label === spanLabel) {
-                filters[filters.length - 1].minutes = 0;
-            } else {
-                filters.push({ minutes: 0, label: spanLabel });
-            }
-        } else {
-            filters.push({ minutes: 0, label: 'All' });
-        }
-
-        return filters;
-    }
-
     // The worker script, with the version the page loaded its scripts with.
     function workerUrl() {
         const version = typeof window !== 'undefined' ? window.__ASSET_VERSION__ : '';
         return '/js/log-parser.worker.js' + (version ? `?v=${encodeURIComponent(version)}` : '');
     }
 
-    async function parseAsync(logText, options) {
-        if (typeof Worker !== 'undefined') {
-            try {
-                return await new Promise((resolve, reject) => {
-                    const worker = new Worker(workerUrl());
-                    worker.onmessage = e => {
-                        worker.terminate();
-                        if (e.data.type === 'success') resolve(e.data.result);
-                        else reject(new Error(e.data.error || 'Worker parsing error'));
-                    };
-                    worker.onerror = error => { worker.terminate(); reject(error); };
-                    worker.postMessage({ action: 'parse', logText, options });
-                });
-            } catch (error) {
-                console.warn('Worker parsing failed, falling back to main thread:', error);
-            }
-        }
-        return parseIPs(logText, options);
-    }
-
     return {
-        parseLine, parseIPs, parseAsync, filterByTime, computeTimeFilters, isValidIP, isPrivateIP, detectFormat,
-        parseJsonLine, tokenizeLine, parseTimestamp, splitRequest, canonicalIP, ipFilterMatcher, forwardedClient, timeBounds, workerUrl,
+        parseLine, isValidIP, isPrivateIP, detectFormat,
+        parseJsonLine, tokenizeLine, parseTimestamp, splitRequest, canonicalIP, ipFilterMatcher, forwardedClient, workerUrl,
     };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = LogParser;

@@ -74,20 +74,15 @@ async function dragHandle(page: Page, side: 'start' | 'end', fraction: number) {
 test.describe('Timeline time accuracy', () => {
   test.use({ timezoneId: 'America/New_York' });
 
-  test('main thread and worker honor log offsets and preserve excluded log endpoints', async ({ page, console: watcher }) => {
+  test('the engine keeps the written times and the excluded endpoints of the log', async ({ page, console: watcher }) => {
     await page.goto('/nginx', { waitUntil: 'domcontentloaded' });
     await waitForEngineReady(page);
     const result = await page.evaluate(async log => {
-      const direct = (window as any).LogParser.parseIPs(log);
-      const worker = new Worker('/js/log-parser.worker.js');
-      const threaded: any = await new Promise((resolve, reject) => {
-        worker.onmessage = e => e.data.type === 'success' ? resolve(e.data.result) : reject(new Error(e.data.error));
-        worker.onerror = reject;
-        worker.postMessage({ action: 'parse', logText: log });
-      }).finally(() => worker.terminate());
-      return [direct, threaded].map(parsed => ({ min: parsed.minTimestamp, max: parsed.maxTimestamp, count: parsed.logEntries.length }));
+      const analysis = await (window as any).LogEngine.analyze(log);
+      analysis.worker.terminate();
+      return { min: analysis.parseResult.minTimestamp, max: analysis.parseResult.maxTimestamp, count: analysis.data.total_requests };
     }, LOG);
-    expect(result).toEqual([{ min: START, max: END, count: 15 }, { min: START, max: END, count: 15 }]);
+    expect(result).toEqual({ min: START, max: END, count: 15 });
     watcher.assertClean();
   });
 

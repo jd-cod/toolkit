@@ -146,10 +146,10 @@ const DashboardViews = (() => {
 
     function renderExclusionsHtml(parseResult, view) {
         const counts = parseResult?.skipCounts || {};
-        // An upload is not kept in memory. One file can be read again with
-        // other exclusions; a session of several sources or a stream cannot,
-        // and its options stay as they were set before the analysis.
-        const fixed = !view.originalEnrichedEntries.length && view.latestSummary && !view.currentReanalyze ? 'disabled title="Set before the analysis: start a new analysis to change this."' : '';
+        // Switching an exclusion reads the log again. Text and files can be
+        // read again; a stream cannot, and its options stay as they were set
+        // before the analysis.
+        const fixed = !view.currentSources ? 'disabled title="Set before the analysis: start a new analysis to change this."' : '';
         return `
             <fieldset class="signal-nginx-options signal-dashboard-exclusions" id="dashboard-exclusions">
                 <legend>Analysis exclusions</legend>
@@ -166,7 +166,7 @@ const DashboardViews = (() => {
                 </div>
                 <p class="signal-exclusion-counts" id="exclusion-counts">Skipped: <strong>${numberWithCommas(counts.privateIP || 0)}</strong> private/local IP · <strong>${numberWithCommas(counts.healthCheck || 0)}</strong> health-check path · <strong>${numberWithCommas(counts.forbidden || 0)}</strong> ordinary 403 · <strong>${numberWithCommas(counts.invalid || 0)}</strong> invalid</p>
                 <details class="signal-nginx-option-help"><summary>What is excluded?</summary><p>Internal requests: private, loopback, link-local, CGNAT and IPv6 unique-local IPs (including mapped IPv4), plus exact paths /health, /healthz, /healthcheck, /health-check, /health_check, /readyz, /livez and /_health. Query strings and trailing slashes are ignored. Every User-Agent and response status is covered. Unknown ASN alone is not an exclusion.</p><p>403 filtering retains recognized crawlers for bot analysis. Each skipped line is counted once: private/local IP first, then health-check path, then ordinary 403. Changing an exclusion recalculates the loaded log and resets result filters. The input time span still includes excluded rows.</p></details>
-                <p id="dash-exclusion-status" role="status">${parseResult?.validLines > 0 && !parseResult.parsedLines.length ? (fixed ? 'All valid requests are excluded. Start a new analysis with the options changed to include them.' : 'All valid requests are excluded. Adjust the options above to include them.') : (fixed ? 'These options were set before the analysis and cannot be changed for this source.' : '')}</p>
+                <p id="dash-exclusion-status" role="status">${parseResult?.validLines > 0 && !parseResult.parsedCount ? (fixed ? 'All valid requests are excluded. Start a new analysis with the options changed to include them.' : 'All valid requests are excluded. Adjust the options above to include them.') : (fixed ? 'These options were set before the analysis and cannot be changed for this source.' : '')}</p>
             </fieldset>`;
     }
 
@@ -446,7 +446,7 @@ const DashboardViews = (() => {
                         <h5 style="margin:0;font-size:0.88rem;font-weight:700;">
                             <i class="bi bi-table" style="color:var(--accent-primary);margin-right:6px;"></i> Log Explorer
                         </h5>
-                        <span style="font-size:0.74rem;color:var(--text-muted);">(${numberWithCommas(view.latestPageResult ? view.latestPageResult.totalRows : (view.latestSummary ? view.latestSummary.matchingCount : view.currentFilteredEntries.length))} entries)</span>
+                        <span style="font-size:0.74rem;color:var(--text-muted);">(${numberWithCommas(view.latestPageResult ? view.latestPageResult.totalRows : (view.latestSummary ? view.latestSummary.matchingCount : 0))} entries)</span>
                     </div>
 
                     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -574,10 +574,8 @@ const DashboardViews = (() => {
     }
 
     function renderFacetedFilterRibbonHtml(filterOptions, view) {
-        // The upload engine keeps no request list on the page; its counts come from the worker.
-        const fromWorker = !view.originalEnrichedEntries.length && view.latestSummary;
-        const totalReqs = fromWorker ? view.uploadTotalRequests : view.originalEnrichedEntries.length;
-        const matchedReqs = fromWorker ? (view.latestSummary.matchingCount || 0) : view.currentFilteredEntries.length;
+        const totalReqs = view.wholeLogRequests;
+        const matchedReqs = view.latestSummary ? (view.latestSummary.matchingCount || 0) : totalReqs;
 
         return `
         <div class="master-filter-box" id="nginx-master-filter-box" style="margin-bottom:20px;padding:12px 16px;">

@@ -36,10 +36,10 @@ describe('Worker Streaming Protocol', () => {
         assert.equal(completeMsg.summary.statusCounts['404'], 1);
         assert.equal(completeMsg.summary.statusCounts['500'], 1);
 
-        // Check first page of log explorer
+        // The first page of the Log Explorer, the newest request first
         assert.ok(completeMsg.pageResult, 'Should include initial pageResult');
         assert.equal(completeMsg.pageResult.rows.length, 3);
-        assert.equal(completeMsg.pageResult.rows[0].url, '/index.html');
+        assert.deepEqual(completeMsg.pageResult.rows.map(r => r.url), ['/api/login', '/about.html', '/index.html']);
     });
 
     test('executes filter query and returns filter_result', () => {
@@ -94,8 +94,15 @@ describe('Worker Streaming Protocol', () => {
         assert.equal(pageMsg.pageResult.page, 2);
         assert.equal(pageMsg.pageResult.totalPages, 3);
         assert.equal(pageMsg.pageResult.rows.length, 2);
-        assert.equal(pageMsg.pageResult.rows[0].url, '/page3');
-        assert.equal(pageMsg.pageResult.rows[1].url, '/page4');
+        // Six requests in one second: the one read last is the newest.
+        assert.equal(pageMsg.pageResult.rows[0].url, '/page4');
+        assert.equal(pageMsg.pageResult.rows[1].url, '/page3');
+
+        messages.length = 0;
+        handler({
+            data: { action: 'get_page', page: 2, pageSize: 2, order: 'file' }
+        });
+        assert.deepEqual(messages.find(m => m.type === 'page_result').pageResult.rows.map(r => r.url), ['/page3', '/page4'], 'the order of the log, when asked for');
     });
 
     test('supports get_page with pageNumber and reqId passthrough', () => {

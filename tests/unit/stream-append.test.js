@@ -92,13 +92,15 @@ describe('Worker Stream Appending & Incremental GeoIP', () => {
         assert.ok(enriched2, 'Worker should emit enriched after incremental geo');
         assert.equal(enriched2.summary.matchingCount, 6);
 
-        // Check Explorer rows: should include all 6 rows
-        assert.equal(enriched2.pageResult.rows.length, 6);
-        assert.equal(enriched2.pageResult.rows[0].url, '/node1-page.html');
-        assert.equal(enriched2.pageResult.rows[3].url, '/node2-page.html');
-        assert.equal(enriched2.pageResult.rows[4].country, 'JP');
-        assert.equal(enriched2.pageResult.rows[4].asn, 2514);
-        assert.equal(enriched2.pageResult.rows[0].country, 'US');
+        // The first page of the Log Explorer has all 6 rows, the newest first.
+        const rows = enriched2.pageResult.rows;
+        assert.equal(rows.length, 6);
+        assert.equal(rows[0].url, '/node2-checkout');
+        assert.equal(rows[2].url, '/node2-page.html');
+        assert.equal(rows[5].url, '/node1-page.html');
+        assert.equal(rows[1].country, 'JP');
+        assert.equal(rows[1].asn, 2514);
+        assert.equal(rows[5].country, 'US');
     });
 
     test('appendStreamToWorker feeds a ReadableStream and resolves with merged results', async () => {

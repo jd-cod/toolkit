@@ -1,23 +1,31 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import engine from './helpers/engine.js';
 import { createRequire } from 'node:module';
 
-const require = createRequire(import.meta.url);
-require('../../frontend/public/js/request-paths.js');
-const LogParser = require('../../frontend/public/js/log-parser.js');
-globalThis.LogParser = LogParser;
-const DashboardFilters = require('../../frontend/public/js/dashboard-filters.js');
+// The dashboard names the filters, the engine decides which requests pass
+// them. Five requests with known properties show both.
+const { ColumnarStorage } = engine;
+const DashboardFilters = createRequire(import.meta.url)('../../frontend/public/js/dashboard-filters.js');
 
-const at = (h, m, s = 0) => new Date(Date.UTC(2026, 10, 27, h, m, s));
-const entry = (over = {}) => ({ ip: '81.2.69.1', timestamp: at(10, 0), method: 'GET', url: '/', status_code: 200, country: 'Germany', asn: 'AS3209', user_agent: 'Mozilla/5.0 Chrome/128', traffic_class: 'human', ...over });
-const ENTRIES = [
-    entry(),
-    entry({ ip: '81.2.69.2', timestamp: at(10, 10), method: 'POST', url: '/api/login?next=/', status_code: 401 }),
-    entry({ ip: '81.2.70.9', timestamp: at(10, 20), url: '/products/7', status_code: 503, country: 'France', asn: 'AS3215' }),
-    entry({ ip: '2001:db8::1', timestamp: at(10, 30), url: '/products', status_code: 0, country: 'Unknown', asn: 'AS0', user_agent: 'curl/8.4.0', traffic_class: 'automated', bot_group: 'Scripts & HTTP libraries' }),
-    entry({ ip: '66.249.66.1', timestamp: null, url: '/robots.txt', status_code: 103, user_agent: 'Googlebot/2.1', traffic_class: 'verified', bot_group: 'Google' }),
+const at = (h, m, s = 0) => Date.UTC(2026, 10, 27, h, m, s) / 1000;
+const CLASSES = globalThis.TrafficClassifier.CLASSES;
+const REQUESTS = [
+    { ip: '81.2.69.1', time: at(10, 0), method: 'GET', url: '/', status: 200, country: 'DE', asn: 3209, ua: 'Mozilla/5.0 Chrome/128', cls: 'human', group: '' },
+    { ip: '81.2.69.2', time: at(10, 10), method: 'POST', url: '/api/login?next=/', status: 401, country: 'DE', asn: 3209, ua: 'Mozilla/5.0 Chrome/128', cls: 'human', group: '' },
+    { ip: '81.2.70.9', time: at(10, 20), method: 'GET', url: '/products/7', status: 503, country: 'FR', asn: 3215, ua: 'Mozilla/5.0 Chrome/128', cls: 'human', group: '' },
+    { ip: '2001:db8::1', time: at(10, 30), method: 'GET', url: '/products', status: 0, country: '-', asn: 0, ua: 'curl/8.4.0', cls: 'automated', group: 'Scripts & HTTP libraries' },
+    { ip: '66.249.66.1', time: 0, method: 'GET', url: '/robots.txt', status: 103, country: 'DE', asn: 3209, ua: 'Googlebot/2.1', cls: 'verified', group: 'Google' },
 ];
-const kept = (filters, window) => DashboardFilters.apply(ENTRIES, { ...DashboardFilters.none(), ...filters }, window).map(e => ENTRIES.indexOf(e));
+const storage = new ColumnarStorage();
+REQUESTS.forEach((r, client) => storage.appendRow(r.ip, r.time, r.status, 512, r.url, 'None', r.country, r.asn, r.method, client));
+storage.countryNames = { DE: 'Germany', FR: 'France' };
+storage.setClientClasses(CLASSES, Uint8Array.from(REQUESTS, r => CLASSES.indexOf(r.cls)), REQUESTS.map(r => r.group), client => REQUESTS[client].ua);
+
+// Which of the five requests pass, by their position.
+const kept = (filters, window) => storage
+    .getPage(1, 100, DashboardFilters.forWorker({ ...DashboardFilters.none(), ...filters }, window)).rows
+    .map(row => REQUESTS.findIndex(r => r.url === row.url));
 
 test('no filter keeps every request', () => {
     assert.deepEqual(kept({}), [0, 1, 2, 3, 4]);
@@ -55,23 +63,25 @@ test('each filter keeps the requests it names', () => {
 });
 
 test('the handles leave out requests without a time, "last minutes" keeps them', () => {
-    const handles = { startMs: at(10, 5).getTime(), endMs: at(10, 20).getTime(), keepUntimed: false };
+    const handles = { startMs: at(10, 5) * 1000, endMs: at(10, 20) * 1000, keepUntimed: false };
     assert.deepEqual(kept({}, handles), [1, 2], 'both ends are inside the window');
-    const last = { startMs: at(10, 15).getTime(), endMs: null, keepUntimed: true };
+    const last = { startMs: at(10, 15) * 1000, endMs: null, keepUntimed: true };
     assert.deepEqual(kept({}, last), [2, 3, 4]);
     assert.deepEqual(kept({ bot: 'human' }, last), [2]);
 });
 
-test('the worker gets the same filters, with the window in seconds', () => {
+test('the engine gets the same filters, with the window in seconds', () => {
     const filters = { ...DashboardFilters.none(), method: 'GET' };
     assert.deepEqual(DashboardFilters.forWorker(filters), filters);
     assert.notEqual(DashboardFilters.forWorker(filters), filters, 'a copy');
     const both = DashboardFilters.forWorker(filters, { startMs: 1_000_500, endMs: 2_000_999, keepUntimed: false });
     assert.equal(both.startTimeSec, 1000);
     assert.equal(both.endTimeSec, 2000);
+    assert.equal('keepUntimed' in both, false);
     const open = DashboardFilters.forWorker(filters, { startMs: 5_000, endMs: null, keepUntimed: true });
     assert.equal(open.startTimeSec, 5);
     assert.equal('endTimeSec' in open, false);
+    assert.equal(open.keepUntimed, true);
 });
 
 test('counting the active filters', () => {

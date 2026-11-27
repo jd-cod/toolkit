@@ -10,10 +10,9 @@
  *  - 1-Click interactive sample datasets
  *  - Ephemeral terminal cURL session auto-loading (?session=XYZ)
  *  - Zero-retention expired session friendly notice
- *  - Web Worker off-thread parsing with fallback
- *  - Parse → Analyze → Render pipeline
+ *  - Every source through the one analysis engine (LogEngine), then the dashboard
  *
- * Depends on: GeoIP, LogParser, Analyzer, Dashboard, ShareModal, Report
+ * Depends on: GeoIP, LogEngine, Dashboard, ShareModal, Report
  */
 
 window.initNginxPage = function () {
@@ -264,30 +263,6 @@ window.initNginxPage = function () {
 
     initGeoIP();
 
-    // ─── Native Decompression & File Reading ───
-    // Gzip is recognised by content, not by name: a plain file called .gz and
-    // a gzip file called .log both load, alone or among several files.
-    async function readFileAsText(file, warnings) {
-        try {
-            const stream = await peekAndDecompressStream(file, {
-                onWarning: message => { if (warnings) warnings.push(`${file.name}: ${message}`); },
-            });
-            return await readStreamAsText(stream);
-        } catch (err) {
-            throw new Error(`${file.name}: ${err && err.message ? err.message : 'the file could not be read'}`);
-        }
-    }
-
-    async function readMultipleFilesAsText(fileList, warnings) {
-        const texts = [];
-        for (let i = 0; i < fileList.length; i++) {
-            const file = fileList[i];
-            const content = await readFileAsText(file, warnings);
-            texts.push(content);
-        }
-        return texts.join('\n');
-    }
-
     // ─── Polite Zero-Retention Session Expired Modal ───
     function showSessionExpiredNotice() {
         if (lifecycle.signal.aborted) return;
@@ -452,21 +427,13 @@ window.initNginxPage = function () {
         }
 
         const toggle = document.getElementById('nginx-skip-403');
-        const skip403 = (options && options.skip403 !== undefined)
-            ? Boolean(options.skip403)
-            : (toggle ? toggle.checked : true);
+        const skip403 = toggle ? toggle.checked : true;
         const internalToggle = document.getElementById('nginx-skip-internal');
-        const skipInternal = (options && options.skipInternal !== undefined)
-            ? Boolean(options.skipInternal)
-            : (internalToggle ? internalToggle.checked : true);
+        const skipInternal = internalToggle ? internalToggle.checked : true;
         const clientIpSelect = document.getElementById('nginx-client-ip');
-        const clientIpChoice = (options && options.clientIp) || (clientIpSelect ? clientIpSelect.value : 'auto');
+        const clientIpChoice = clientIpSelect ? clientIpSelect.value : 'auto';
         const clientIp = clientIpChoice === 'remote' || clientIpChoice === 'forwarded' ? clientIpChoice : 'auto';
         const parserOptions = clientIp === 'auto' ? { skip403, skipInternal } : { skip403, skipInternal, clientIp };
-        // Parts of the input that could not be read (a damaged archive). The
-        // dashboard shows them; the analysis covers the rest.
-        const inputWarnings = Array.isArray(options?.inputWarnings) ? options.inputWarnings.slice() : [];
-
         const diagCtx = {
             source: inputSource,
             gistUrl: currentUrl,
@@ -492,161 +459,54 @@ window.initNginxPage = function () {
                 await window.BotDetector.init();
             }
 
-            // Stage 2: Parse via streaming Worker
+            // Stage 2: read the source into the engine
             if (btn) btn.innerHTML = '<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Streaming &amp; parsing logs...';
             await sleep(40);
             if (lifecycle.signal.aborted) return;
 
             GeoIP.clearCache();
 
-            // In-memory pipeline: pasted logs, small samples, several files, and the
-            // fallback when the streaming worker is not available.
-            const analyzeText = async (logText) => {
-                if (btn) btn.innerHTML = '<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Parsing logs...';
-                await sleep(40);
-                if (lifecycle.signal.aborted) return;
-
-                const parseResult = await LogParser.parseAsync(logText, parserOptions);
-                if (parseResult.validLines === 0) {
-                    showAnalysisError('parse', new Error('No valid access-log lines found. Check the IP addresses and log format.'), diagCtx);
-                    if (btn) {
-                        btn.disabled = false;
-                        btn.innerHTML = '<i class="bi bi-lightning-charge-fill" style="margin-right:6px;"></i> Analyze Logs';
+            const result = await LogEngine.analyze(rawLogInput, parserOptions, {
+                onProgress: (prog) => {
+                    const parsed = prog.parsedLines || prog.linesRead || 0;
+                    if (btn && parsed > 0) {
+                        btn.innerHTML = `<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Parsed ${parsed.toLocaleString()} lines...`;
                     }
-                    return;
-                }
-
-                if (btn) btn.innerHTML = `<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Analyzing ${parseResult.ips.length.toLocaleString()} requests...`;
-                await sleep(40);
-                if (lifecycle.signal.aborted) return;
-
-                if (inputWarnings.length) parseResult.inputWarnings = inputWarnings.slice();
-                Analyzer.enrichLogEntries(parseResult.logEntries);
-                const data = Analyzer.analyzeEnhancedLogs(parseResult.logEntries);
-                Dashboard.render(data, logText, parseResult, {
-                    source: inputSource,
-                    gistUrl: currentUrl,
-                    sourceLabel: options?.sourceLabel || '',
-                    skip403,
-                    skipInternal,
-                    clientIp,
-                });
-            };
-
-            if (typeof rawLogInput === 'string') {
-                await analyzeText(rawLogInput);
-                return;
-            }
-
-            // Streaming path for files and sessions
-            const isFile = typeof Blob !== 'undefined' && rawLogInput instanceof Blob;
-            const openInput = async () => {
-                const source = (isFile || (rawLogInput && typeof rawLogInput.getReader === 'function'))
-                    ? rawLogInput
-                    : new Response(rawLogInput).body;
-                if (typeof peekAndDecompressStream !== 'function') return isFile ? source.stream() : source;
-                return peekAndDecompressStream(source, { onWarning: message => inputWarnings.push(message) });
-            };
-
-            let worker = null;
-            try {
-                worker = typeof Worker !== 'undefined' ? new Worker(LogParser.workerUrl()) : null;
-            } catch (workerErr) {
-                console.warn('The parser worker could not be created:', workerErr);
-            }
-
-            if (worker && typeof streamChunksToWorker !== 'function') {
-                worker.terminate();
-                worker = null;
-            }
-
-            let result = null;
-            if (worker) {
-                try {
-                    result = await streamChunksToWorker(await openInput(), worker, parserOptions, (prog) => {
-                        const parsed = prog.parsedLines || prog.linesRead || 0;
-                        if (btn && parsed > 0) {
-                            btn.innerHTML = `<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Parsed ${parsed.toLocaleString()} lines...`;
+                    const detail = document.getElementById('ingest-progress-detail');
+                    if (detail) {
+                        if (prog.type === 'geo_progress') {
+                            detail.textContent = `Enriching GeoIP: ${prog.current.toLocaleString()} / ${prog.total.toLocaleString()} unique IPs...`;
+                        } else if (parsed > 0) {
+                            detail.textContent = `Parsed ${parsed.toLocaleString()} lines...`;
                         }
-                        const detail = document.getElementById('ingest-progress-detail');
-                        if (detail) {
-                            if (prog.type === 'geo_progress') {
-                                detail.textContent = `Enriching GeoIP: ${prog.current.toLocaleString()} / ${prog.total.toLocaleString()} unique IPs...`;
-                            } else if (parsed > 0) {
-                                detail.textContent = `Parsed ${parsed.toLocaleString()} lines...`;
-                            }
-                        }
-                    });
-                } catch (streamErr) {
-                    try { worker.terminate(); } catch { /* already gone */ }
-                    // A file can be read again; a stream cannot.
-                    if (!streamErr || !streamErr.workerUnavailable || !isFile) throw streamErr;
-                    console.warn('The parser worker is not available, analysing on the page instead:', streamErr);
-                    worker = null;
-                    inputWarnings.length = 0;
-                }
-            }
+                    }
+                },
+            });
             if (lifecycle.signal.aborted) {
-                if (worker) { try { worker.terminate(); } catch { /* already gone */ } }
-                return;
-            }
-            if (!worker) {
-                await analyzeText(await readStreamAsText(await openInput()));
+                result.worker.terminate();
                 return;
             }
 
-            if (!result || !result.summary || result.summary.matchingCount === 0) {
+            // Requests that are all excluded still give a dashboard: its
+            // options bring them back. A source without any request does not.
+            if (result.parseResult.validLines === 0) {
+                result.worker.terminate();
                 showAnalysisError('parse', new Error('No valid access-log lines found. Check the IP addresses and log format.'), diagCtx);
-                if (btn) {
-                    btn.disabled = false;
-                    btn.innerHTML = '<i class="bi bi-lightning-charge-fill" style="margin-right:6px;"></i> Analyze Logs';
-                }
                 return;
             }
 
-            // Stage 3: Analyze
-            if (btn) btn.innerHTML = `<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Analyzing ${result.summary.matchingCount.toLocaleString()} requests...`;
-            await sleep(40);
-            if (lifecycle.signal.aborted) return;
-
-            const data = Analyzer.analyzeFromWorkerSummary(result.summary);
-
-            const parseResult = {
-                parsedLines: new Array(result.summary.matchingCount || 0),
-                // The worker counts excluded lines; it does not keep their text.
-                skippedLines: new Array(result.totalLinesSkipped || 0),
-                skipCounts: result.skipCounts || {},
-                forwardedLines: result.forwardedLines || 0,
-                validLines: (result.summary.matchingCount || 0) + (result.totalLinesSkipped || 0) - ((result.skipCounts && result.skipCounts.invalid) || 0),
-                minTimestamp: result.summary.minTimeSec ? result.summary.minTimeSec * 1000 : 0,
-                maxTimestamp: result.summary.maxTimeSec ? result.summary.maxTimeSec * 1000 : 0,
-                logSpanMinutes: result.summary.minTimeSec && result.summary.maxTimeSec
-                    ? Math.floor((result.summary.maxTimeSec - result.summary.minTimeSec) / 60)
-                    : 0,
-                logStart: result.summary.minTimeSec ? new Date(result.summary.minTimeSec * 1000).toUTCString() : '',
-                logEnd: result.summary.maxTimeSec ? new Date(result.summary.maxTimeSec * 1000).toUTCString() : '',
-            };
-            if (inputWarnings.length) parseResult.inputWarnings = inputWarnings.slice();
-
-            // The dashboard that asked for this analysis may be gone by now.
-            if (typeof options?.isCurrent === 'function' && !options.isCurrent()) {
-                try { worker.terminate(); } catch { /* already gone */ }
-                return;
-            }
-
-            // Stage 4: Render
-            Dashboard.render(data, '', parseResult, {
+            // Stage 3: Render
+            const sources = Array.isArray(rawLogInput) ? rawLogInput : [rawLogInput];
+            Dashboard.render(result.data, typeof rawLogInput === 'string' ? rawLogInput : '', result.parseResult, {
                 source: inputSource,
                 gistUrl: currentUrl,
                 sourceLabel: options?.sourceLabel || '',
                 skip403,
                 skipInternal,
                 clientIp,
-                // A file can be read again with other options; a stream cannot.
-                reanalyze: isFile
-                    ? (next) => executeAnalysis(rawLogInput, inputSource, currentUrl, { ...(options || {}), inputWarnings: [], skip403: next.skip403, skipInternal: next.skipInternal, clientIp: next.clientIp, isCurrent: next.isCurrent })
-                    : null,
-                worker,
+                // What can be read again when an exclusion is switched; a stream cannot.
+                sources: sources.every(LogEngine.canReread) ? sources : null,
+                worker: result.worker,
                 summary: result.summary,
                 pageResult: result.pageResult,
                 sessionId: options?.sessionId || (currentUrl?.startsWith('session:') ? currentUrl.slice(8) : (typeof window !== 'undefined' ? window._activeNginxSessionId : null))
@@ -672,7 +532,6 @@ window.initNginxPage = function () {
         btn.innerHTML = '<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Reading inputs...';
 
         let logText = '';
-        const inputWarnings = [];
         let inputSource = 'text';
         let currentUrl = '';
         let sourceLabel = 'Pasted logs';
@@ -721,20 +580,11 @@ window.initNginxPage = function () {
                     inputSource = 'file';
                     sourceLabel = Array.from(fileInput.files).map(file => file.name).join(', ');
                     btn.innerHTML = '<i class="bi bi-hourglass-split" style="margin-right:6px;"></i> Streaming &amp; decompressing...';
-                    if (fileInput.files.length === 1) {
-                        // The File itself, not its stream: a gzip archive with
-                        // several members can only be read from a file.
-                        await executeAnalysis(fileInput.files[0], inputSource, currentUrl, { sourceLabel });
-                        return;
-                    }
-                    try {
-                        logText = await readMultipleFilesAsText(fileInput.files, inputWarnings);
-                    } catch (readErr) {
-                        showAnalysisError('file_read', readErr, { source: 'file' });
-                        btn.disabled = false;
-                        btn.innerHTML = '<i class="bi bi-lightning-charge-fill" style="margin-right:6px;"></i> Analyze Logs';
-                        return;
-                    }
+                    // The files themselves, not their text: they are read in
+                    // pieces, and a gzip archive with several members can
+                    // only be read from a file.
+                    await executeAnalysis(fileInput.files.length === 1 ? fileInput.files[0] : Array.from(fileInput.files), inputSource, currentUrl, { sourceLabel });
+                    return;
                 }
             }
 
@@ -751,7 +601,7 @@ window.initNginxPage = function () {
                 return;
             }
 
-            await executeAnalysis(logText, inputSource, currentUrl, { sourceLabel, inputWarnings });
+            await executeAnalysis(logText, inputSource, currentUrl, { sourceLabel });
 
         } catch (e) {
             console.error('Error during log ingestion:', e);

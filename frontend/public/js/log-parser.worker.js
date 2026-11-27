@@ -1,9 +1,13 @@
 /**
- * Nginx Log Parser — Web Worker (Streaming Columnar Engine)
+ * Traffic Analyzer — the analysis engine.
  *
- * Streams chunks of access logs directly into high-efficiency columnar TypedArrays
- * with dictionary encoding, handles instant binary filter queries (<50ms),
- * and serves paginated 50-row slices to the Log Explorer.
+ * Every log goes through here, pasted or uploaded, small or many gigabytes:
+ * chunks of text are parsed line by line into the columns of ColumnarStorage,
+ * which answers the dashboard's filter queries and serves the rows of the Log
+ * Explorer page by page.
+ *
+ * It runs in a Web Worker. The same handler runs on the page where a browser
+ * cannot start one (see LogEngine), and in the unit tests.
  */
 
 /* global importScripts, ChunkedLineSplitter, ColumnarStorage, RequestPaths, BotDetector, TrafficClassifier, LogParser */
@@ -79,6 +83,11 @@ function createWorkerHandler(postMessageFn) {
     let activeFormat = null;
     let forwardedLines = 0;
     const skipCounts = { privateIP: 0, healthCheck: 0, forbidden: 0, invalid: 0 };
+    // Per hour of the log: lines with a time, first and last of them. Counted
+    // for every readable line, also the excluded ones, so the time span of the
+    // log does not move when an exclusion is switched.
+    const lineHours = new Map();
+    let lastHour = null;
     // Path and section of each URL in the store, by URL id.
     const urlPath = [];
     const urlSection = [];
@@ -155,6 +164,39 @@ function createWorkerHandler(postMessageFn) {
         return summary;
     }
 
+    function noteTime(timeSec) {
+        if (!(timeSec > 0)) return;
+        const start = timeSec - timeSec % 3600;
+        if (!lastHour || lastHour.start !== start) {
+            lastHour = lineHours.get(start);
+            if (!lastHour) { lastHour = { start, count: 0, min: timeSec, max: timeSec }; lineHours.set(start, lastHour); }
+        }
+        lastHour.count++;
+        if (timeSec < lastHour.min) lastHour.min = timeSec;
+        else if (timeSec > lastHour.max) lastHour.max = timeSec;
+    }
+
+    // First and last time written in the log, in seconds; 0 when no line has
+    // one. Stray dates are left out by the rule the store uses for requests.
+    function logSpan() {
+        if (lineHours.size === 0) return { logMinSec: 0, logMaxSec: 0 };
+        const counts = {};
+        for (const hour of lineHours.values()) counts[hour.start] = hour.count;
+        const kept = columnarStorage.constructor.logHours(counts);
+        let min = 0, max = 0;
+        for (const hour of lineHours.values()) {
+            if (kept && (hour.start < kept.first || hour.start > kept.last)) continue;
+            if (min === 0 || hour.min < min) min = hour.min;
+            if (hour.max > max) max = hour.max;
+        }
+        return { logMinSec: min, logMaxSec: max };
+    }
+
+    // The first page of the Log Explorer, sent along with every summary.
+    function firstPage(filters, summary) {
+        return columnarStorage.getPage(1, 50, { ...filters, order: 'newest', totalRows: summary.matchingCount });
+    }
+
     // Lines wait here until there are enough to decide the format. A first
     // chunk can hold only a line or two.
     const DETECT_LINES = 200;
@@ -177,6 +219,7 @@ function createWorkerHandler(postMessageFn) {
             const line = lines[i];
             if (!line || !line.trim() || line[0] === '#') continue;
             const res = lineParser(line, options);
+            noteTime(res.timeSec);
             if (res.valid) {
                 const clientId = session ? session.add(res.ip, res.userAgent, {
                     timeSec: res.timeSec,
@@ -197,7 +240,8 @@ function createWorkerHandler(postMessageFn) {
                     0,
                     res.method || '-',
                     clientId,
-                    referrerSite ? referrerSite(res.referrer) : ''
+                    referrerSite ? referrerSite(res.referrer) : '',
+                    res.httpVersion || ''
                 );
                 totalLinesParsed++;
                 if (res.viaForwarded) forwardedLines++;
@@ -216,7 +260,7 @@ function createWorkerHandler(postMessageFn) {
     }
 
     function ingestStats() {
-        return { totalBytesRead, totalLinesParsed, totalLinesSkipped, skipCounts: { ...skipCounts }, forwardedLines };
+        return { totalBytesRead, totalLinesParsed, totalLinesSkipped, skipCounts: { ...skipCounts }, forwardedLines, ...logSpan() };
     }
 
     return function onMessage(e) {
@@ -229,7 +273,9 @@ function createWorkerHandler(postMessageFn) {
             if (action === 'configure') {
                 // Verified-bot IP ranges, loaded by the page.
                 const detector = globalThis.BotDetector || (typeof BotDetector !== 'undefined' ? BotDetector : null);
-                if (data.botFeed && detector && detector.loadData) detector.loadData(data.botFeed);
+                // On the page itself the detector already holds these ranges.
+                const loaded = detector && typeof detector.getData === 'function' ? detector.getData() : null;
+                if (data.botFeed && data.botFeed !== loaded && detector && detector.loadData) detector.loadData(data.botFeed);
             } else if (action === 'parse_stream_chunk') {
                 const { chunk, isLast, options } = data;
 
@@ -253,7 +299,7 @@ function createWorkerHandler(postMessageFn) {
 
                     classifyClients();
                     const summary = summarize({});
-                    const pageResult = columnarStorage.getPage(1, 50, { totalRows: summary.matchingCount });
+                    const pageResult = firstPage({}, summary);
 
                     postMessageFn({
                         type: 'complete',
@@ -268,6 +314,8 @@ function createWorkerHandler(postMessageFn) {
 
                 if (!isAppending) {
                     isAppending = true;
+                    // The answer is the analysis of the whole log.
+                    currentFilters = {};
                     startRowIndex = columnarStorage.rowCount;
                     startIpIndex = columnarStorage.ipDict.length;
                 }
@@ -296,7 +344,7 @@ function createWorkerHandler(postMessageFn) {
 
                     classifyClients();
                     const summary = summarize({});
-                    const pageResult = columnarStorage.getPage(1, 50, { totalRows: summary.matchingCount });
+                    const pageResult = firstPage({}, summary);
 
                     postMessageFn({
                         type: 'append_complete',
@@ -318,7 +366,7 @@ function createWorkerHandler(postMessageFn) {
                 }
                 classifyClients();
                 const summary = summarize(currentFilters);
-                const pageResult = columnarStorage.getPage(1, 50, { ...currentFilters, totalRows: summary.matchingCount });
+                const pageResult = firstPage(currentFilters, summary);
 
                 postMessageFn({
                     type: 'enriched',
@@ -340,7 +388,7 @@ function createWorkerHandler(postMessageFn) {
                 }
                 classifyClients();
                 const summary = summarize(currentFilters);
-                const pageResult = columnarStorage.getPage(1, 50, { ...currentFilters, totalRows: summary.matchingCount });
+                const pageResult = firstPage(currentFilters, summary);
 
                 postMessageFn({
                     type: 'enriched',
@@ -351,17 +399,19 @@ function createWorkerHandler(postMessageFn) {
             } else if (action === 'filter') {
                 currentFilters = data.filters || {};
                 const summary = summarize(currentFilters);
-                const pageResult = columnarStorage.getPage(1, 50, { ...currentFilters, totalRows: summary.matchingCount });
+                const pageResult = firstPage(currentFilters, summary);
 
                 postMessageFn({
                     type: 'filter_result',
+                    reqId: data.reqId,
                     summary,
                     pageResult
                 });
             } else if (action === 'get_page') {
                 const page = data.pageNumber || data.page || 1;
                 const pageSize = data.pageSize || 50;
-                const filters = data.filters || currentFilters;
+                // Newest request first, or 'file' for the order of the log.
+                const filters = { ...(data.filters || currentFilters), order: data.order === 'file' ? 'file' : 'newest' };
                 const pageResult = columnarStorage.getPage(page, pageSize, filters);
 
                 postMessageFn({
@@ -370,11 +420,6 @@ function createWorkerHandler(postMessageFn) {
                     ip: data.ip,
                     pageResult
                 });
-            } else if (action === 'parse' && typeof data.logText === 'string') {
-                // Legacy non-streaming parsing fallback
-                const parser = globalThis.LogParser || LogParser;
-                const result = parser.parseIPs(data.logText, data.options);
-                postMessageFn({ type: 'success', result });
             }
         } catch (err) {
             postMessageFn({ type: 'error', error: err.message || String(err) });
@@ -382,8 +427,8 @@ function createWorkerHandler(postMessageFn) {
     };
 }
 
-// Bind to worker environment if self exists
-if (typeof self !== 'undefined' && typeof self.postMessage === 'function') {
+// In a worker this file is the worker. On a page it only defines the handler.
+if (typeof importScripts === 'function' && typeof self !== 'undefined' && typeof self.postMessage === 'function') {
     self.onmessage = createWorkerHandler((msg) => self.postMessage(msg));
 }
 
