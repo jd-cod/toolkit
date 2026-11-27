@@ -272,86 +272,53 @@ const LogParser = (() => {
         return date;
     }
 
-    // An impossible offset marks a corrupt time.
+    // The offset is not applied, but an impossible one marks a corrupt time.
     function validOffset(hours, minutes) {
         return (hours === undefined || +hours <= 23) && (minutes === undefined || +minutes <= 59);
-    }
-
-    // Minutes east of UTC for `+0530`, `-07:00`, `Z`; null when the time names no zone.
-    function offsetMinutes(text, hours, minutes) {
-        // The sign is the last + or - of the text: a date has its dashes before it.
-        if (hours !== undefined) return (text.lastIndexOf('-') > text.lastIndexOf('+') ? -1 : 1) * (+hours * 60 + (+minutes || 0));
-        return /(?:Z|UTC|GMT)$/i.test(text) ? 0 : null;
     }
 
     /**
      * Read a log timestamp.
      *
-     * `date` is the clock time as the server wrote it, stored as if it were
-     * UTC: `13:55:36 -0700` and `13:55:36+05:30` both read 13:55:36. The
-     * dashboard shows a log in its own clock, whatever the viewer's time zone.
-     * `offset` is the zone the time was written in, in minutes east of UTC,
-     * or null when it names none. Epoch numbers are UTC.
+     * The result is the clock time as the server wrote it, stored as if it
+     * were UTC: `13:55:36 -0700` and `13:55:36+05:30` both read 13:55:36. A
+     * time is never converted to another zone, so the dashboard reads like
+     * the server's own clock. Epoch numbers have no clock of their own and
+     * are read as UTC.
      *
-     * @returns {{ date: Date, offset: number|null }|null}
+     * @returns {Date|null}
      */
-    function readTimestamp(tsStr) {
+    function parseTimestamp(tsStr) {
         if (!tsStr || typeof tsStr !== 'string') return null;
         const str = tsStr.trim();
-        const result = (date, offset) => (date ? { date, offset } : null);
 
         // ISO-8601: 2026-10-01T00:00:00Z, 2026-10-01T05:30:00.123+05:30, 2026-10-01 00:00:00
         let m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:[.,]\d+)?\s*(?:Z|UTC|GMT|[+-](\d{2})(?::?(\d{2}))?)?$/i.exec(str);
-        if (m) return validOffset(m[7], m[8]) ? result(wallClock(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]), offsetMinutes(str, m[7], m[8])) : null;
+        if (m) return validOffset(m[7], m[8]) ? wallClock(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null;
 
         // Common Log Format: 01/Oct/2026:00:00:00 +0000
         m = /^(\d{1,2})\/([A-Za-z\u00C0-\u00FF]{3,5}\.?)\/(\d{4}):(\d{2}):(\d{2}):(\d{2})(?:[.,]\d+)?(?:\s*(?:Z|UTC|GMT|[+-](\d{2}):?(\d{2})))?$/.exec(str);
         if (m) {
             const month = monthIndex(m[2]);
             if (month === undefined || !validOffset(m[7], m[8])) return null;
-            return result(wallClock(+m[3], month, +m[1], +m[4], +m[5], +m[6]), offsetMinutes(str, m[7], m[8]));
+            return wallClock(+m[3], month, +m[1], +m[4], +m[5], +m[6]);
         }
 
         // Epoch: seconds (with or without a fraction), milli-, micro- or nanoseconds
         m = /^(\d{10})(?:\.\d+)?$/.exec(str);
-        if (m) return result(new Date(Number(m[1]) * 1000), 0);
-        if (/^\d{13}$/.test(str)) return result(new Date(Number(str)), 0);
-        if (/^\d{16}$/.test(str)) return result(new Date(Math.floor(Number(str) / 1000)), 0);
-        if (/^\d{19}$/.test(str)) return result(new Date(Number(str.slice(0, 13))), 0);
+        if (m) return new Date(Number(m[1]) * 1000);
+        if (/^\d{13}$/.test(str)) return new Date(Number(str));
+        if (/^\d{16}$/.test(str)) return new Date(Math.floor(Number(str) / 1000));
+        if (/^\d{19}$/.test(str)) return new Date(Number(str.slice(0, 13)));
 
         // RFC 1123: Sat, 10 Oct 2026 13:55:36 GMT
-        m = /^(?:[A-Za-z]{3},\s*)?(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})(?:\s*(GMT|UTC|Z|[+-]\d{4}))?/.exec(str);
+        m = /^(?:[A-Za-z]{3},\s*)?(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/.exec(str);
         if (m) {
             const month = monthIndex(m[2]);
             if (month === undefined) return null;
-            const zone = m[7] ? (/^[+-]/.test(m[7]) ? (m[7][0] === '-' ? -1 : 1) * (+m[7].slice(1, 3) * 60 + +m[7].slice(3, 5)) : 0) : null;
-            return result(wallClock(+m[3], month, +m[1], +m[4], +m[5], +m[6]), zone);
+            return wallClock(+m[3], month, +m[1], +m[4], +m[5], +m[6]);
         }
         return null;
-    }
-
-    /** The clock time of a log timestamp (see readTimestamp). @returns {Date|null} */
-    function parseTimestamp(tsStr) {
-        const stamp = readTimestamp(tsStr);
-        return stamp ? stamp.date : null;
-    }
-
-    /**
-     * The zone most lines of a sample are written in (minutes east of UTC),
-     * or null when no line names one. It becomes the clock of the whole log:
-     * a line written in another zone is converted to it, so two servers, or
-     * the hour a daylight-saving change repeats, end up on one time line.
-     */
-    function dominantZone(times) {
-        const counts = new Map();
-        for (const time of times) {
-            const stamp = time ? readTimestamp(time) : null;
-            if (stamp && stamp.offset !== null) counts.set(stamp.offset, (counts.get(stamp.offset) || 0) + 1);
-        }
-        let zone = null;
-        let most = 0;
-        for (const [offset, count] of counts) if (count > most) { zone = offset; most = count; }
-        return zone;
     }
 
     /**
@@ -541,19 +508,9 @@ const LogParser = (() => {
 
         let timestamp = null;
         let timeSec = 0;
-        let zoneConverted = false;
         if (f.time) {
-            const stamp = readTimestamp(f.time);
-            if (stamp) {
-                timestamp = stamp.date;
-                // The log's clock is one zone; a line written in another is moved to it.
-                const zone = options && options.zoneOffset != null ? options.zoneOffset : (ctx ? ctx.zoneOffset : null);
-                if (zone != null && stamp.offset !== null && stamp.offset !== zone) {
-                    timestamp = new Date(timestamp.getTime() - (stamp.offset - zone) * 60000);
-                    zoneConverted = true;
-                }
-                timeSec = Math.floor(timestamp.getTime() / 1000);
-            }
+            timestamp = parseTimestamp(f.time);
+            if (timestamp) timeSec = Math.floor(timestamp.getTime() / 1000);
         }
 
         const req = f.request !== undefined ? splitRequest(f.request) : { method: f.method || null, url: f.url || null, httpVersion: f.httpVersion || null };
@@ -591,7 +548,6 @@ const LogParser = (() => {
             ip,
             remoteAddr: f.remote || ip,
             viaForwarded,
-            zoneConverted,
             timestamp,
             timeSec,
             method: req.method,
@@ -1025,7 +981,7 @@ const LogParser = (() => {
             if (dynamic) type = 'dynamic';
         }
 
-        const ctx = { useForwarded: false, swapRefUa: false, zoneOffset: null };
+        const ctx = { useForwarded: false, swapRefUa: false };
         const parsed = fieldsOf.filter(f => f && f.wrapped === undefined);
 
         // Behind a proxy or CDN the connecting address is the proxy. That is
@@ -1053,24 +1009,11 @@ const LogParser = (() => {
             ctx.swapRefUa = swapped > normal;
         }
 
-        // Fields of every sample line as the chosen parser reads them, for the zone.
-        const lineFields = dynamic ? candidates.map(line => dynamic.extract(line)) : fieldsOf;
-        ctx.zoneOffset = dominantZone(lineFields.map(f => {
-            if (!f || f.wrapped === undefined) return f ? f.time : null;
-            // A container log line wraps an ordinary one.
-            for (const inner of FORMAT_ORDER) {
-                const fields = EXTRACTORS[inner](f.wrapped);
-                if (fields && fields.wrapped === undefined) return fields.time;
-            }
-            return null;
-        }));
-
         return {
             type,
             parseLine: makeLineParser(type, ctx, dynamic ? dynamic.extract : null),
             useForwarded: ctx.useForwarded,
             swapRefUa: ctx.swapRefUa,
-            zoneOffset: ctx.zoneOffset,
             ...(dynamic ? { colMap: dynamic.colMap } : {}),
         };
     }
@@ -1093,7 +1036,6 @@ const LogParser = (() => {
         const skipCounts = { privateIP: 0, healthCheck: 0, forbidden: 0, invalid: 0 };
         let validLines = 0;
         let forwardedLines = 0;
-        let zoneConvertedLines = 0;
         const times = [];
         const logEntries = [];
 
@@ -1114,7 +1056,6 @@ const LogParser = (() => {
                 continue;
             }
             if (parsed.viaForwarded) forwardedLines++;
-            if (parsed.zoneConverted) zoneConvertedLines++;
 
             logEntries.push({
                 ip: parsed.ip,
@@ -1159,10 +1100,6 @@ const LogParser = (() => {
             format: format.type,
             // How many requests took their client from a forwarded-address field.
             forwardedLines,
-            // The zone the times are shown in (minutes east of UTC; null when
-            // the log names none) and how many requests were moved into it.
-            zoneOffsetMinutes: options.zoneOffset != null ? options.zoneOffset : (format.zoneOffset != null ? format.zoneOffset : null),
-            zoneConvertedLines,
             strayTimestamps: bounds ? bounds.outliers : 0,
             logSpanMinutes,
             logStart,
@@ -1293,7 +1230,7 @@ const LogParser = (() => {
 
     return {
         parseLine, parseIPs, parseAsync, filterByTime, computeTimeFilters, isValidIP, isPrivateIP, detectFormat,
-        parseJsonLine, tokenizeLine, parseTimestamp, readTimestamp, splitRequest, canonicalIP, ipFilterMatcher, forwardedClient, timeBounds, workerUrl,
+        parseJsonLine, tokenizeLine, parseTimestamp, splitRequest, canonicalIP, ipFilterMatcher, forwardedClient, timeBounds, workerUrl,
     };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = LogParser;

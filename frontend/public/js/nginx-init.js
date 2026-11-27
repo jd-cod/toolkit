@@ -617,8 +617,6 @@ window.initNginxPage = function () {
                 skippedLines: new Array(result.totalLinesSkipped || 0),
                 skipCounts: result.skipCounts || {},
                 forwardedLines: result.forwardedLines || 0,
-                zoneOffsetMinutes: result.zoneOffsetMinutes != null ? result.zoneOffsetMinutes : null,
-                zoneConvertedLines: result.zoneConvertedLines || 0,
                 validLines: (result.summary.matchingCount || 0) + (result.totalLinesSkipped || 0) - ((result.skipCounts && result.skipCounts.invalid) || 0),
                 minTimestamp: result.summary.minTimeSec ? result.summary.minTimeSec * 1000 : 0,
                 maxTimestamp: result.summary.maxTimeSec ? result.summary.maxTimeSec * 1000 : 0,

@@ -237,8 +237,7 @@ test.describe('Pasted text and an uploaded file give the same dashboard', () => 
       watcher.assertClean();
     });
 
-    test(`${mode}: lines from another time zone are moved onto the log's time line`, async ({ page, console: watcher }) => {
-      // The same ten seconds from a server on +0200 and, fewer lines, one on UTC.
+    test(`${mode}: lines from two time zones are both shown as written`, async ({ page, console: watcher }) => {
       const two = (ip: string, time: string, zone: string, url: string) => `${ip} - - [27/Nov/2026:${time} ${zone}] "GET ${url} HTTP/1.1" 200 512 "-" "${BROWSER}"`;
       const text = [
         ...Array.from({ length: 40 }, (_, i) => two(`81.2.69.${1 + i}`, `12:00:${p2(i % 10)}`, '+0200', '/berlin')),
@@ -255,15 +254,13 @@ test.describe('Pasted text and an uploaded file give the same dashboard', () => 
       }
       await page.click('#nginx-analyze-btn');
       await expect(total(page)).toHaveText('50', { timeout: 45_000 });
-      await expect(page.locator('#log-zone')).toHaveText('+02:00');
-      await expect(page.locator('#log-zone-converted')).toHaveText('10 from another zone converted');
-      // Nine seconds from first to last request, not two hours.
-      await expect(page.locator('#time-window-readout')).toContainText('12:00:00 → 12:00:09');
+      await expect(page.locator('#log-clock-note')).toHaveAttribute('title', /exactly as the server wrote them/);
+      await expect(page.locator('#time-window-readout')).toContainText('10:00:00 → 12:00:09');
       await page.locator('.cross-filter-path-row[data-path="=/utc"]').click();
       await expect(total(page)).toHaveText('10');
       const times = await page.locator('#explorer-rows-body tr td:first-child').allInnerTexts();
       expect(times.length).toBe(10);
-      for (const time of times) expect(time).toMatch(/12:00:0\d$/);
+      for (const time of times) expect(time).toMatch(/10:00:0\d$/);
       watcher.assertClean();
     });
 

@@ -78,9 +78,6 @@ function createWorkerHandler(postMessageFn) {
     let isAppending = false;
     let activeFormat = null;
     let forwardedLines = 0;
-    // The zone of the first file that names one; later files are shown in it too.
-    let logZone = null;
-    let zoneConvertedLines = 0;
     const skipCounts = { privateIP: 0, healthCheck: 0, forbidden: 0, invalid: 0 };
     // Path and section of each URL in the store, by URL id.
     const urlPath = [];
@@ -172,9 +169,7 @@ function createWorkerHandler(postMessageFn) {
             pendingLines = [];
             if (lines.length === 0) return;
             activeFormat = parser.detectFormat(lines.slice(0, DETECT_LINES));
-            if (logZone === null && activeFormat.zoneOffset != null) logZone = activeFormat.zoneOffset;
         }
-        if (logZone !== null && options && options.zoneOffset == null) options = Object.assign({}, options, { zoneOffset: logZone });
         const lineParser = (activeFormat && activeFormat.parseLine) || parser.parseLine;
         const paths = globalThis.RequestPaths || (typeof RequestPaths !== 'undefined' ? RequestPaths : null);
         const referrerSite = paths && paths.referrerSite;
@@ -206,7 +201,6 @@ function createWorkerHandler(postMessageFn) {
                 );
                 totalLinesParsed++;
                 if (res.viaForwarded) forwardedLines++;
-                if (res.zoneConverted) zoneConvertedLines++;
             } else {
                 totalLinesSkipped++;
                 if (res.reasonType && skipCounts[res.reasonType] !== undefined) skipCounts[res.reasonType]++;
@@ -222,7 +216,7 @@ function createWorkerHandler(postMessageFn) {
     }
 
     function ingestStats() {
-        return { totalBytesRead, totalLinesParsed, totalLinesSkipped, skipCounts: { ...skipCounts }, forwardedLines, zoneOffsetMinutes: logZone, zoneConvertedLines };
+        return { totalBytesRead, totalLinesParsed, totalLinesSkipped, skipCounts: { ...skipCounts }, forwardedLines };
     }
 
     return function onMessage(e) {

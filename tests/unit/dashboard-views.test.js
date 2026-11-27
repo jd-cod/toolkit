@@ -47,12 +47,7 @@ test('text helpers', () => {
     assert.equal(Views.escapeHtml(null), '');
     assert.equal(Views.numberWithCommas(1234567), '1,234,567');
     assert.equal(Views.numberWithCommas(undefined), '0');
-    assert.equal(Views.zoneLabel(330), '+05:30');
-    assert.equal(Views.zoneLabel(-420), '-07:00');
-    assert.equal(Views.zoneLabel(0), '+00:00');
     assert.equal(Views.formatSize(1536), '1.5 KB');
-    assert.match(Views.logClockTitle({ zoneOffsetMinutes: 120, zoneConvertedLines: 10 }), /\+02:00.*10 requests were written in another time zone/);
-    assert.match(Views.logClockTitle({ zoneOffsetMinutes: null }), /names no time zone/);
 });
 
 test('the status split of a path names its two most frequent responses', () => {

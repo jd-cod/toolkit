@@ -40,7 +40,7 @@ The findings below were fixed on this branch after the review. 46 are fixed, 2 a
 | F1, F2, F3, F5, F6, F8 | Fixed | Format chosen by majority over 200 lines; any status 100-599; mixed files read in any order; per-file detection in upload |
 | F4 | Fixed | Nothing is guessed from one line. Two lines glued together still parse as one request |
 | F7 | Fixed | Added AWS ALB and classic ELB, IIS W3C, Caddy, Traefik, Cloudflare Logpush, Docker wrapper, syslog prefix and HAProxy HTTP logs |
-| P1 | Fixed | A log is shown in its own clock, and lines written in another zone are moved to it (decision 1) |
+| P1 | Fixed | Every notation keeps the time the server wrote; nothing is converted (decision 1) |
 | P2 | Fixed | Fractions, epoch numbers, one-digit day, any letter case, `+02`, RFC 1123, and month names in German, French, Spanish, Italian, Portuguese and Dutch |
 | P3, P4, P5, P7 | Fixed | |
 | P6 | Fixed | Requests without an HTTP status (none, 0, 999) are a class of their own, "No status", in the totals, the filter and the report |
@@ -56,13 +56,13 @@ The findings below were fixed on this branch after the review. 46 are fixed, 2 a
 | U1, U2, U3, U4, U5, U7 | Fixed | |
 | U6 | Fixed | Upload has paths, sections, referring sites and the status split per path; the Targeted Paths table shows the split |
 | A1, A3, A4 | Fixed | |
-| A5 | Fixed | The page and the report name the time zone of the log ("time zone +02:00") and say how many requests were converted to it |
+| A5 | Fixed | The page and the report say that times are shown as written in the log |
 | A2 | Fixed | Both engines give the same peak, average and burst label. The report also names the busiest second (or the shortest stretch kept for a long log), which does not depend on the chart interval |
 | A6 | Fixed | The dashboard lists referring sites, with requests that have no referrer on their own line. The full referrer list in the result data is unchanged |
 
 Decisions taken while fixing, each easy to reverse:
 
-1. **Time zone (P1).** An existing end-to-end test requires that `[07:23:05 -0700]` is shown as 07:23:05, so a log is shown in its own clock. Its clock is the zone most of its lines are written in; a line written in another zone (a second server, the hour after daylight-saving time ends, an epoch number) is converted to it. An added file is shown in the zone of the first one.
+1. **Time zone (P1).** Log times are kept exactly as the server wrote them, so a chart can be read against the server's own clock: `[07:23:05 -0700]` and `07:23:05+05:30` are both shown as 07:23:05. Times are never converted, neither to the viewer's zone nor to UTC nor between zones. A log that mixes zones (two servers, the hour that repeats when daylight-saving time ends) therefore shows each line at its written time. Epoch numbers have no written clock and are read as UTC.
 2. **Which forwarded address is the client (C1).** The right-most public entry of `X-Forwarded-For`. The left-most is easier to read but can be written by the client, which would let anyone appear as a verified Googlebot.
 3. **When forwarded addresses are trusted (C1).** Always when the connecting address is private. Otherwise only when at least nine in ten lines carry one and they vary more than the connecting addresses do. `clientIp: 'remote' | 'forwarded'` overrides this in the parser options; there is no control for it on the page yet.
 4. **"Ignore 403" (B1).** The option stays on by default and still hides ordinary refusals, but never a request that looks like an attack or a login attempt.
@@ -101,7 +101,7 @@ What changed after the table above was first written, each with its tests:
 
 | Area | Change | Checked by |
 |---|---|---|
-| Time zones | One time line for logs written in several zones (decision 1) | `tests/unit/log-time-zone.test.js`, `upload-parity.spec.ts` |
+| Time zones | Times are shown as written, never converted (decision 1) | `tests/unit/log-time-as-written.test.js`, `upload-parity.spec.ts` |
 | Result object | Both engines give the same result. Uploads had no addresses per country or network, no median, minimum or maximum response size, no hours or weekdays, country codes instead of names. Only `referrers` (full addresses) and the lines per address exist for pasted logs alone | `tests/unit/engine-parity.test.js` compares the whole result, unfiltered and under nine filters |
 | Report | Could not be built after an upload; its country and network tables were empty for uploads | `upload-parity.spec.ts` compares the report's tables of both modes |
 | Filters | The address window follows the filters; the search boxes above the log table and in the filter bar are one filter; "No status" and 1xx can be filtered; AS0 can be filtered in uploads | `upload-parity.spec.ts`, `tests/unit/dashboard-filters.test.js` |

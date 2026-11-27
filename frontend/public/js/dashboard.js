@@ -8,7 +8,7 @@
 const Dashboard = (() => {
     // Markup and text helpers live in dashboard-views.js, the filter logic in dashboard-filters.js.
     const {
-        formatBytes, numberWithCommas, escapeHtml, zoneLabel, logClockTitle,
+        formatBytes, numberWithCommas, escapeHtml,
         formatSize, formatTimelineTime, render3ColumnIncidentMatrixHtml,
     } = DashboardViews;
 
@@ -645,8 +645,6 @@ const Dashboard = (() => {
                 skippedLines: new Array(result.totalLinesSkipped || 0),
                 skipCounts: result.skipCounts || {},
                 forwardedLines: result.forwardedLines || 0,
-                zoneOffsetMinutes: result.zoneOffsetMinutes != null ? result.zoneOffsetMinutes : null,
-                zoneConvertedLines: result.zoneConvertedLines || 0,
                 validLines: (result.summary.matchingCount || 0) + (result.totalLinesSkipped || 0) - ((result.skipCounts && result.skipCounts.invalid) || 0),
                 minTimestamp: result.summary.minTimeSec ? result.summary.minTimeSec * 1000 : 0,
                 maxTimestamp: result.summary.maxTimeSec ? result.summary.maxTimeSec * 1000 : 0,
@@ -683,10 +681,7 @@ const Dashboard = (() => {
 
         // In-memory path
         currentLogText = (currentLogText ? currentLogText + '\n' : '') + text;
-        // The added text is shown in the time zone of the first source.
-        const appendOptions = parserOptions(currentSkip403, currentSkipInternal, currentClientIp);
-        if (originalParseResult && originalParseResult.zoneOffsetMinutes != null) appendOptions.zoneOffset = originalParseResult.zoneOffsetMinutes;
-        const appendParse = await LogParser.parseAsync(text, appendOptions);
+        const appendParse = await LogParser.parseAsync(text, parserOptions(currentSkip403, currentSkipInternal, currentClientIp));
         // A client is judged by all of its requests, so classify the merged log.
         originalEnrichedEntries = originalEnrichedEntries.concat(appendParse.logEntries);
         Analyzer.enrichLogEntries(originalEnrichedEntries);
@@ -699,8 +694,6 @@ const Dashboard = (() => {
             parsedLines: new Array(mergedData.total_requests),
             validLines: mergedData.total_requests,
             skippedLines: (originalParseResult?.skippedLines || []).concat(appendParse.skippedLines || []),
-            zoneOffsetMinutes: originalParseResult?.zoneOffsetMinutes ?? appendParse.zoneOffsetMinutes ?? null,
-            zoneConvertedLines: (originalParseResult?.zoneConvertedLines || 0) + (appendParse.zoneConvertedLines || 0),
             inputWarnings: [...(originalParseResult?.inputWarnings || []), ...warnings]
         };
         originalParseResult = mergedParseResult;
@@ -1015,7 +1008,7 @@ const Dashboard = (() => {
                     ` : ''}
                     ${parseResult?.logStart ? `
                     <span style="color:rgba(255,255,255,0.2);">|</span>
-                    <span id="log-clock-note" title="${escapeHtml(logClockTitle(parseResult))}"><i class="bi bi-clock" style="margin-right:4px;"></i>Span: <strong style="color:var(--text-secondary);">${escapeHtml(parseResult.logStart)}</strong> → <strong style="color:var(--text-secondary);">${escapeHtml(parseResult.logEnd)}</strong> (${Number(parseResult.logSpanMinutes) || 0}m)${parseResult.zoneOffsetMinutes != null ? ` · time zone <strong id="log-zone" style="color:var(--text-secondary);">${zoneLabel(parseResult.zoneOffsetMinutes)}</strong>` : ''}${parseResult.zoneConvertedLines > 0 ? ` · <span id="log-zone-converted">${numberWithCommas(parseResult.zoneConvertedLines)} from another zone converted</span>` : ''}</span>
+                    <span id="log-clock-note" title="Times are shown exactly as the server wrote them in the log. Nothing is converted, neither to your time zone nor to UTC."><i class="bi bi-clock" style="margin-right:4px;"></i>Span: <strong style="color:var(--text-secondary);">${escapeHtml(parseResult.logStart)}</strong> → <strong style="color:var(--text-secondary);">${escapeHtml(parseResult.logEnd)}</strong> (${Number(parseResult.logSpanMinutes) || 0}m)</span>
                     ` : ''}
                 </div>
             </div>

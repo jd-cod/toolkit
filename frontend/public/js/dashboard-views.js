@@ -32,21 +32,6 @@ const DashboardViews = (() => {
             .replace(/'/g, '&#39;');
     }
 
-    // "+02:00" for 120 minutes east of UTC.
-    function zoneLabel(minutes) {
-        const abs = Math.abs(minutes);
-        return `${minutes < 0 ? '-' : '+'}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
-    }
-
-    function logClockTitle(parseResult) {
-        const zone = parseResult ? parseResult.zoneOffsetMinutes : null;
-        if (zone == null) return 'Times are shown as the server wrote them. The log names no time zone.';
-        const converted = parseResult.zoneConvertedLines > 0
-            ? ` ${numberWithCommas(parseResult.zoneConvertedLines)} requests were written in another time zone and were converted to it, so all requests are on one time line.`
-            : '';
-        return `Times are shown in the log's own time zone (${zoneLabel(zone)}), not in yours.${converted}`;
-    }
-
     function statusColor(code) {
         if (code >= 500 && code <= 599) return 'var(--accent-red)';
         if (code >= 400 && code <= 499) return 'var(--accent-amber)';
@@ -666,7 +651,7 @@ const DashboardViews = (() => {
     }
 
     return {
-        formatBytes, numberWithCommas, escapeHtml, zoneLabel, logClockTitle, statusColor,
+        formatBytes, numberWithCommas, escapeHtml, statusColor,
         pathStatusHtml, formatSize, formatDuration, formatTimelineTime, botNamesHint,
         dataNotices, renderDataNoticesHtml, renderExclusionsHtml, getTimeWindowHtml,
         render3ColumnIncidentMatrixHtml, renderLogExplorerCardHtml, renderUnifiedTelemetryCardHtml, renderFacetedFilterRibbonHtml,
