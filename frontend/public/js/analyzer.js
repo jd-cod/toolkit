@@ -230,11 +230,7 @@ const Analyzer = (() => {
             }
         }
 
-        const statusCategories = { '1xx': 0, '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 };
-        for (const [status, count] of statusCounter.entries()) {
-            const cat = Math.floor(status / 100);
-            if (cat >= 1 && cat <= 5) statusCategories[`${cat}xx`] += count;
-        }
+        const statusCategories = statusCategoriesOf(statusCounter.entries());
 
         const statusHits = [...statusCounter.entries()]
             .sort((a, b) => b[1] - a[1])
@@ -343,6 +339,25 @@ const Analyzer = (() => {
         { seconds: 86400, label: '1d' },
     ];
 
+    /**
+     * Requests per status class. Requests whose status is missing or is not
+     * an HTTP status (0, 999) are counted under `other`, which is present
+     * only when there are any, so the classes always add up to the requests
+     * that have a status entry.
+     * @param {Iterable<[number|string, number]>} statusCounts
+     */
+    function statusCategoriesOf(statusCounts) {
+        const categories = { '1xx': 0, '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 };
+        let other = 0;
+        for (const [status, count] of statusCounts) {
+            const cat = Math.floor(Number(status) / 100);
+            if (cat >= 1 && cat <= 5) categories[`${cat}xx`] += count;
+            else other += count;
+        }
+        if (other > 0) categories.other = other;
+        return categories;
+    }
+
     function formatBucketTime(ts, bucketSeconds, spanCrossesDays) {
         const d = new Date(ts);
         if (isNaN(d.getTime())) return '--';
@@ -375,6 +390,12 @@ const Analyzer = (() => {
             peak_timestamp: 0,
             peak_time_str: '--',
             peak_index: 0,
+            busiest_window_seconds: 1,
+            busiest_window_label: 'second',
+            busiest_count: 0,
+            busiest_rps: 0,
+            busiest_timestamp: 0,
+            busiest_time_str: '--',
             avg_rps: 0,
             spike_ratio: 1,
             burst_severity: 'normal',
@@ -472,6 +493,36 @@ const Analyzer = (() => {
             else if (code >= 500 && code < 600) series.s5[at]++;
         }
         return series;
+    }
+
+    /**
+     * The shortest stretch both engines can count for a log of this length:
+     * one second up to 20,000 seconds of log, then 5 s, 10 s and so on. The
+     * same steps as ColumnarStorage.rateSeriesBase, which the upload engine
+     * stores its series in.
+     */
+    function busiestWindowSeconds(minSec, maxSec) {
+        const slots = step => Math.floor(maxSec / step) - Math.floor(minSec / step) + 1;
+        for (const step of [1, 5, 10, 30, 60, 300, 900, 3600]) {
+            if (slots(step) <= 20000) return step;
+        }
+        return Math.ceil((maxSec - minSec + 1) / 20000 / 3600) * 3600;
+    }
+
+    // The stretch of `seconds` (aligned to the clock) with the most requests;
+    // the earliest one when several tie.
+    function busiestWindow(series, seconds) {
+        const counts = new Map();
+        for (let i = 0; i < series.times.length; i++) {
+            const key = Math.floor(series.times[i] / seconds);
+            counts.set(key, (counts.get(key) || 0) + series.total[i]);
+        }
+        let bestKey = 0;
+        let best = 0;
+        for (const [key, count] of counts) {
+            if (count > best || (count === best && key < bestKey)) { best = count; bestKey = key; }
+        }
+        return { count: best, timestamp: bestKey * seconds * 1000 };
     }
 
     function computeRequestRate(logEntries, options = {}) {
@@ -573,6 +624,14 @@ const Analyzer = (() => {
             }
         }
 
+        // Independent of the chart: the busiest second, or the shortest
+        // stretch kept for a log this long.
+        let windowSeconds = busiestWindowSeconds(Math.floor(minTs / 1000), Math.floor(maxTs / 1000));
+        if (windowSeconds < base || windowSeconds % base !== 0) windowSeconds = wholeSlots(windowSeconds);
+        const busiest = busiestWindow(series, windowSeconds);
+        const windowLabel = windowSeconds === 1 ? 'second'
+            : (CANDIDATE_RESOLUTIONS.find(r => r.seconds === windowSeconds)?.label || `${windowSeconds}s`);
+
         const avgRps = Number((requests / durationSeconds).toFixed(2));
         const spikeRatio = avgRps > 0 ? Number((peakRps / avgRps).toFixed(1)) : 1;
 
@@ -635,6 +694,12 @@ const Analyzer = (() => {
             peak_timestamp: peakBucket ? peakBucket.timestamp : minTs,
             peak_time_str: peakBucket ? peakBucket.label : '--',
             peak_index: peakIndex,
+            busiest_window_seconds: windowSeconds,
+            busiest_window_label: windowLabel,
+            busiest_count: busiest.count,
+            busiest_rps: Number((busiest.count / windowSeconds).toFixed(2)),
+            busiest_timestamp: busiest.timestamp,
+            busiest_time_str: formatBucketTime(busiest.timestamp, windowSeconds, spanCrossesDays),
             avg_rps: avgRps,
             spike_ratio: spikeRatio,
             burst_severity: burstSeverity,
@@ -824,12 +889,10 @@ const Analyzer = (() => {
         }
 
         // HTTP Status categories
-        const statusCategories = { '1xx': 0, '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 };
+        const statusCategories = statusCategoriesOf(Object.entries(summary.statusCounts || {}));
         const statusHits = Object.entries(summary.statusCounts || {})
             .map(([codeStr, count]) => {
                 const code = parseInt(codeStr, 10);
-                const cat = Math.floor(code / 100);
-                if (cat >= 1 && cat <= 5) statusCategories[`${cat}xx`] += count;
                 return {
                     code,
                     count,

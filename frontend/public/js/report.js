@@ -245,7 +245,7 @@ const Report = (() => {
                     csvRows.push({
                         Section: 'Status Codes',
                         Category: 'HTTP Status',
-                        Item: String(r.code),
+                        Item: r.code >= 100 && r.code <= 599 ? String(r.code) : 'No status',
                         Value: r.count,
                         Details: `${r.percentage || ''}%`
                     });
@@ -619,7 +619,8 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
 
     function buildHeader(parseResult, generatedAt) {
         const counts = parseResult?.skipCounts;
-        const exclusions = counts ? `<p class="report-period">Analysis exclusions: internal requests ${parseResult.options.skipInternal ? 'excluded' : 'included'}; ordinary 403 responses ${parseResult.options.skip403 ? 'excluded (recognized crawlers retained)' : 'included'}.<br>Skipped: ${n(counts.privateIP)} private/local IP · ${n(counts.healthCheck)} health-check path · ${n(counts.forbidden)} ordinary 403 · ${n(counts.invalid)} invalid.</p>` : '';
+        const used = parseResult?.options;
+        const exclusions = counts ? `<p class="report-period">${used ? `Analysis exclusions: internal requests ${used.skipInternal ? 'excluded' : 'included'}; ordinary 403 responses ${used.skip403 ? 'excluded (recognized crawlers retained)' : 'included'}.<br>` : ''}Skipped: ${n(counts.privateIP)} private/local IP · ${n(counts.healthCheck)} health-check path · ${n(counts.forbidden)} ordinary 403 · ${n(counts.invalid)} invalid.</p>` : '';
         const period = parseResult?.logStart
             ? `<p class="report-period">📅 Log Period: <strong>${esc(parseResult.logStart)}</strong> → <strong>${esc(parseResult.logEnd)}</strong> (${parseResult.logSpanMinutes} min)</p>`
             : '';
@@ -662,7 +663,7 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
         const m = data.http_metrics;
         if (!m) return '';
         const statusChips = Object.entries(m.status_categories).map(([cat, count]) =>
-            `<div class="metric-chip"><span class="metric-chip-key">${esc(cat)}</span><span class="metric-chip-val" style="color:#6366f1">${n(count)}</span></div>`
+            `<div class="metric-chip"><span class="metric-chip-key">${esc(cat === 'other' ? 'no status' : cat)}</span><span class="metric-chip-val" style="color:#6366f1">${n(count)}</span></div>`
         ).join('');
         const methodChips = m.method_hits.map(h =>
             `<div class="metric-chip"><span class="metric-chip-key">${esc(h.method)}</span><span class="metric-chip-val" style="color:#10b981">${n(h.count)}</span></div>`
@@ -703,6 +704,7 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
     </div>
     <div class="stat-cards" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:14px;padding:12px 16px 0">
         <div class="stat-card" style="border-top-color:#ef4444;padding:16px 10px"><div class="stat-label" title="Average over the busiest ${esc(rr.bucket_label)} of the log. A shorter window gives a higher peak.">Peak Rate (busiest ${esc(rr.bucket_label)})</div><div class="stat-value" style="color:#ef4444;font-size:1.3rem">${rr.peak_rps} <span style="font-size:0.75rem;color:#94a3b8">req/s</span></div><div style="font-size:0.7rem;color:#94a3b8">at ${esc(rr.peak_time_str)} (${n(rr.peak_count)} reqs)</div></div>
+        ${rr.busiest_count > 0 ? `<div class="stat-card" style="border-top-color:#f43f5e;padding:16px 10px"><div class="stat-label" title="The most requests in any one ${esc(rr.busiest_window_label)} of the log. This does not depend on the chart interval.">Busiest ${esc(rr.busiest_window_label)}</div><div class="stat-value" style="color:#f43f5e;font-size:1.3rem">${n(rr.busiest_count)} <span style="font-size:0.75rem;color:#94a3b8">reqs</span></div><div style="font-size:0.7rem;color:#94a3b8">at ${esc(rr.busiest_time_str)}${rr.busiest_window_seconds > 1 ? ` (${rr.busiest_rps} req/s)` : ''}</div></div>` : ''}
         <div class="stat-card" style="border-top-color:#6366f1;padding:16px 10px"><div class="stat-label">Average Rate</div><div class="stat-value" style="color:#6366f1;font-size:1.3rem">${rr.avg_rps} <span style="font-size:0.75rem;color:#94a3b8">req/s</span></div><div style="font-size:0.7rem;color:#94a3b8">over ${n(rr.duration_seconds)}s window</div></div>
         <div class="stat-card" style="border-top-color:${badgeColor};padding:16px 10px"><div class="stat-label">Traffic Burst</div><div class="stat-value" style="font-size:0.92rem;padding:4px 0"><span style="background:${badgeBg};color:${badgeColor};padding:3px 8px;border-radius:6px;font-size:0.78rem;font-weight:700">${esc(rr.burst_label)}</span></div><div style="font-size:0.7rem;color:#94a3b8">${rr.spike_ratio}x baseline surge</div></div>
         <div class="stat-card" style="border-top-color:#f59e0b;padding:16px 10px"><div class="stat-label">Peak Errors</div><div class="stat-value" style="color:#f59e0b;font-size:1.3rem">${rr.peak_error_rate}%</div><div style="font-size:0.7rem;color:#94a3b8">4xx/5xx at peak burst</div></div>

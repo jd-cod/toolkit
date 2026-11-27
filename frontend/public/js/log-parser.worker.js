@@ -67,6 +67,9 @@ function createWorkerHandler(postMessageFn) {
     let activeFormat = null;
     let forwardedLines = 0;
     const skipCounts = { privateIP: 0, healthCheck: 0, forbidden: 0, invalid: 0 };
+    // Path and section of each URL in the store, by URL id.
+    const urlPath = [];
+    const urlSection = [];
 
     const classifier = globalThis.TrafficClassifier || (typeof TrafficClassifier !== 'undefined' ? TrafficClassifier : null);
     const session = classifier ? classifier.createSession() : null;
@@ -95,14 +98,34 @@ function createWorkerHandler(postMessageFn) {
     function summarize(filters) {
         const summary = columnarStorage.query(filters);
         const urlHits = summary.urlHits;
+        const matchedRows = summary.matchedRows;
         delete summary.urlHits;
+        delete summary.matchedRows;
         const paths = globalThis.RequestPaths || (typeof RequestPaths !== 'undefined' ? RequestPaths : null);
         if (urlHits && paths) {
             const urls = columnarStorage.urlDict;
-            summary.paths = paths.summarize(
-                (function* () { for (let id = 0; id < urlHits.length; id++) if (urlHits[id]) yield [urls[id], urlHits[id]]; })(),
+            // A URL is turned into its path once, not on every filter change.
+            for (let id = urlPath.length; id < urls.length; id++) {
+                urlPath.push(paths.normalizePath(urls[id]));
+                urlSection.push(paths.sectionOf(urls[id]));
+            }
+            summary.paths = paths.summarizePaths(
+                (function* () { for (let id = 0; id < urlHits.length; id++) if (urlHits[id] && urlPath[id]) yield [urlPath[id], urlSection[id], urlHits[id]]; })(),
                 summary.matchingCount
             );
+            // Statuses are counted for the listed paths only, in a second pass.
+            const top = summary.paths.top_paths;
+            if (matchedRows && top.length) {
+                const position = new Map(top.map((p, at) => [p.path, at]));
+                const groupOfUrl = new Int32Array(urls.length).fill(-1);
+                for (let id = 0; id < urlHits.length; id++) {
+                    if (!urlHits[id]) continue;
+                    const at = position.get(urlPath[id]);
+                    if (at !== undefined) groupOfUrl[id] = at;
+                }
+                const statuses = columnarStorage.statusByUrlGroup(matchedRows, groupOfUrl, top.length);
+                top.forEach((p, at) => { p.status_breakdown = paths.statusBreakdown(statuses[at]); });
+            }
         }
         const counts = summary.clientCounts;
         if (counts && session) {

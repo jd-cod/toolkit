@@ -94,6 +94,41 @@ test('requests without a time are left out of the timeline, not out of the total
     assert.equal(Analyzer.computeRequestRate(entries).total_requests, 102);
 });
 
+test('the busiest second does not depend on the chart interval', () => {
+    const rows = [];
+    for (let i = 0; i < 600; i++) rows.push(line(T0 + i, 200, i));
+    // 37 requests inside one second, straddled by nothing else.
+    for (let i = 0; i < 36; i++) rows.push(line(T0 + 301, 500, i));
+    const { entries, summary } = engines(rows.join('\n') + '\n');
+    for (const resolution of [undefined, 1, 5, 60, 300]) {
+        for (const rate of [Analyzer.computeRequestRate(entries, { resolution }), Analyzer.requestRateFromSeries(summary.rateSeries, { resolution })]) {
+            assert.equal(rate.busiest_window_seconds, 1);
+            assert.equal(rate.busiest_window_label, 'second');
+            assert.equal(rate.busiest_count, 37);
+            assert.equal(rate.busiest_rps, 37);
+            assert.equal(rate.busiest_timestamp, (T0 + 301) * 1000);
+            assert.equal(rate.busiest_time_str, '10:05:01');
+        }
+    }
+    // The chart peak is an average over a bucket, so it is lower.
+    assert.ok(Analyzer.computeRequestRate(entries).peak_rps < 37);
+});
+
+test('a long log names the stretch its busiest count is for', () => {
+    const { entries, summary } = engines(log(3 * 86400, 6000));
+    const paste = Analyzer.computeRequestRate(entries);
+    const upload = Analyzer.requestRateFromSeries(summary.rateSeries);
+    assert.equal(paste.busiest_window_seconds, 30);
+    assert.equal(paste.busiest_window_label, '30s');
+    assert.equal(upload.busiest_count, paste.busiest_count);
+    assert.equal(upload.busiest_timestamp, paste.busiest_timestamp);
+    assert.equal(paste.busiest_rps, Number((paste.busiest_count / 30).toFixed(2)));
+    // Equal counts: the earliest stretch is named.
+    const tie = engines([line(T0, 200), line(T0 + 50, 200), line(T0 + 100, 200)].join('\n') + '\n');
+    assert.equal(Analyzer.computeRequestRate(tie.entries).busiest_timestamp, T0 * 1000);
+    assert.equal(Analyzer.requestRateFromSeries(tie.summary.rateSeries).busiest_timestamp, T0 * 1000);
+});
+
 test('slot size of the series fits every span', () => {
     assert.equal(ColumnarStorage.rateSeriesBase(T0, T0 + 19999), 1);
     assert.equal(ColumnarStorage.rateSeriesBase(T0, T0 + 20000), 5);

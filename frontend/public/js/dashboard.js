@@ -1506,8 +1506,7 @@ const Dashboard = (() => {
         const ipSubnetInput = document.getElementById('log-table-ip-subnet-search');
         if (ipSubnetInput) {
             ipSubnetInput.addEventListener('input', (e) => {
-                logTableSubnetSearch = e.target.value.trim();
-                activeFilters.ipSearch = logTableSubnetSearch;
+                activeFilters.ipSearch = e.target.value;
                 if (_filterDebounceTimer) clearTimeout(_filterDebounceTimer);
                 _filterDebounceTimer = setTimeout(() => applyAndRenderFilters(), 150);
             });
@@ -1517,8 +1516,7 @@ const Dashboard = (() => {
         const pathSearchInput = document.getElementById('log-table-path-search');
         if (pathSearchInput) {
             pathSearchInput.addEventListener('input', (e) => {
-                logTablePathSearch = e.target.value.trim();
-                activeFilters.pathSearch = logTablePathSearch;
+                activeFilters.pathSearch = e.target.value;
                 if (_filterDebounceTimer) clearTimeout(_filterDebounceTimer);
                 _filterDebounceTimer = setTimeout(() => applyAndRenderFilters(), 150);
             });
@@ -1547,7 +1545,9 @@ const Dashboard = (() => {
 
         // Download report
         document.getElementById('dash-download-btn')?.addEventListener('click', () => {
-            if (currentData) Report.openModal(currentData, { ...originalParseResult, nodeCount: currentNodeCount }, { nodeCount: currentNodeCount });
+            // An upload's parse result has the skip counts but not the options they were made with.
+            const options = { skip403: currentSkip403, skipInternal: currentSkipInternal, ...(originalParseResult?.options || {}) };
+            if (currentData) Report.openModal(currentData, { ...originalParseResult, options, nodeCount: currentNodeCount }, { nodeCount: currentNodeCount });
         });
 
         // Share button
@@ -1986,6 +1986,40 @@ const Dashboard = (() => {
         }).join('');
     }
 
+    function statusColor(code) {
+        if (code >= 500 && code <= 599) return 'var(--accent-red)';
+        if (code >= 400 && code <= 499) return 'var(--accent-amber)';
+        if (code >= 300 && code <= 399) return 'var(--accent-cyan)';
+        if (code >= 200 && code <= 299) return 'var(--accent-green)';
+        return 'var(--text-muted)';
+    }
+
+    // The two most frequent responses of a path, with the full split as a tooltip.
+    function pathStatusHtml(p) {
+        const split = Array.isArray(p.status_breakdown) ? p.status_breakdown : [];
+        if (split.length === 0) return '<span style="color:var(--text-muted);">-</span>';
+        const name = code => (code >= 100 && code <= 599 ? String(code) : 'none');
+        const share = count => (p.count ? Math.round(count / p.count * 100) : 0);
+        const all = split.map(s => `${name(s.code)}: ${numberWithCommas(s.count)}`).join(', ');
+        const shown = split.slice(0, 2).map(s =>
+            `<span style="color:${statusColor(s.code)};font-weight:700;">${name(s.code)}</span>${split.length > 1 ? `<span style="color:var(--text-muted);font-size:0.68rem;"> ${share(s.count)}%</span>` : ''}`
+        ).join(' ');
+        const more = split.length > 2 ? ` <span style="color:var(--text-muted);font-size:0.68rem;">+${split.length - 2}</span>` : '';
+        return `<span title="${escapeHtml(all)}">${shown}${more}</span>`;
+    }
+
+    // Whether the address window lists only what the active filters let through.
+    let ipLogsFiltered = false;
+
+    // True when a filter other than the address box narrows the view.
+    function filtersNarrowAnAddress() {
+        const saved = activeFilters.ipSearch;
+        activeFilters.ipSearch = '';
+        const narrowed = hasActiveFilters();
+        activeFilters.ipSearch = saved;
+        return narrowed;
+    }
+
     function renderIPLogsModal(ip, pageResult) {
         const modal = document.getElementById('ip-log-modal');
         const title = document.getElementById('ip-log-modal-title');
@@ -1993,8 +2027,12 @@ const Dashboard = (() => {
         if (!modal || !body) return;
         const rows = pageResult?.rows || [];
         const totalRows = pageResult?.totalRows || rows.length;
-        title.innerHTML = `<i class="bi bi-journal-text" style="margin-right:8px;"></i>Access Logs for <span class="ip-code">${escapeHtml(ip)}</span> <span style="font-size:0.8rem;color:var(--text-muted);">(${totalRows} entries)</span>`;
+        const scope = ipLogsFiltered
+            ? `(${numberWithCommas(totalRows)} ${totalRows === 1 ? 'entry matches' : 'entries match'} the active filters)`
+            : `(${numberWithCommas(totalRows)} ${totalRows === 1 ? 'entry' : 'entries'})`;
+        title.innerHTML = `<i class="bi bi-journal-text" style="margin-right:8px;"></i>Access Logs for <span class="ip-code">${escapeHtml(ip)}</span> <span id="ip-log-modal-scope" style="font-size:0.8rem;color:var(--text-muted);">${scope}</span>`;
         body.innerHTML = `
+            ${ipLogsFiltered ? `<div style="margin-bottom:10px;font-size:0.76rem;color:var(--text-muted);">Only requests that pass the active filters are listed. <button type="button" id="ip-log-modal-show-all" style="background:none;border:none;padding:0;color:var(--accent-primary);cursor:pointer;font:inherit;text-decoration:underline;">Show every request from this address</button></div>` : ''}
             <div style="background:#05070a;padding:12px;border-radius:8px;font-family:var(--font-mono);font-size:0.74rem;max-height:55vh;overflow-y:auto;line-height:1.6;">
                 ${rows.slice(0, 100).map((e, i) => `
                     <div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.03);">
@@ -2006,15 +2044,18 @@ const Dashboard = (() => {
                     </div>
                 `).join('')}
                 ${rows.length === 0 ? '<div style="color:var(--text-muted);">No log entries found for this IP.</div>' : ''}
+                ${totalRows > 100 ? `<div style="color:var(--text-muted);padding-top:6px;">First 100 of ${numberWithCommas(totalRows)} shown.</div>` : ''}
             </div>
         `;
+        document.getElementById('ip-log-modal-show-all')?.addEventListener('click', () => showIPLogs(ip, { all: true }));
     }
 
-    function showIPLogs(ip) {
+    function showIPLogs(ip, options = {}) {
         const modal = document.getElementById('ip-log-modal');
         const title = document.getElementById('ip-log-modal-title');
         const body = document.getElementById('ip-log-modal-body');
         if (!modal || !body) return;
+        ipLogsFiltered = !options.all && filtersNarrowAnAddress();
 
         if (activeWorker) {
             title.innerHTML = `<i class="bi bi-journal-text" style="margin-right:8px;"></i>Access Logs for <span class="ip-code">${escapeHtml(ip)}</span>`;
@@ -2026,12 +2067,12 @@ const Dashboard = (() => {
                 ip,
                 pageNumber: 1,
                 pageSize: 100,
-                filters: { ipSearch: ip }
+                filters: ipLogsFiltered ? Object.assign(currentWorkerFilters(), { ipSearch: ip }) : { ipSearch: ip }
             });
             return;
         }
 
-        const entries = originalEnrichedEntries.filter(e => e.ip === ip);
+        const entries = (ipLogsFiltered ? currentFilteredEntries : originalEnrichedEntries).filter(e => e.ip === ip);
         renderIPLogsModal(ip, { rows: entries, totalRows: entries.length });
         modal.style.display = 'flex';
     }
@@ -2053,16 +2094,19 @@ const Dashboard = (() => {
     function statusOptions(statusHits) {
         const classes = new Map();
         const codes = [];
+        let other = 0;
         for (const item of statusHits || []) {
             const code = Number(item.code);
             const count = Number(item.count) || 0;
-            if (!(code >= 100 && code <= 599) || count <= 0) continue;
+            if (count <= 0) continue;
+            if (!(code >= 100 && code <= 599)) { other += count; continue; }
             const cls = `${Math.floor(code / 100)}xx`;
             classes.set(cls, (classes.get(cls) || 0) + count);
             codes.push({ value: String(code), count });
         }
         return {
-            classes: [...classes.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, count })),
+            classes: [...classes.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, count }))
+                .concat(other > 0 ? [{ value: 'other', label: 'No status', count: other }] : []),
             codes: codes.sort((a, b) => b.count - a.count || Number(a.value) - Number(b.value)).slice(0, 12),
         };
     }
@@ -2098,7 +2142,7 @@ const Dashboard = (() => {
 
         entries.forEach(e => {
             if (e.method) methods.add(e.method);
-            if (e.status_code) statusCounts.set(e.status_code, (statusCounts.get(e.status_code) || 0) + 1);
+            statusCounts.set(e.status_code || 0, (statusCounts.get(e.status_code || 0) || 0) + 1);
             if (e.country) countries.set(e.country, (countries.get(e.country) || 0) + 1);
             // e.asn is ALREADY prefixed ('AS15169', see Analyzer.enrichLogEntries),
             // so the label must not add a second 'AS'.
@@ -2117,7 +2161,7 @@ const Dashboard = (() => {
         });
 
         const topPathsSorted = [...paths.entries()]
-            .sort((a, b) => b[1] - a[1])
+            .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0)))
             .slice(0, 25)
             .map(([path, count]) => ({ path, count }));
 
@@ -2193,10 +2237,8 @@ const Dashboard = (() => {
         if (filters.statusCategory !== 'all') {
             result = result.filter(e => {
                 const s = e.status_code || 0;
-                if (filters.statusCategory === '2xx') return s >= 200 && s < 300;
-                if (filters.statusCategory === '3xx') return s >= 300 && s < 400;
-                if (filters.statusCategory === '4xx') return s >= 400 && s < 500;
-                if (filters.statusCategory === '5xx') return s >= 500 && s < 600;
+                if (/^[1-5]xx$/.test(filters.statusCategory)) return Math.floor(s / 100) === Number(filters.statusCategory[0]);
+                if (filters.statusCategory === 'other') return !(s >= 100 && s <= 599);
                 const code = Number(filters.statusCategory);
                 return code > 0 ? s === code : true;
             });
@@ -2459,19 +2501,25 @@ const Dashboard = (() => {
         }
     }
 
+    // The active filters in the form the worker takes: the time window as seconds.
+    function currentWorkerFilters() {
+        const workerFilters = Object.assign({}, activeFilters);
+        if (sliderStartPct > 0 || sliderEndPct < 100) {
+            const window = getSelectedTimeRange();
+            if (window) {
+                workerFilters.startTimeSec = Math.floor(window.startMs / 1000);
+                workerFilters.endTimeSec = Math.floor(window.endMs / 1000);
+            }
+        } else if (activeTimeMinutes > 0 && maxLogTimestamp > 0) {
+            workerFilters.startTimeSec = Math.floor((maxLogTimestamp - activeTimeMinutes * 60 * 1000) / 1000);
+        }
+        return workerFilters;
+    }
+
     function requestExplorerPage(pageNumber) {
         explorerPage = pageNumber;
         if (activeWorker) {
-            const workerFilters = Object.assign({}, activeFilters);
-            if (sliderStartPct > 0 || sliderEndPct < 100) {
-                const window = getSelectedTimeRange();
-                if (window) {
-                    workerFilters.startTimeSec = Math.floor(window.startMs / 1000);
-                    workerFilters.endTimeSec = Math.floor(window.endMs / 1000);
-                }
-            } else if (activeTimeMinutes > 0 && maxLogTimestamp > 0) {
-                workerFilters.startTimeSec = Math.floor((maxLogTimestamp - activeTimeMinutes * 60 * 1000) / 1000);
-            }
+            const workerFilters = currentWorkerFilters();
             activeWorker.postMessage({
                 action: 'get_page',
                 pageNumber: explorerPage,
@@ -2774,16 +2822,7 @@ const Dashboard = (() => {
     function applyAndRenderFilters() {
         if (activeWorker) {
             explorerPage = 1;
-            const workerFilters = Object.assign({}, activeFilters);
-            if (sliderStartPct > 0 || sliderEndPct < 100) {
-                const window = getSelectedTimeRange();
-                if (window) {
-                    workerFilters.startTimeSec = Math.floor(window.startMs / 1000);
-                    workerFilters.endTimeSec = Math.floor(window.endMs / 1000);
-                }
-            } else if (activeTimeMinutes > 0 && maxLogTimestamp > 0) {
-                workerFilters.startTimeSec = Math.floor((maxLogTimestamp - activeTimeMinutes * 60 * 1000) / 1000);
-            }
+            const workerFilters = currentWorkerFilters();
             activeWorker.postMessage({
                 action: 'filter',
                 filters: workerFilters
@@ -3016,6 +3055,7 @@ const Dashboard = (() => {
                                     <th style="padding:6px 8px;text-align:left;color:var(--text-muted);">Endpoint Path</th>
                                     <th style="padding:6px 8px;text-align:right;color:var(--text-muted);">Hits</th>
                                     <th style="padding:6px 8px;text-align:right;color:var(--text-muted);">Share</th>
+                                    <th style="padding:6px 8px;text-align:right;color:var(--text-muted);" title="Responses the server gave for this path, most frequent first">Status</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -3024,6 +3064,7 @@ const Dashboard = (() => {
                                         <td style="padding:6px 8px;word-break:break-all;"><code style="font-size:0.74rem;color:${p.attack ? 'var(--accent-red)' : 'var(--accent-cyan)'};"${p.attack ? ` title="Looks like an attack path (${escapeHtml(p.attack)})"` : ''}>${escapeHtml(p.path.length > 80 ? p.path.slice(0, 77) + '…' : p.path)}</code></td>
                                         <td style="padding:6px 8px;text-align:right;font-weight:700;">${numberWithCommas(p.count)}</td>
                                         <td style="padding:6px 8px;text-align:right;color:var(--text-muted);">${p.percentage}%</td>
+                                        <td class="path-status-cell" style="padding:6px 8px;white-space:nowrap;text-align:right;">${pathStatusHtml(p)}</td>
                                     </tr>
                                 `).join('')}
                                 ${data.http_metrics?.other_paths?.count > 0 ? `
@@ -3031,8 +3072,9 @@ const Dashboard = (() => {
                                         <td style="padding:6px 8px;">${numberWithCommas(data.http_metrics.other_paths.paths)} other paths</td>
                                         <td style="padding:6px 8px;text-align:right;">${numberWithCommas(data.http_metrics.other_paths.count)}</td>
                                         <td style="padding:6px 8px;text-align:right;">${data.http_metrics.other_paths.percentage}%</td>
+                                        <td></td>
                                     </tr>` : ''}
-                                ${(!data.http_metrics?.top_paths || data.http_metrics.top_paths.length === 0) ? '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:10px;">No path data</td></tr>' : ''}
+                                ${(!data.http_metrics?.top_paths || data.http_metrics.top_paths.length === 0) ? '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:10px;">No path data</td></tr>' : ''}
                             </tbody>
                         </table>
                     </div>
@@ -3150,9 +3192,6 @@ const Dashboard = (() => {
         `;
     }
 
-    let logTableSubnetSearch = '';
-    let logTablePathSearch = '';
-
     function renderLogExplorerCardHtml() {
         return `
             <div class="log-explorer-card" id="nginx-log-explorer" style="background:var(--bg-card);border:1px solid var(--border-color);border-radius:12px;overflow:hidden;margin-bottom:20px;">
@@ -3165,8 +3204,8 @@ const Dashboard = (() => {
                     </div>
 
                     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                        <input type="text" id="log-table-ip-subnet-search" placeholder="🔍 Filter IP / CIDR Subnet..." value="${escapeHtml(logTableSubnetSearch)}" style="background:rgba(0,0,0,0.3);border:1px solid var(--border-color);color:var(--text-primary);padding:5px 12px;border-radius:6px;font-size:0.75rem;min-width:210px;outline:none;" />
-                        <input type="text" id="log-table-path-search" placeholder="🔍 Filter Path / URI Keyword..." value="${escapeHtml(logTablePathSearch)}" style="background:rgba(0,0,0,0.3);border:1px solid var(--border-color);color:var(--text-primary);padding:5px 12px;border-radius:6px;font-size:0.75rem;min-width:210px;outline:none;" />
+                        <input type="text" id="log-table-ip-subnet-search" placeholder="🔍 Filter IP / CIDR Subnet..." value="${escapeHtml(activeFilters.ipSearch)}" style="background:rgba(0,0,0,0.3);border:1px solid var(--border-color);color:var(--text-primary);padding:5px 12px;border-radius:6px;font-size:0.75rem;min-width:210px;outline:none;" />
+                        <input type="text" id="log-table-path-search" placeholder="🔍 Filter Path / URI Keyword..." value="${escapeHtml(activeFilters.pathSearch)}" style="background:rgba(0,0,0,0.3);border:1px solid var(--border-color);color:var(--text-primary);padding:5px 12px;border-radius:6px;font-size:0.75rem;min-width:210px;outline:none;" />
                         
                         <div style="font-size:0.75rem;color:var(--text-muted);display:flex;align-items:center;gap:6px;">
                             Per page: 
@@ -3307,9 +3346,9 @@ const Dashboard = (() => {
                     <!-- Status class or code -->
                     <select class="filter-select" id="filter-status" aria-label="Response status">
                         <option value="all" ${activeFilters.statusCategory === 'all' ? 'selected' : ''}>All Statuses</option>
-                        ${(filterOptions.statuses?.classes || []).length ? `<optgroup label="Class">${filterOptions.statuses.classes.map(o => `<option value="${o.value}" ${activeFilters.statusCategory === o.value ? 'selected' : ''}>${o.value} (${numberWithCommas(o.count)})</option>`).join('')}</optgroup>` : ''}
+                        ${(filterOptions.statuses?.classes || []).length ? `<optgroup label="Class">${filterOptions.statuses.classes.map(o => `<option value="${o.value}" ${activeFilters.statusCategory === o.value ? 'selected' : ''}>${o.label || o.value} (${numberWithCommas(o.count)})</option>`).join('')}</optgroup>` : ''}
                         ${(filterOptions.statuses?.codes || []).length ? `<optgroup label="Code">${filterOptions.statuses.codes.map(o => `<option value="${o.value}" ${activeFilters.statusCategory === o.value ? 'selected' : ''}>${o.value} (${numberWithCommas(o.count)})</option>`).join('')}</optgroup>` : ''}
-                        ${activeFilters.statusCategory !== 'all' && ![...(filterOptions.statuses?.classes || []), ...(filterOptions.statuses?.codes || [])].some(o => o.value === activeFilters.statusCategory) ? `<option value="${escapeHtml(activeFilters.statusCategory)}" selected>${escapeHtml(activeFilters.statusCategory)}</option>` : ''}
+                        ${activeFilters.statusCategory !== 'all' && ![...(filterOptions.statuses?.classes || []), ...(filterOptions.statuses?.codes || [])].some(o => o.value === activeFilters.statusCategory) ? `<option value="${escapeHtml(activeFilters.statusCategory)}" selected>${activeFilters.statusCategory === 'other' ? 'No status' : escapeHtml(activeFilters.statusCategory)}</option>` : ''}
                     </select>
 
                     <!-- 2. All Countries -->

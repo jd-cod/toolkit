@@ -363,12 +363,12 @@ class ColumnarStorage {
 
         let minStatus = 0;
         let maxStatus = 65535;
+        // 'other': no status, or a number that is not an HTTP status.
+        let otherStatus = false;
         if (filters.statusCategory && filters.statusCategory !== 'all') {
             const cat = String(filters.statusCategory).toLowerCase();
-            if (cat === '2xx') { minStatus = 200; maxStatus = 299; }
-            else if (cat === '3xx') { minStatus = 300; maxStatus = 399; }
-            else if (cat === '4xx') { minStatus = 400; maxStatus = 499; }
-            else if (cat === '5xx') { minStatus = 500; maxStatus = 599; }
+            if (/^[1-5]xx$/.test(cat)) { minStatus = Number(cat[0]) * 100; maxStatus = minStatus + 99; }
+            else if (cat === 'other') { otherStatus = true; }
             else {
                 const s = Number(cat);
                 if (s > 0) { minStatus = s; maxStatus = s; }
@@ -403,6 +403,7 @@ class ColumnarStorage {
             if (targetCountryId !== undefined && col_country[i] !== targetCountryId) return false;
             if (unknownCountryIds && !unknownCountryIds.has(col_country[i])) return false;
             if (col_status[i] < minStatus || col_status[i] > maxStatus) return false;
+            if (otherStatus && col_status[i] >= 100 && col_status[i] <= 599) return false;
             if (targetAsn !== 0 && col_asn[i] !== targetAsn) return false;
             if (col_time[i] < minTime || col_time[i] > maxTime) return false;
             return true;
@@ -660,8 +661,32 @@ class ColumnarStorage {
             minTimeSec,
             maxTimeSec,
             urlHits,
+            matchedRows: matched,
             ...(clientCounts ? { clientCounts } : {})
         };
+    }
+
+    /**
+     * Requests per status for groups of URLs.
+     * @param {Uint8Array} matchedRows - From `query`: 1 for each row that passed the filters.
+     * @param {Int32Array} groupOfUrl - Group number per URL id, -1 for URLs in no group.
+     * @param {number} groupCount
+     * @returns {Map<number, number>[]} Hits by status, one map per group.
+     */
+    statusByUrlGroup(matchedRows, groupOfUrl, groupCount) {
+        const out = [];
+        for (let g = 0; g < groupCount; g++) out.push(new Map());
+        const col_url = this.col_url;
+        const col_status = this.col_status;
+        const rows = Math.min(this.rowCount, matchedRows.length);
+        for (let i = 0; i < rows; i++) {
+            if (matchedRows[i] === 0) continue;
+            const group = groupOfUrl[col_url[i]];
+            if (group < 0) continue;
+            const statuses = out[group];
+            statuses.set(col_status[i], (statuses.get(col_status[i]) || 0) + 1);
+        }
+        return out;
     }
 
     getPage(pageNumber = 1, pageSize = 50, filters = {}) {

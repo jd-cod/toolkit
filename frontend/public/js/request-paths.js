@@ -191,29 +191,48 @@ const RequestPaths = (() => {
      * @param {Iterable<[string, number, Map<number, number>?]>} urlCounts - URL, hits, hits by status.
      */
     function summarize(urlCounts, total, limits = {}) {
+        return summarizePaths((function* () {
+            for (const [url, count, statuses] of urlCounts) {
+                const path = normalizePath(url);
+                if (path) yield [path, sectionOf(url), count, statuses];
+            }
+        })(), total, limits);
+    }
+
+    // Hits by status as a list, most frequent first, then by code.
+    function statusBreakdown(statuses) {
+        return [...statuses.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0]).map(([code, count]) => ({ code, count }));
+    }
+
+    /**
+     * The same as `summarize` for a caller that already knows the path and
+     * the section of each URL.
+     * @param {Iterable<[string, string, number, Map<number, number>?]>} pathCounts - Path, section, hits, hits by status.
+     */
+    function summarizePaths(pathCounts, total, limits = {}) {
         const pathLimit = limits.paths || 30;
         const sectionLimit = limits.sections || 25;
         const paths = new Map();
         const sections = new Map();
         let withPath = 0;
-        for (const [url, count, statuses] of urlCounts) {
-            const path = normalizePath(url);
-            if (!path) continue;
+        for (const [path, section, count, statuses] of pathCounts) {
             withPath += count;
             let rec = paths.get(path);
             if (!rec) { rec = { count: 0, statuses: new Map() }; paths.set(path, rec); }
             rec.count += count;
             if (statuses) for (const [code, n] of statuses) rec.statuses.set(code, (rec.statuses.get(code) || 0) + n);
-            const section = sectionOf(url);
             sections.set(section, (sections.get(section) || 0) + count);
         }
         const pct = n => total ? (n / total * 100).toFixed(1) : '0.0';
-        const sorted = [...paths.entries()].sort((a, b) => b[1].count - a[1].count);
+        // Equal counts are listed by name, so the order does not depend on
+        // which request came first.
+        const byCountThenName = (a, b) => (b[1].count ?? b[1]) - (a[1].count ?? a[1]) || (a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0));
+        const sorted = [...paths.entries()].sort(byCountThenName);
         const top = sorted.slice(0, pathLimit).map(([path, rec]) => ({
             path,
             count: rec.count,
             percentage: pct(rec.count),
-            status_breakdown: [...rec.statuses.entries()].sort((a, b) => b[1] - a[1]).map(([code, c]) => ({ code, count: c })),
+            status_breakdown: statusBreakdown(rec.statuses),
             attack: (attackSignature(path) || {}).family || null,
         }));
         const shown = top.reduce((sum, p) => sum + p.count, 0);
@@ -221,7 +240,7 @@ const RequestPaths = (() => {
             top_paths: top,
             other_paths: { paths: Math.max(0, sorted.length - top.length), count: withPath - shown, percentage: pct(withPath - shown) },
             distinct_paths: sorted.length,
-            sections: [...sections.entries()].sort((a, b) => b[1] - a[1]).slice(0, sectionLimit)
+            sections: [...sections.entries()].sort(byCountThenName).slice(0, sectionLimit)
                 .map(([path, count]) => ({ path, count, percentage: pct(count) })),
         };
     }
@@ -256,7 +275,7 @@ const RequestPaths = (() => {
 
     return {
         splitTarget, normalizePath, sectionOf, resourceKind, isAuthRequest, attackSignature, isScriptPath,
-        pathMatcher, describeFilter, summarize, referrerSite,
+        pathMatcher, describeFilter, summarize, summarizePaths, statusBreakdown, referrerSite,
     };
 })();
 
