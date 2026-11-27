@@ -6,11 +6,14 @@
     "test:e2e:ui": "playwright test --reporter=list --headed",
     "test:e2e:debug": "playwright test --debug",
     "test:e2e:trace": "playwright test --trace on",
+    "test:tools": "playwright test --project=tools --reporter=./tests/e2e/tools/_support/failure-reporter.ts",
+    "test:tools:html": "playwright test --project=tools --reporter=./tests/e2e/tools/_support/failure-reporter.ts,html",
     "test:integrity": "node scripts/verify_dashboard_integrity.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "dotenv": "^17.4.2",
+    "maxmind": "^5.1.0",
     "playwright": "^1.63.0"
   }
 }

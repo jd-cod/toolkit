@@ -9,7 +9,11 @@ import { defineConfig, devices } from '@playwright/test';
  * Specs reuse the fixture so a full run costs zero tokens.
  */
 const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:3001';
-const NGINX_PATH = '/nginx';
+
+// The per-tool suites (tests/e2e/tools) generate their inputs from this seed.
+// Setting it here, before workers start, gives every worker the same value and
+// lets a failed run be replayed with `E2E_SEED=<value>`.
+if (!process.env.E2E_SEED) process.env.E2E_SEED = String(1 + Math.floor(Math.random() * 2_000_000_000));
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -38,7 +42,27 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
+      testIgnore: '**/tools/**',
       use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      // Deep per-tool suites: every value a tool shows is checked against an
+      // expected value computed by the test. See tests/e2e/tools/README.md.
+      name: 'tools',
+      testDir: './tests/e2e/tools',
+      // No retries by default: a check that fails once is a finding to look
+      // at, not noise to retry away. Inputs are seeded, so a rerun is exact.
+      retries: Number(process.env.E2E_RETRIES ?? 0),
+      timeout: 120_000,
+      expect: { timeout: 15_000 },
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1440, height: 1080 },
+        permissions: ['clipboard-read', 'clipboard-write'],
+        acceptDownloads: true,
+        timezoneId: process.env.E2E_TIMEZONE ?? 'America/New_York',
+        locale: 'en-US',
+      },
     },
   ],
 });
