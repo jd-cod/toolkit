@@ -33,18 +33,18 @@ The ten that matter most:
 
 ## 1a. Status after the fixes (2026-11-27)
 
-The findings below were fixed on this branch in four commits after the review. 40 are fixed, 5 are partly fixed and 3 are open. Sections 3.1 to 3.6 describe the behaviour **before** the fixes; this table says what is true now. Outputs of the same probe scripts after the fixes are in `review2/out-after/`.
+The findings below were fixed on this branch after the review, in seven commits. 43 are fixed, 5 are partly fixed and none is open. Sections 3.1 to 3.6 describe the behaviour **before** the fixes; this table says what is true now. Outputs of the same probe scripts after the fixes are in `review2/out-after/`.
 
 | # | Now | Note |
 |---|---|---|
 | F1, F2, F3, F5, F6, F8 | Fixed | Format chosen by majority over 200 lines; any status 100-599; mixed files read in any order; per-file detection in upload |
 | F4 | Fixed | Nothing is guessed from one line. Two lines glued together still parse as one request |
-| F7 | Fixed | Added AWS ALB and classic ELB, IIS W3C, Caddy, Traefik, Cloudflare Logpush, Docker wrapper, syslog prefix. HAProxy is still not read |
+| F7 | Fixed | Added AWS ALB and classic ELB, IIS W3C, Caddy, Traefik, Cloudflare Logpush, Docker wrapper, syslog prefix and HAProxy HTTP logs |
 | P1 | Changed | Both notations now keep the clock the server wrote (see decisions below) |
-| P2 | Fixed | Fractions, epoch numbers, one-digit day, any letter case, `+02`, RFC 1123. Non-English month names are still not read |
+| P2 | Fixed | Fractions, epoch numbers, one-digit day, any letter case, `+02`, RFC 1123, and month names in German, French, Spanish, Italian, Portuguese and Dutch |
 | P3, P4, P5, P7 | Fixed | |
 | P6 | Partly | 999 becomes "unknown". Unknown statuses are still listed outside the 2xx-5xx categories |
-| P8 | Partly | Lone CR line endings work for pasted text and for uploads. UTF-16 files are unchanged |
+| P8 | Fixed | Lone CR line endings work for pasted text and for uploads. UTF-16 files are decoded, with or without a byte order mark |
 | C1 | Fixed | Client read from `X-Forwarded-For` behind a private proxy or a CDN; the page says how many requests |
 | C2, C3, C5, C6 | Fixed | Host names in place of addresses are still rejected |
 | C4 | Partly | Benchmark, multicast, reserved and site-local ranges are internal. The three documentation ranges stay public: the repository's tests and samples use them as client addresses |
@@ -52,12 +52,13 @@ The findings below were fixed on this branch in four commits after the review. 4
 | B2, B3, B4, B5, B6, B7, B9, B11, B13 | Fixed | |
 | B8 | Fixed | Library names inside a browser User-Agent are ignored. Monitor and scanner names still match anywhere |
 | B10 | Partly | An out-of-date browser version is one weak signal; a malformed User-Agent is not a browser. An old version alone is still human |
-| B12 | Open | The one-minute window still does not slide |
+| B12 | Fixed | The one-minute windows for floods and login attempts move with each request |
 | U1, U2, U3, U4, U5, U7 | Fixed | |
-| U6 | Fixed | Upload has paths and sections. Referrers and the status split per path are still paste-only |
+| U6 | Fixed | Upload has paths, sections and referring sites. The status split per path is still paste-only |
 | A1, A3, A4 | Fixed | |
 | A5 | Partly | A tooltip on the time span says which clock is shown |
-| A2, A6 | Open | Peak rate by bucket size; referrers not grouped by site |
+| A2 | Partly | Both engines now give the same peak, average and burst label. The peak is still the average of the busiest chart bucket; the report names that window ("busiest 2m") |
+| A6 | Fixed | The dashboard lists referring sites, with requests that have no referrer on their own line. The full referrer list in the result data is unchanged |
 
 Decisions taken while fixing, each easy to reverse:
 
@@ -68,8 +69,19 @@ Decisions taken while fixing, each easy to reverse:
 5. **Apps (B9).** Native apps and media players are judged by behaviour like browsers, so their users count as human unless the app probes, floods or guesses passwords. `okhttp` stays a script library.
 6. **Address filter.** A full address matches that address only; the start of one (`185.220.`) matches whole leading groups; CIDR works for IPv4 and IPv6. Text inside an address (`.3.4`) no longer matches.
 7. **Countries and networks (A3).** The two counters at the top no longer count "Unknown" as a country or AS0 as a network. The tables still list them.
+8. **Suspicious but ordinary paths (B2).** `wp-login.php`, `xmlrpc.php`, phpMyAdmin and the like count as probing only when the server did not serve them (any status outside 2xx and 304). Paths that are an attack on any site (`/.env`, traversal, injection) count whatever the status.
+9. **Page scripts.** A client whose requests nearly all carry a referrer needs four weak signals instead of three before it is called crawler-like. This keeps search-as-you-type and polling from being flagged.
+10. **Missing data.** When a GeoIP database or the crawler range file cannot be loaded, the analysis runs anyway and the dashboard says what is missing, instead of refusing to start.
+11. **Feed ranges.** The backend refuses published ranges wider than a /8 (IPv4) or a /16 (IPv6), and the unspecified and loopback addresses. A feed entry such as `0.0.0.0/0` would otherwise verify every address.
+12. **Timeline under a filter.** The chart shows the whole log in both engines; the filter narrows the numbers and tables, and the time handles narrow the window.
+13. **Exclusions after an upload.** Changing an option re-reads the file. Once a second source was added to the session, or the input was a stream, the options are switched off with a note.
+14. **Spreadsheet formulas.** A text cell of a CSV export that starts with `=`, `+`, `-` or `@` gets a leading apostrophe. Numbers and a lone `-` are left alone.
 
-Upload gaps from section 3.7, now closed: path, method, address and CIDR filters work; "Matching N / M" and the entry count are right; the Skipped counts are shown; the choices in the dropdowns stay those of the whole log while a filter is on; a filter box keeps the focus while typing (both engines). The two exclusion options are switched off after an upload, with a note, because the file is not kept and there is nothing to recalculate from; they are set before the analysis. Still open for uploads: the timeline has one-hour buckets without a status split, and there are no referrers.
+Upload gaps from section 3.7, all closed: path, method, address and CIDR filters work; "Matching N / M" and the entry count are right; the Skipped counts are shown; the choices in the dropdowns stay those of the whole log while a filter is on; a filter box keeps the focus while typing (both engines); the timeline has every chart interval and the error line, built by the same function as for pasted logs; referring sites are listed; the exclusion options re-read the uploaded file.
+
+Carried-over items from section 3.8, all closed: a gzip file with several members is read completely and a cut-off one gives what was readable plus a notice; gzip is recognised by content for one file or many; a parser worker that cannot start gives a readable error and the file is analysed on the page; the feed parser keeps compressed IPv6 ranges and the two fallback lists with truncated IPv6 addresses were regenerated; GeoIP download failures no longer block or hang the analysis.
+
+Added on the way: a status filter and a User-Agent filter, a choice of which address is the client (automatic, connecting address, `X-Forwarded-For`), Escape closes the address log window.
 
 Existing tests whose expectations were changed, because they described the old behaviour:
 
@@ -93,6 +105,7 @@ Scripts and outputs are in `/Users/dan/work/toolkit-dev/review-evidence/traffic-
 |---|---|
 | p1 to p8 | `review2/p1-request-lines.cjs` ... `review2/p8-more.cjs`, outputs in `review2/out/p*.txt` |
 | b1 | `review2/b1-paths-page.mjs` (browser), output `review2/out/b1.txt`, screenshot `review2/out/b1-paths-page.png` |
+| after the fixes | `review2/b2-both-modes.mjs`, `b4-typing.mjs`, `b6-unknown-country.mjs` and `review3/b1-data-failures.mjs`, `b2-gzip-and-worker.mjs`, `b3-status-ua-filters.mjs`, `b4-upload-parity.mjs`, `b5-small-items.mjs` (browser, each runs the same log through paste and upload); outputs in `review2/out-after/` and `review3/out/` |
 | prev-01 to prev-11 | `parser/01-formats.cjs` ... `parser/11-ua-swap-heuristic.cjs`, run with `TK_JS=<checkout>/frontend/public/js`, outputs in `review2/out/prev-*.txt` |
 | t13 | `analyzer/t13-tor-substring.cjs` |
 

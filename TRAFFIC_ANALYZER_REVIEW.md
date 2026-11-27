@@ -232,13 +232,17 @@ Status on 2026-11-27, after the fixes described in `PARSER_AND_IDENTIFICATION_RE
 
 | # | Now |
 | --- | --- |
-| 1 | Closed the safe way: the two exclusion options are switched off after an upload, with a note. Re-reading the file with new options is not built |
+| 1 | Fixed: the exclusion options re-read the uploaded file. They are switched off, with a note, once a second source was added or the input was a stream |
 | 2 | Fixed: method, path, address prefix and CIDR filters work on uploads |
 | 3 | Fixed: "Matching N / M", the entry count and the Skipped counts are right on uploads |
-| 4 | Partly: uploads have paths and sections. Still no referrers, and the timeline has one-hour buckets without a status split |
+| 4 | Fixed: uploads have paths, sections, referring sites and the same timeline as pasted logs (every interval, error line). The status split per path is still paste-only |
 | 5 | Fixed in both engines: the box keeps focus and caret |
 | 6 | Fixed: a row click is an exact match; card, dropdown and filter count the same thing |
-| 7, 8, 10, 12, 13 | Open |
+| 7 | Fixed: the chart shows the whole log in both engines; filters narrow the numbers and tables |
+| 8 | Fixed: a status filter (class or code) and a User-Agent search box, in both engines |
+| 10 | Fixed: the dashboard names the crawlers whose IP ranges are not loaded, and says when the range file could not be loaded at all |
+| 12 | Fixed: one shared GeoIP load that always finishes; a database that cannot be loaded leaves "Unknown" and a notice; only bytes that parse as a database are cached |
+| 13 | Partly: Escape closes the address log window. F12 and F13 were not looked at again |
 | 9 | Fixed: "Unknown" can be chosen in both engines, IPv6 is matched in any notation, `/33` matches nothing |
 | 11 | Fixed (PARSE-07, PARSE-04). PARSE-08: every notation now keeps the server's clock |
 
