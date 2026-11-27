@@ -173,6 +173,9 @@ test.describe('Mobile timeline', () => {
   test('touch dragging updates the end time without scrolling or changing the log clock', async ({ page, console: watcher }) => {
     await analyze(page);
     await assertReadout(page, START, END);
+    // A finger can only touch what is on the screen: on a phone the timeline
+    // is below the first screenful.
+    await page.locator('#handle-end').scrollIntoViewIfNeeded();
     const handle = (await page.locator('#handle-end').boundingBox())!;
     const track = (await page.locator('#slider-scrubber-track').boundingBox())!;
     const beforeScroll = await page.evaluate(() => scrollY);
@@ -184,6 +187,8 @@ test.describe('Mobile timeline', () => {
         type: 'touchMove', touchPoints: [{ x: point.x + (track.x + track.width * 0.7 - point.x) * i / 6, y: point.y }],
       });
     }
+    // Touch moves are delivered with the next frame.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const { start, end } = await selection(page);
     expect(start).toBe(START);
     expect(Math.abs(end - (START + (END - START) * 0.7))).toBeLessThan((END - START) / track.width + 1000);

@@ -202,6 +202,36 @@ test.describe('Pasted text and an uploaded file give the same dashboard', () => 
       watcher.assertClean();
     });
 
+    test(`${mode}: lines from another time zone are moved onto the log's time line`, async ({ page, console: watcher }) => {
+      // The same ten seconds from a server on +0200 and, fewer lines, one on UTC.
+      const two = (ip: string, time: string, zone: string, url: string) => `${ip} - - [27/Nov/2026:${time} ${zone}] "GET ${url} HTTP/1.1" 200 512 "-" "${BROWSER}"`;
+      const text = [
+        ...Array.from({ length: 40 }, (_, i) => two(`81.2.69.${1 + i}`, `12:00:${p2(i % 10)}`, '+0200', '/berlin')),
+        ...Array.from({ length: 10 }, (_, i) => two(`81.2.70.${1 + i}`, `10:00:${p2(i)}`, '+0000', '/utc')),
+      ].join('\n') + '\n';
+      await page.goto('/nginx', { waitUntil: 'domcontentloaded' });
+      await waitForEngineReady(page);
+      if (mode === 'paste') {
+        await page.getByRole('tab', { name: 'Paste logs' }).click();
+        await page.fill('#nginx-logtext', text);
+      } else {
+        await page.getByRole('tab', { name: 'Upload file' }).click();
+        await page.setInputFiles('#nginx-logfile', { name: 'two-zones.log', mimeType: 'text/plain', buffer: Buffer.from(text) });
+      }
+      await page.click('#nginx-analyze-btn');
+      await expect(total(page)).toHaveText('50', { timeout: 45_000 });
+      await expect(page.locator('#log-zone')).toHaveText('+02:00');
+      await expect(page.locator('#log-zone-converted')).toHaveText('10 from another zone converted');
+      // Nine seconds from first to last request, not two hours.
+      await expect(page.locator('#time-window-readout')).toContainText('12:00:00 → 12:00:09');
+      await page.locator('.cross-filter-path-row[data-path="=/utc"]').click();
+      await expect(total(page)).toHaveText('10');
+      const times = await page.locator('#explorer-rows-body tr td:first-child').allInnerTexts();
+      expect(times.length).toBe(10);
+      for (const time of times) expect(time).toMatch(/12:00:0\d$/);
+      watcher.assertClean();
+    });
+
     test(`${mode}: the report downloads and carries the page's numbers`, async ({ page, console: watcher }) => {
       await analyse(page, mode);
       await page.click('#dash-download-btn');

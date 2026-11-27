@@ -617,12 +617,22 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
        Section Builders
        ══════════════════════════════════════════════════════════════ */
 
+    // Which clock the times of the report are in.
+    function zoneNote(parseResult) {
+        const zone = parseResult.zoneOffsetMinutes;
+        if (zone === null || zone === undefined) return '';
+        const abs = Math.abs(zone);
+        const label = `${zone < 0 ? '-' : '+'}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+        const converted = parseResult.zoneConvertedLines > 0 ? `; ${n(parseResult.zoneConvertedLines)} requests written in another zone were converted` : '';
+        return ` · log time zone ${label}${converted}`;
+    }
+
     function buildHeader(parseResult, generatedAt) {
         const counts = parseResult?.skipCounts;
         const used = parseResult?.options;
         const exclusions = counts ? `<p class="report-period">${used ? `Analysis exclusions: internal requests ${used.skipInternal ? 'excluded' : 'included'}; ordinary 403 responses ${used.skip403 ? 'excluded (recognized crawlers retained)' : 'included'}.<br>` : ''}Skipped: ${n(counts.privateIP)} private/local IP · ${n(counts.healthCheck)} health-check path · ${n(counts.forbidden)} ordinary 403 · ${n(counts.invalid)} invalid.</p>` : '';
         const period = parseResult?.logStart
-            ? `<p class="report-period">📅 Log Period: <strong>${esc(parseResult.logStart)}</strong> → <strong>${esc(parseResult.logEnd)}</strong> (${parseResult.logSpanMinutes} min)</p>`
+            ? `<p class="report-period">📅 Log Period: <strong>${esc(parseResult.logStart)}</strong> → <strong>${esc(parseResult.logEnd)}</strong> (${parseResult.logSpanMinutes} min)${zoneNote(parseResult)}</p>`
             : '';
         const nodeCount = _options?.nodeCount || parseResult?.nodeCount || 1;
         const nodeBadge = nodeCount > 1

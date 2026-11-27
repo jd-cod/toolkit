@@ -654,6 +654,8 @@ const Dashboard = (() => {
                 skippedLines: new Array(result.totalLinesSkipped || 0),
                 skipCounts: result.skipCounts || {},
                 forwardedLines: result.forwardedLines || 0,
+                zoneOffsetMinutes: result.zoneOffsetMinutes != null ? result.zoneOffsetMinutes : null,
+                zoneConvertedLines: result.zoneConvertedLines || 0,
                 validLines: (result.summary.matchingCount || 0) + (result.totalLinesSkipped || 0) - ((result.skipCounts && result.skipCounts.invalid) || 0),
                 minTimestamp: result.summary.minTimeSec ? result.summary.minTimeSec * 1000 : 0,
                 maxTimestamp: result.summary.maxTimeSec ? result.summary.maxTimeSec * 1000 : 0,
@@ -690,7 +692,10 @@ const Dashboard = (() => {
 
         // In-memory path
         currentLogText = (currentLogText ? currentLogText + '\n' : '') + text;
-        const appendParse = await LogParser.parseAsync(text, parserOptions(currentSkip403, currentSkipInternal, currentClientIp));
+        // The added text is shown in the time zone of the first source.
+        const appendOptions = parserOptions(currentSkip403, currentSkipInternal, currentClientIp);
+        if (originalParseResult && originalParseResult.zoneOffsetMinutes != null) appendOptions.zoneOffset = originalParseResult.zoneOffsetMinutes;
+        const appendParse = await LogParser.parseAsync(text, appendOptions);
         // A client is judged by all of its requests, so classify the merged log.
         originalEnrichedEntries = originalEnrichedEntries.concat(appendParse.logEntries);
         Analyzer.enrichLogEntries(originalEnrichedEntries);
@@ -703,6 +708,8 @@ const Dashboard = (() => {
             parsedLines: new Array(mergedData.total_requests),
             validLines: mergedData.total_requests,
             skippedLines: (originalParseResult?.skippedLines || []).concat(appendParse.skippedLines || []),
+            zoneOffsetMinutes: originalParseResult?.zoneOffsetMinutes ?? appendParse.zoneOffsetMinutes ?? null,
+            zoneConvertedLines: (originalParseResult?.zoneConvertedLines || 0) + (appendParse.zoneConvertedLines || 0),
             inputWarnings: [...(originalParseResult?.inputWarnings || []), ...warnings]
         };
         originalParseResult = mergedParseResult;
@@ -1007,7 +1014,7 @@ const Dashboard = (() => {
                     ` : ''}
                     ${parseResult?.logStart ? `
                     <span style="color:rgba(255,255,255,0.2);">|</span>
-                    <span title="Times are shown as the server wrote them (the log's own clock), not converted to your time zone."><i class="bi bi-clock" style="margin-right:4px;"></i>Span: <strong style="color:var(--text-secondary);">${escapeHtml(parseResult.logStart)}</strong> → <strong style="color:var(--text-secondary);">${escapeHtml(parseResult.logEnd)}</strong> (${Number(parseResult.logSpanMinutes) || 0}m)</span>
+                    <span id="log-clock-note" title="${escapeHtml(logClockTitle(parseResult))}"><i class="bi bi-clock" style="margin-right:4px;"></i>Span: <strong style="color:var(--text-secondary);">${escapeHtml(parseResult.logStart)}</strong> → <strong style="color:var(--text-secondary);">${escapeHtml(parseResult.logEnd)}</strong> (${Number(parseResult.logSpanMinutes) || 0}m)${parseResult.zoneOffsetMinutes != null ? ` · time zone <strong id="log-zone" style="color:var(--text-secondary);">${zoneLabel(parseResult.zoneOffsetMinutes)}</strong>` : ''}${parseResult.zoneConvertedLines > 0 ? ` · <span id="log-zone-converted">${numberWithCommas(parseResult.zoneConvertedLines)} from another zone converted</span>` : ''}</span>
                     ` : ''}
                 </div>
             </div>
@@ -1264,6 +1271,21 @@ const Dashboard = (() => {
 
     // The parser's options. The client-address choice is only named when it
     // is not the automatic rule.
+    // "+02:00" for 120 minutes east of UTC.
+    function zoneLabel(minutes) {
+        const abs = Math.abs(minutes);
+        return `${minutes < 0 ? '-' : '+'}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+    }
+
+    function logClockTitle(parseResult) {
+        const zone = parseResult ? parseResult.zoneOffsetMinutes : null;
+        if (zone == null) return 'Times are shown as the server wrote them. The log names no time zone.';
+        const converted = parseResult.zoneConvertedLines > 0
+            ? ` ${numberWithCommas(parseResult.zoneConvertedLines)} requests were written in another time zone and were converted to it, so all requests are on one time line.`
+            : '';
+        return `Times are shown in the log's own time zone (${zoneLabel(zone)}), not in yours.${converted}`;
+    }
+
     function parserOptions(skip403, skipInternal, clientIp) {
         return clientIp === 'remote' || clientIp === 'forwarded' ? { skip403, skipInternal, clientIp } : { skip403, skipInternal };
     }
