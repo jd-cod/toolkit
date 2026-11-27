@@ -4,7 +4,7 @@ Read this before adding, changing or reviewing a tool. It records what was
 added, why, how new tools are wired, what was verified, and what is
 deliberately left for later. Keep the status table current when work lands.
 
-Branch: `feature/new-tools` (from `main` at `a53c7b8`). Built 2026-11-27.
+Branch: `new-20-tools` (from `main` at `a53c7b8`). Built 2026-11-27.
 
 ## Why these tools
 
