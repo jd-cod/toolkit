@@ -15,7 +15,7 @@ class ColumnarStorage {
         this.col_ip = new Uint32Array(this.capacity);
         this.col_time = new Uint32Array(this.capacity);
         this.col_status = new Uint16Array(this.capacity);
-        this.col_bytes = new Uint32Array(this.capacity);
+        this.col_bytes = new Float64Array(this.capacity); // responses can exceed 4 GiB
         this.col_url = new Uint32Array(this.capacity);
         this.col_bot = new Uint16Array(this.capacity);
         this.col_country = new Uint16Array(this.capacity);
@@ -60,7 +60,7 @@ class ColumnarStorage {
         this.col_ip = realloc(this.col_ip, Uint32Array);
         this.col_time = realloc(this.col_time, Uint32Array);
         this.col_status = realloc(this.col_status, Uint16Array);
-        this.col_bytes = realloc(this.col_bytes, Uint32Array);
+        this.col_bytes = realloc(this.col_bytes, Float64Array);
         this.col_url = realloc(this.col_url, Uint32Array);
         this.col_bot = realloc(this.col_bot, Uint16Array);
         this.col_country = realloc(this.col_country, Uint16Array);
@@ -82,19 +82,19 @@ class ColumnarStorage {
         return id;
     }
 
-    appendRow(ip, timeSec, status, bytes, url, bot, country, asn, method = 'GET', clientId) {
+    appendRow(ip, timeSec, status, bytes, url, bot, country, asn, method = '-', clientId) {
         this._ensureCapacity(this.rowCount + 1);
         const idx = this.rowCount;
 
         this.col_ip[idx] = this._getOrSetId(ip, this.ipDict, this.ipMap);
         this.col_time[idx] = (timeSec >>> 0) || 0;
         this.col_status[idx] = (status >>> 0) || 0;
-        this.col_bytes[idx] = (bytes >>> 0) || 0;
+        this.col_bytes[idx] = bytes > 0 ? bytes : 0;
         this.col_url[idx] = this._getOrSetId(url, this.urlDict, this.urlMap);
         this.col_bot[idx] = this._getOrSetId(bot, this.botDict, this.botMap);
         this.col_country[idx] = this._getOrSetId(country, this.countryDict, this.countryMap);
         this.col_asn[idx] = (asn >>> 0) || 0;
-        this.col_method[idx] = this._getOrSetId(method || 'GET', this.methodDict, this.methodMap);
+        this.col_method[idx] = this._getOrSetId(method || '-', this.methodDict, this.methodMap);
         if (clientId !== undefined) {
             this.col_client[idx] = clientId;
             this.hasClients = true;
@@ -229,7 +229,7 @@ class ColumnarStorage {
     getTopIps(limit = 50, filters = {}) {
         const parsed = this._parseFilters(filters);
         if (parsed === null) return [];
-        const { targetIpId, targetBotId, targetCountryId, minStatus, maxStatus, targetAsn, minTime, maxTime, classMask, groupName } = parsed;
+        const matches = parsed.matches;
         const col_client = this.col_client;
         const clientClass = this.clientClass;
         const clientGroup = this.clientGroup;
@@ -244,14 +244,7 @@ class ColumnarStorage {
         const col_asn = this.col_asn;
 
         for (let i = 0; i < total; i++) {
-            if (targetIpId !== undefined && col_ip[i] !== targetIpId) continue;
-            if (targetBotId !== undefined && col_bot[i] !== targetBotId) continue;
-            if (classMask !== 0 && !((classMask >> clientClass[col_client[i]]) & 1)) continue;
-            if (groupName !== null && clientGroup[col_client[i]] !== groupName) continue;
-            if (targetCountryId !== undefined && col_country[i] !== targetCountryId) continue;
-            if (col_status[i] < minStatus || col_status[i] > maxStatus) continue;
-            if (targetAsn !== 0 && col_asn[i] !== targetAsn) continue;
-            if (col_time[i] < minTime || col_time[i] > maxTime) continue;
+            if (!matches(i)) continue;
 
             counts[col_ip[i]]++;
         }
@@ -269,11 +262,42 @@ class ColumnarStorage {
     }
 
     _parseFilters(filters = {}) {
-        let targetIpId;
+        // Address filter: a full address, the start of one, or a CIDR block.
+        // Decided once per distinct address, then looked up per row.
+        let ipMatch = null;
         const ipQuery = filters.ip || filters.ipSearch;
         if (ipQuery && ipQuery.trim()) {
-            targetIpId = this.ipMap.get(ipQuery.trim());
-            if (targetIpId === undefined) return null; // Filter string never seen -> 0 results
+            const exactId = this.ipMap.get(ipQuery.trim());
+            const parser = (typeof LogParser !== 'undefined' && LogParser) || (typeof globalThis !== 'undefined' && globalThis.LogParser) || null;
+            const test = parser && parser.ipFilterMatcher ? parser.ipFilterMatcher(ipQuery) : (ip => ip === ipQuery.trim());
+            ipMatch = new Uint8Array(this.ipDict.length);
+            let any = false;
+            for (let id = 0; id < this.ipDict.length; id++) {
+                if (id === exactId || test(this.ipDict[id])) { ipMatch[id] = 1; any = true; }
+            }
+            if (!any) return null; // No address in the log matches -> 0 results
+        }
+
+        // Path filter (see RequestPaths.pathMatcher), decided once per distinct URL.
+        let urlMatch = null;
+        if (filters.pathSearch && String(filters.pathSearch).trim()) {
+            const paths = (typeof RequestPaths !== 'undefined' && RequestPaths) || (typeof globalThis !== 'undefined' && globalThis.RequestPaths) || null;
+            const term = String(filters.pathSearch).trim().toLowerCase();
+            const test = paths ? paths.pathMatcher(filters.pathSearch) : (url => (url || '').toLowerCase().includes(term));
+            urlMatch = new Uint8Array(this.urlDict.length);
+            let any = false;
+            for (let id = 0; id < this.urlDict.length; id++) {
+                const url = this.urlDict[id];
+                if (url && url !== '-' && test(url)) { urlMatch[id] = 1; any = true; }
+            }
+            if (!any) return null;
+        }
+
+        let targetMethodId;
+        if (filters.method && filters.method !== 'all') {
+            targetMethodId = this.methodMap.get(String(filters.method).toUpperCase());
+            if (targetMethodId === undefined) targetMethodId = this.methodMap.get(filters.method);
+            if (targetMethodId === undefined) return null;
         }
 
         // Traffic filter. With classified clients the value is a class
@@ -337,7 +361,21 @@ class ColumnarStorage {
             if (filters.endTimeSec) maxTime = filters.endTimeSec;
         }
 
-        return { targetIpId, targetBotId, targetCountryId, minStatus, maxStatus, targetAsn, minTime, maxTime, classMask, groupName };
+        const { col_ip, col_bot, col_client, col_country, col_status, col_asn, col_time, col_url, col_method, clientClass, clientGroup } = this;
+        const matches = i => {
+            if (ipMatch !== null && ipMatch[col_ip[i]] === 0) return false;
+            if (urlMatch !== null && urlMatch[col_url[i]] === 0) return false;
+            if (targetMethodId !== undefined && col_method[i] !== targetMethodId) return false;
+            if (targetBotId !== undefined && col_bot[i] !== targetBotId) return false;
+            if (classMask !== 0 && !((classMask >> clientClass[col_client[i]]) & 1)) return false;
+            if (groupName !== null && clientGroup[col_client[i]] !== groupName) return false;
+            if (targetCountryId !== undefined && col_country[i] !== targetCountryId) return false;
+            if (col_status[i] < minStatus || col_status[i] > maxStatus) return false;
+            if (targetAsn !== 0 && col_asn[i] !== targetAsn) return false;
+            if (col_time[i] < minTime || col_time[i] > maxTime) return false;
+            return true;
+        };
+        return { matches };
     }
 
     query(filters = {}) {
@@ -355,7 +393,7 @@ class ColumnarStorage {
             };
         }
 
-        const { targetIpId, targetBotId, targetCountryId, minStatus, maxStatus, targetAsn, minTime, maxTime, classMask, groupName } = parsed;
+        const matches = parsed.matches;
         const col_client = this.col_client;
         const clientClass = this.clientClass;
         const clientGroup = this.clientGroup;
@@ -375,6 +413,9 @@ class ColumnarStorage {
         const timeBuckets = {};
         // Requests per client, for the caller to turn into traffic classes.
         const clientCounts = (clientClass && this.hasClients) ? new Uint32Array(clientClass.length) : null;
+        // Requests per distinct URL, for the caller to turn into paths.
+        const urlHits = new Uint32Array(this.urlDict.length);
+        const col_url = this.col_url;
 
         const col_ip = this.col_ip;
         const col_time = this.col_time;
@@ -386,18 +427,12 @@ class ColumnarStorage {
         const col_method = this.col_method;
 
         for (let i = 0; i < total; i++) {
-            if (targetIpId !== undefined && col_ip[i] !== targetIpId) continue;
-            if (targetBotId !== undefined && col_bot[i] !== targetBotId) continue;
-            if (classMask !== 0 && !((classMask >> clientClass[col_client[i]]) & 1)) continue;
-            if (groupName !== null && clientGroup[col_client[i]] !== groupName) continue;
-            if (targetCountryId !== undefined && col_country[i] !== targetCountryId) continue;
-            if (col_status[i] < minStatus || col_status[i] > maxStatus) continue;
-            if (targetAsn !== 0 && col_asn[i] !== targetAsn) continue;
-            if (col_time[i] < minTime || col_time[i] > maxTime) continue;
+            if (!matches(i)) continue;
 
             matchingCount++;
             totalBytes += col_bytes[i];
             if (clientCounts) clientCounts[col_client[i]]++;
+            urlHits[col_url[i]]++;
             const ipId = col_ip[i];
             if (ipSeen[ipId] === 0) {
                 ipSeen[ipId] = 1;
@@ -444,7 +479,7 @@ class ColumnarStorage {
 
         const methodCounts = {};
         for (const [id, count] of Object.entries(methodHits)) {
-            methodCounts[this.methodDict[id]] = count;
+            if (this.methodDict[id] !== '-') methodCounts[this.methodDict[id]] = count;
         }
 
         const topIps = this.getTopIps(50, filters);
@@ -483,6 +518,7 @@ class ColumnarStorage {
             timeBuckets,
             minTimeSec,
             maxTimeSec,
+            urlHits,
             ...(clientCounts ? { clientCounts } : {})
         };
     }
@@ -496,7 +532,7 @@ class ColumnarStorage {
             return { rows: [], totalRows: 0, page, totalPages: 0, pageSize: size };
         }
 
-        const { targetIpId, targetBotId, targetCountryId, minStatus, maxStatus, targetAsn, minTime, maxTime, classMask, groupName } = parsed;
+        const matches = parsed.matches;
         const col_client = this.col_client;
         const clientClass = this.clientClass;
         const clientGroup = this.clientGroup;
@@ -519,14 +555,7 @@ class ColumnarStorage {
         const col_method = this.col_method;
 
         for (let i = 0; i < total; i++) {
-            if (targetIpId !== undefined && col_ip[i] !== targetIpId) continue;
-            if (targetBotId !== undefined && col_bot[i] !== targetBotId) continue;
-            if (classMask !== 0 && !((classMask >> clientClass[col_client[i]]) & 1)) continue;
-            if (groupName !== null && clientGroup[col_client[i]] !== groupName) continue;
-            if (targetCountryId !== undefined && col_country[i] !== targetCountryId) continue;
-            if (col_status[i] < minStatus || col_status[i] > maxStatus) continue;
-            if (targetAsn !== 0 && col_asn[i] !== targetAsn) continue;
-            if (col_time[i] < minTime || col_time[i] > maxTime) continue;
+            if (!matches(i)) continue;
 
             if (matchedCount >= startIndex && matchedCount < endIndex) {
                 const row = {
@@ -534,7 +563,7 @@ class ColumnarStorage {
                     timeSec: col_time[i],
                     status: col_status[i],
                     bytes: col_bytes[i],
-                    method: this.methodDict[col_method[i]] || 'GET',
+                    method: this.methodDict[col_method[i]] || '-',
                     url: this.urlDict[col_url[i]],
                     bot: this.botDict[col_bot[i]],
                     country: this.countryDict[col_country[i]],

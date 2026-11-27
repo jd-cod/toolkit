@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 describe('Analyzer.analyzeFromWorkerSummary', () => {
     test('transforms columnar query summary into dashboard data object', async () => {
         // Load Analyzer and the scripts it expects as globals
+        await import('../../frontend/public/js/request-paths.js');
         await import('../../frontend/public/js/bot-detector.js');
         await import('../../frontend/public/js/traffic-classifier.js');
         const Analyzer = (await import('../../frontend/public/js/analyzer.js')).default || (await import('../../frontend/public/js/analyzer.js'));
@@ -54,6 +55,7 @@ describe('Analyzer.analyzeFromWorkerSummary', () => {
     });
 
     test('a summary without traffic classes does not count humans as a bot', async () => {
+        await import('../../frontend/public/js/request-paths.js');
         await import('../../frontend/public/js/bot-detector.js');
         await import('../../frontend/public/js/traffic-classifier.js');
         const Analyzer = (await import('../../frontend/public/js/analyzer.js')).default;

@@ -5,7 +5,7 @@
  * Takes parsed IPs + user agents + GeoIP lookups and produces
  * country hits, ASN hits, top IPs, bot breakdown (with sub-groups), etc.
  *
- * Needs GeoIP, BotDetector and TrafficClassifier to be loaded first.
+ * Needs GeoIP, RequestPaths, BotDetector and TrafficClassifier to be loaded first.
  */
 
 const Analyzer = (() => {
@@ -193,9 +193,8 @@ const Analyzer = (() => {
         // HTTP Status Code Analysis
         const statusCounter = new Map();
         const methodCounter = new Map();
+        // URL -> { count, statuses }, turned into paths by RequestPaths.
         const urlCounter = new Map();
-        const pathCounter = new Map();
-        const urlByStatus = new Map();
         let totalResponseSize = 0;
         const responseSizes = [];
         const hourlyCounter = new Array(24).fill(0);
@@ -210,19 +209,11 @@ const Analyzer = (() => {
                 methodCounter.set(method, (methodCounter.get(method) || 0) + 1);
             }
             if (entry.url) {
-                const simpleUrl = entry.url.split('?')[0];
-                urlCounter.set(simpleUrl, (urlCounter.get(simpleUrl) || 0) + 1);
-                if (entry.status_code !== null) {
-                    if (!urlByStatus.has(simpleUrl)) urlByStatus.set(simpleUrl, new Map());
-                    const statusMap = urlByStatus.get(simpleUrl);
-                    statusMap.set(entry.status_code, (statusMap.get(entry.status_code) || 0) + 1);
-                }
-                // Extract path segments for Top Paths (like: /admin/, /api/, /wp-login/)
-                const pathSegments = simpleUrl.match(/\/[a-zA-Z0-9_.-]+/g);
-                if (pathSegments) {
-                    for (const seg of pathSegments) {
-                        pathCounter.set(seg, (pathCounter.get(seg) || 0) + 1);
-                    }
+                let rec = urlCounter.get(entry.url);
+                if (!rec) { rec = { count: 0, statuses: new Map() }; urlCounter.set(entry.url, rec); }
+                rec.count++;
+                if (entry.status_code !== null && !isNaN(entry.status_code)) {
+                    rec.statuses.set(entry.status_code, (rec.statuses.get(entry.status_code) || 0) + 1);
                 }
             }
             if (entry.response_size !== null && !isNaN(entry.response_size)) {
@@ -250,26 +241,13 @@ const Analyzer = (() => {
             .sort((a, b) => b[1] - a[1])
             .map(([method, count]) => ({ method, count, percentage: totalRequests ? (count / totalRequests * 100).toFixed(1) : 0 }));
 
-        const topUrls = [...urlCounter.entries()]
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 20)
-            .map(([url, count]) => {
-                const statusMap = urlByStatus.get(url) || new Map();
-                return {
-                    url, count,
-                    percentage: totalRequests ? (count / totalRequests * 100).toFixed(1) : 0,
-                    status_breakdown: [...statusMap.entries()].sort((a, b) => b[1] - a[1]).map(([code, c]) => ({ code, count: c })),
-                };
-            });
-
-        // Top paths (path segments extracted like awk/grep -oE '/[a-zA-Z0-9_.-]+/')
-        const topPaths = [...pathCounter.entries()]
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 30)
-            .map(([path, count]) => ({
-                path, count,
-                percentage: totalRequests ? (count / totalRequests * 100).toFixed(1) : 0,
-            }));
+        // Paths: every request counts once, under its normalised path.
+        const paths = RequestPaths.summarize(
+            (function* () { for (const [url, rec] of urlCounter) yield [url, rec.count, rec.statuses]; })(),
+            totalRequests
+        );
+        const topPaths = paths.top_paths;
+        const topUrls = topPaths.slice(0, 20).map(p => ({ url: p.path, count: p.count, percentage: p.percentage, status_breakdown: p.status_breakdown }));
 
         // Referrers Counter
         const referrerCounter = new Map();
@@ -305,6 +283,9 @@ const Analyzer = (() => {
                 method_hits: methodHits,
                 top_urls: topUrls,
                 top_paths: topPaths,
+                other_paths: paths.other_paths,
+                distinct_paths: paths.distinct_paths,
+                path_sections: paths.sections,
                 response_size: {
                     total: totalResponseSize, average: avgResponseSize, median: medianResponseSize,
                     min: minResponseSize,
@@ -570,6 +551,7 @@ const Analyzer = (() => {
             http_metrics: {
                 status_categories: { '1xx': 0, '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 },
                 status_hits: [], method_hits: [], top_urls: [], top_paths: [],
+                other_paths: { paths: 0, count: 0, percentage: '0.0' }, distinct_paths: 0, path_sections: [],
                 response_size: { total: 0, average: 0, median: 0, min: 0, max: 0 },
             },
             temporal_distribution: {
@@ -811,6 +793,8 @@ const Analyzer = (() => {
             }))
             .sort((a, b) => b.count - a.count);
 
+        const workerPaths = summary.paths || { top_paths: [], other_paths: { paths: 0, count: 0, percentage: '0.0' }, distinct_paths: 0, sections: [] };
+
         return {
             total_requests: totalRequests,
             unique_ips: uniqueIps,
@@ -846,7 +830,11 @@ const Analyzer = (() => {
                 status_categories: statusCategories,
                 status_hits: statusHits,
                 method_hits: methodHits,
-                top_paths: [],
+                top_paths: workerPaths.top_paths,
+                top_urls: workerPaths.top_paths.slice(0, 20).map(p => ({ url: p.path, count: p.count, percentage: p.percentage, status_breakdown: p.status_breakdown })),
+                other_paths: workerPaths.other_paths,
+                distinct_paths: workerPaths.distinct_paths,
+                path_sections: workerPaths.sections,
                 top_referrers: [],
                 request_rate: reqRateObj
             },

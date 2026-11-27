@@ -539,7 +539,7 @@ window.initNginxPage = function () {
                 ? await peekAndDecompressStream(stream)
                 : stream;
 
-            const worker = typeof Worker !== 'undefined' ? new Worker('/js/log-parser.worker.js?v=6.54') : null;
+            const worker = typeof Worker !== 'undefined' ? new Worker('/js/log-parser.worker.js?v=6.55') : null;
 
             let result = null;
             if (worker && typeof streamChunksToWorker === 'function') {

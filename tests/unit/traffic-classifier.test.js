@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
+require('../../frontend/public/js/request-paths.js');
 const BotDetector = require('../../frontend/public/js/bot-detector.js');
 const TrafficClassifier = require('../../frontend/public/js/traffic-classifier.js');
 const LogParser = require('../../frontend/public/js/log-parser.js');

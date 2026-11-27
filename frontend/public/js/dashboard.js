@@ -1894,7 +1894,7 @@ const Dashboard = (() => {
                     count: a.hits,
                     label: `${/^AS/i.test(String(a.asn)) ? String(a.asn) : 'AS' + a.asn} - ${(a.asn_org || '').slice(0, 20)}`
                 })),
-                paths: (data?.http_metrics?.top_paths || []).slice(0, 25).map(p => ({ path: p.path, count: p.hits })),
+                paths: (data?.http_metrics?.path_sections || []).slice(0, 25).map(p => ({ path: p.path, count: p.count })),
                 trafficStats: {
                     human: data?.human_requests || 0,
                     verified: data?.verified_bots_count || 0,
@@ -1921,10 +1921,10 @@ const Dashboard = (() => {
                 rec.count++;
                 asns.set(e.asn, rec);
             }
-            // Top Paths rows hold path SEGMENTS ('/products'), matched against
-            // entry.url — there is no e.path field on a log entry.
+            // The dropdown lists sections (first level of the path); choosing
+            // one filters with `^/section`, which counts exactly these requests.
             if (e.url) {
-                const seg = (e.url.split('?')[0].match(/\/[a-zA-Z0-9_.-]+/) || [])[0];
+                const seg = RequestPaths.sectionOf(e.url);
                 if (seg) paths.set(seg, (paths.get(seg) || 0) + 1);
             }
             classCounts[trafficClassOf(e)]++;
@@ -2032,32 +2032,14 @@ const Dashboard = (() => {
         }
 
         if (filters.pathSearch) {
-            const term = filters.pathSearch.toLowerCase();
-            result = result.filter(e => (e.url || '').toLowerCase().includes(term));
+            const matchesPath = RequestPaths.pathMatcher(filters.pathSearch);
+            result = result.filter(e => e.url && matchesPath(e.url));
         }
 
-        if (filters.ipSearch) {
-            const term = filters.ipSearch.trim().toLowerCase();
-            if (term.includes('/')) {
-                // CIDR Subnet Match (e.g. 185.220.0.0/16)
-                result = result.filter(e => {
-                    if (!e.ip) return false;
-                    try {
-                        const [subIp, maskStr] = term.split('/');
-                        const maskBits = parseInt(maskStr, 10);
-                        if (isNaN(maskBits) || maskBits < 0 || maskBits > 32) return (e.ip || '').toLowerCase().includes(subIp);
-                        const ipToInt = s => s.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
-                        const targetInt = ipToInt(e.ip);
-                        const subnetInt = ipToInt(subIp);
-                        const mask = maskBits === 0 ? 0 : (~0 << (32 - maskBits)) >>> 0;
-                        return (targetInt & mask) === (subnetInt & mask);
-                    } catch {
-                        return (e.ip || '').toLowerCase().includes(term);
-                    }
-                });
-            } else {
-                result = result.filter(e => (e.ip || '').toLowerCase().includes(term));
-            }
+        if (filters.ipSearch && filters.ipSearch.trim()) {
+            // A full address, the start of one, or a CIDR block (see LogParser.ipFilterMatcher).
+            const matchesIp = LogParser.ipFilterMatcher(filters.ipSearch);
+            result = result.filter(e => e.ip && matchesIp(e.ip));
         }
 
         if (filters.uaSearch) {
@@ -2833,7 +2815,7 @@ const Dashboard = (() => {
                 <div class="card-table-wrap" style="background:var(--bg-card);border:1px solid var(--border-color);border-radius:12px;padding:16px;">
                     <div class="table-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
                         <span style="font-weight:700;font-size:0.86rem;"><i class="bi bi-bullseye" style="color:var(--accent-amber);margin-right:6px;"></i>3. Targeted Paths</span>
-                        <span class="pill pill-amber" style="font-size:0.7rem;">${(data.http_metrics?.top_paths || []).length} Paths</span>
+                        <span class="pill pill-amber" style="font-size:0.7rem;">${numberWithCommas(data.http_metrics?.distinct_paths ?? (data.http_metrics?.top_paths || []).length)} Paths</span>
                     </div>
                     <div style="max-height:260px;overflow-y:auto;">
                         <table class="table-clean" style="width:100%;border-collapse:collapse;font-size:0.76rem;">
@@ -2845,13 +2827,19 @@ const Dashboard = (() => {
                                 </tr>
                             </thead>
                             <tbody>
-                                ${(data.http_metrics?.top_paths || []).slice(0, 15).map(p => `
-                                    <tr class="cross-filter-path-row" data-path="${escapeHtml(p.path)}" style="border-bottom:1px solid rgba(255,255,255,0.03);cursor:pointer;">
-                                        <td style="padding:6px 8px;"><code style="font-size:0.74rem;color:var(--accent-cyan);">${escapeHtml(p.path)}</code></td>
+                                ${(data.http_metrics?.top_paths || []).slice(0, 30).map(p => `
+                                    <tr class="cross-filter-path-row" data-path="${escapeHtml('=' + p.path)}" style="border-bottom:1px solid rgba(255,255,255,0.03);cursor:pointer;">
+                                        <td style="padding:6px 8px;word-break:break-all;"><code style="font-size:0.74rem;color:${p.attack ? 'var(--accent-red)' : 'var(--accent-cyan)'};"${p.attack ? ` title="Looks like an attack path (${escapeHtml(p.attack)})"` : ''}>${escapeHtml(p.path.length > 80 ? p.path.slice(0, 77) + '…' : p.path)}</code></td>
                                         <td style="padding:6px 8px;text-align:right;font-weight:700;">${numberWithCommas(p.count)}</td>
                                         <td style="padding:6px 8px;text-align:right;color:var(--text-muted);">${p.percentage}%</td>
                                     </tr>
                                 `).join('')}
+                                ${data.http_metrics?.other_paths?.count > 0 ? `
+                                    <tr class="path-other-row" style="color:var(--text-muted);">
+                                        <td style="padding:6px 8px;">${numberWithCommas(data.http_metrics.other_paths.paths)} other paths</td>
+                                        <td style="padding:6px 8px;text-align:right;">${numberWithCommas(data.http_metrics.other_paths.count)}</td>
+                                        <td style="padding:6px 8px;text-align:right;">${data.http_metrics.other_paths.percentage}%</td>
+                                    </tr>` : ''}
                                 ${(!data.http_metrics?.top_paths || data.http_metrics.top_paths.length === 0) ? '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:10px;">No path data</td></tr>' : ''}
                             </tbody>
                         </table>
@@ -3125,7 +3113,8 @@ const Dashboard = (() => {
                     <!-- 3. All Paths -->
                     <select class="filter-select" id="filter-path-select">
                         <option value="all" ${!activeFilters.pathSearch ? 'selected' : ''}>All Paths</option>
-                        ${(filterOptions.paths || []).map(p => `<option value="${p.path}" ${activeFilters.pathSearch === p.path ? 'selected' : ''}>${p.path} (${numberWithCommas(p.count)})</option>`).join('')}
+                        ${(filterOptions.paths || []).map(p => `<option value="${escapeHtml('^' + p.path)}" ${activeFilters.pathSearch === '^' + p.path ? 'selected' : ''}>${escapeHtml(p.path)} (${numberWithCommas(p.count)})</option>`).join('')}
+                        ${activeFilters.pathSearch && !(filterOptions.paths || []).some(p => '^' + p.path === activeFilters.pathSearch) ? `<option value="${escapeHtml(activeFilters.pathSearch)}" selected>${escapeHtml(RequestPaths.describeFilter(activeFilters.pathSearch))}</option>` : ''}
                     </select>
 
                     <!-- 4. All ASNs -->
@@ -3148,7 +3137,7 @@ const Dashboard = (() => {
 
                     <!-- Search Fields -->
                     <input type="text" class="search-field" id="filter-ip" placeholder="🔍 Search IP..." value="${escapeHtml(activeFilters.ipSearch)}" />
-                    <input type="text" class="search-field" id="filter-path" placeholder="🔗 Search Path..." value="${escapeHtml(activeFilters.pathSearch)}" />
+                    <input type="text" class="search-field" id="filter-path" placeholder="🔗 Search Path..." title="Text found anywhere in the URL. =/a/b matches that exact path, ^/a everything under /a." value="${escapeHtml(activeFilters.pathSearch)}" />
                 </div>
 
                 <!-- Match Counter -->

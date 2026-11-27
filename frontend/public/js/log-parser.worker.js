@@ -6,24 +6,27 @@
  * and serves paginated 50-row slices to the Log Explorer.
  */
 
-/* global importScripts, ChunkedLineSplitter, ColumnarStorage, BotDetector, TrafficClassifier, LogParser */
+/* global importScripts, ChunkedLineSplitter, ColumnarStorage, RequestPaths, BotDetector, TrafficClassifier, LogParser */
 
 function ensureDependencies() {
     if (typeof importScripts !== 'undefined') {
         if (typeof ChunkedLineSplitter === 'undefined') {
-            importScripts('/js/stream-line-splitter.js?v=6.54');
+            importScripts('/js/stream-line-splitter.js?v=6.55');
         }
         if (typeof ColumnarStorage === 'undefined') {
-            importScripts('/js/columnar-storage.js?v=6.54');
+            importScripts('/js/columnar-storage.js?v=6.55');
+        }
+        if (typeof RequestPaths === 'undefined') {
+            importScripts('/js/request-paths.js?v=6.55');
         }
         if (typeof BotDetector === 'undefined') {
-            importScripts('/js/bot-detector.js?v=6.54');
+            importScripts('/js/bot-detector.js?v=6.55');
         }
         if (typeof TrafficClassifier === 'undefined') {
-            importScripts('/js/traffic-classifier.js?v=6.54');
+            importScripts('/js/traffic-classifier.js?v=6.55');
         }
         if (typeof LogParser === 'undefined') {
-            importScripts('/js/log-parser.js?v=6.54');
+            importScripts('/js/log-parser.js?v=6.55');
         }
     } else if (typeof require !== 'undefined') {
         if (typeof ChunkedLineSplitter === 'undefined') {
@@ -31,6 +34,9 @@ function ensureDependencies() {
         }
         if (typeof ColumnarStorage === 'undefined') {
             try { globalThis.ColumnarStorage = require('./columnar-storage.js').ColumnarStorage; } catch (_) {}
+        }
+        if (typeof RequestPaths === 'undefined') {
+            try { globalThis.RequestPaths = require('./request-paths.js'); } catch (_) {}
         }
         if (typeof BotDetector === 'undefined') {
             try { globalThis.BotDetector = require('./bot-detector.js'); } catch (_) {}
@@ -59,6 +65,8 @@ function createWorkerHandler(postMessageFn) {
     let startRowIndex = 0;
     let isAppending = false;
     let activeFormat = null;
+    let forwardedLines = 0;
+    const skipCounts = { privateIP: 0, healthCheck: 0, forbidden: 0, invalid: 0 };
 
     const classifier = globalThis.TrafficClassifier || (typeof TrafficClassifier !== 'undefined' ? TrafficClassifier : null);
     const session = classifier ? classifier.createSession() : null;
@@ -86,6 +94,16 @@ function createWorkerHandler(postMessageFn) {
     // classes and bot groups the dashboard shows.
     function summarize(filters) {
         const summary = columnarStorage.query(filters);
+        const urlHits = summary.urlHits;
+        delete summary.urlHits;
+        const paths = globalThis.RequestPaths || (typeof RequestPaths !== 'undefined' ? RequestPaths : null);
+        if (urlHits && paths) {
+            const urls = columnarStorage.urlDict;
+            summary.paths = paths.summarize(
+                (function* () { for (let id = 0; id < urlHits.length; id++) if (urlHits[id]) yield [urls[id], urlHits[id]]; })(),
+                summary.matchingCount
+            );
+        }
         const counts = summary.clientCounts;
         if (counts && session) {
             delete summary.clientCounts;
@@ -102,20 +120,31 @@ function createWorkerHandler(postMessageFn) {
         return summary;
     }
 
-    function processLines(lines, options) {
+    // Lines wait here until there are enough to decide the format. A first
+    // chunk can hold only a line or two.
+    const DETECT_LINES = 200;
+    let pendingLines = [];
+
+    function processLines(lines, options, isLast = false) {
         const parser = globalThis.LogParser || LogParser;
-        if (!activeFormat && lines.length > 0 && parser && parser.detectFormat) {
-            activeFormat = parser.detectFormat(lines.slice(0, 15));
+        if (!activeFormat) {
+            for (let i = 0; i < lines.length; i++) pendingLines.push(lines[i]);
+            if (pendingLines.length < DETECT_LINES && !isLast) return;
+            lines = pendingLines;
+            pendingLines = [];
+            if (lines.length === 0) return;
+            activeFormat = parser.detectFormat(lines.slice(0, DETECT_LINES));
         }
         const lineParser = (activeFormat && activeFormat.parseLine) || parser.parseLine;
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
+            if (!line || !line.trim() || line[0] === '#') continue;
             const res = lineParser(line, options);
             if (res.valid) {
                 const clientId = session ? session.add(res.ip, res.userAgent, {
                     timeSec: res.timeSec,
                     status: res.statusCode,
-                    method: res.method ? String(res.method).toUpperCase() : '',
+                    method: res.method || '',
                     url: res.url || '',
                     hasReferrer: Boolean(res.referrer && res.referrer !== '-'),
                     httpVersion: res.httpVersion || '',
@@ -129,14 +158,27 @@ function createWorkerHandler(postMessageFn) {
                     res.botName,
                     '-',
                     0,
-                    res.method || 'GET',
+                    res.method || '-',
                     clientId
                 );
                 totalLinesParsed++;
+                if (res.viaForwarded) forwardedLines++;
             } else {
                 totalLinesSkipped++;
+                if (res.reasonType && skipCounts[res.reasonType] !== undefined) skipCounts[res.reasonType]++;
             }
         }
+    }
+
+    // Each file is detected on its own: an added file can be in another format.
+    function endOfStream(options) {
+        const trailing = splitter.flush();
+        processLines(trailing || [], options, true);
+        activeFormat = null;
+    }
+
+    function ingestStats() {
+        return { totalBytesRead, totalLinesParsed, totalLinesSkipped, skipCounts: { ...skipCounts }, forwardedLines };
     }
 
     return function onMessage(e) {
@@ -169,24 +211,18 @@ function createWorkerHandler(postMessageFn) {
                 }
 
                 if (isLast) {
-                    const trailing = splitter.flush();
-                    if (trailing && trailing.length > 0) {
-                        processLines(trailing, options);
-                    }
+                    endOfStream(options);
 
                     classifyClients();
                     const summary = summarize({});
                     const pageResult = columnarStorage.getPage(1, 50, { totalRows: summary.matchingCount });
 
-                    activeFormat = null;
                     postMessageFn({
                         type: 'complete',
                         summary,
                         pageResult,
                         ipDict: columnarStorage.ipDict,
-                        totalBytesRead,
-                        totalLinesParsed,
-                        totalLinesSkipped
+                        ...ingestStats()
                     });
                 }
             } else if (action === 'append_stream_chunk') {
@@ -214,10 +250,7 @@ function createWorkerHandler(postMessageFn) {
                 }
 
                 if (isLast) {
-                    const trailing = splitter.flush();
-                    if (trailing && trailing.length > 0) {
-                        processLines(trailing, options);
-                    }
+                    endOfStream(options);
 
                     const emittedStartRow = startRowIndex;
                     const emittedStartIp = startIpIndex;
@@ -234,9 +267,7 @@ function createWorkerHandler(postMessageFn) {
                         ipDict: columnarStorage.ipDict,
                         startIpIndex: emittedStartIp,
                         startRowIndex: emittedStartRow,
-                        totalBytesRead,
-                        totalLinesParsed,
-                        totalLinesSkipped
+                        ...ingestStats()
                     });
                 }
             } else if (action === 'enrich_geo') {
@@ -254,9 +285,7 @@ function createWorkerHandler(postMessageFn) {
                     type: 'enriched',
                     summary,
                     pageResult,
-                    totalBytesRead,
-                    totalLinesParsed,
-                    totalLinesSkipped
+                    ...ingestStats()
                 });
             } else if (action === 'enrich_geo_incremental') {
                 if (data.countryIds && data.asns) {
@@ -277,9 +306,7 @@ function createWorkerHandler(postMessageFn) {
                     type: 'enriched',
                     summary,
                     pageResult,
-                    totalBytesRead,
-                    totalLinesParsed,
-                    totalLinesSkipped
+                    ...ingestStats()
                 });
             } else if (action === 'filter') {
                 currentFilters = data.filters || {};
