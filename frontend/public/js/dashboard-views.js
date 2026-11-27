@@ -331,9 +331,10 @@ const DashboardViews = (() => {
                     <div class="table-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
                         <span style="font-weight:700;font-size:0.86rem;"><i class="bi bi-radioactive" style="color:var(--accent-red);margin-right:6px;"></i>4. Abusive IPs (AbuseIPDB)</span>
                         <button id="btn-scan-abuseipdb" class="btn btn-rose" style="padding:2px 8px;font-size:0.7rem;display:none;">
-                            <i class="bi bi-search"></i> Scan Top 10
+                            <i class="bi bi-search"></i> Check the rest
                         </button>
                     </div>
+                    <div id="abuse-scan-note" role="status" hidden style="font-size:0.72rem;color:var(--accent-amber);margin-bottom:8px;"></div>
                     <div id="abuse-overlay" style="position:absolute;inset:0;background:rgba(0,0,0,0.4);backdrop-filter:blur(2px);border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:10;gap:8px;">
                         <button id="btn-center-scan-abuse" class="btn btn-rose" style="padding:10px 24px;font-size:0.9rem;font-weight:700;border-radius:8px;box-shadow:0 4px 15px rgba(244,63,94,0.3);">
                             <i class="bi bi-search"></i> Scan Top 20 IPs

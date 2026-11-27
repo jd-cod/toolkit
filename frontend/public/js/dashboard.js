@@ -1151,17 +1151,12 @@ const Dashboard = (() => {
         for (const id of ['dash-skip-403', 'dash-skip-internal', 'dash-client-ip']) {
             document.getElementById(id)?.addEventListener('change', () => reanalyzeExclusions(id));
         }
-        // AbuseIPDB Scan Button (hidden, kept for backwards compat)
-        document.getElementById('btn-scan-abuseipdb')?.addEventListener('click', () => {
-            scanTop10AbuseIPs(data.top_ips || []);
-        });
-
-        // Centered Abuse Scan Button
-        document.getElementById('btn-center-scan-abuse')?.addEventListener('click', () => {
-            const overlay = document.getElementById('abuse-overlay');
-            if (overlay) overlay.style.display = 'none';
-            scanTop10AbuseIPs((data.top_ips || []).slice(0, 20));
-        });
+        // AbuseIPDB: the button on the card, and the one for addresses a scan left without an answer.
+        for (const id of ['btn-center-scan-abuse', 'btn-scan-abuseipdb']) {
+            document.getElementById(id)?.addEventListener('click', scanAbuseIPs);
+        }
+        abuseTopIps = data.top_ips || [];
+        restoreAbuseScan();
 
         // Floating Clear Active Filters Button
         document.getElementById('floating-clear-filters-btn')?.addEventListener('click', () => {
@@ -1214,10 +1209,17 @@ const Dashboard = (() => {
         });
 
         // Download report
-        document.getElementById('dash-download-btn')?.addEventListener('click', () => {
+        document.getElementById('dash-download-btn')?.addEventListener('click', async () => {
+            if (!currentData) return;
             // An upload's parse result has the skip counts but not the options they were made with.
             const options = { skip403: currentSkip403, skipInternal: currentSkipInternal, ...(originalParseResult?.options || {}) };
-            if (currentData) Report.openModal(currentData, { ...originalParseResult, options, nodeCount: currentNodeCount }, { nodeCount: currentNodeCount });
+            let data = currentData;
+            try {
+                data = await reportData();
+            } catch (err) {
+                console.error('The requests of the checked addresses could not be read for the report:', err);
+            }
+            Report.openModal(data, { ...originalParseResult, options, nodeCount: currentNodeCount }, { nodeCount: currentNodeCount });
         });
 
         // Share button
@@ -2194,49 +2196,99 @@ const Dashboard = (() => {
 
     
 
-    let scannedAbuseData = new Map(); // ip -> { abuse_score, total_reports, country_code }
+    const ABUSE_SCAN_LIMIT = 20;
+    // ip -> { abuse_score, total_reports, country_code, domain }, or { error } when the lookup failed.
+    // Kept across filters and logs: what AbuseIPDB says about an address does not depend on the log.
+    const scannedAbuseData = new Map();
     let isScanningAbuse = false;
+    // The most active addresses of the view on the page; a filter changes them.
+    let abuseTopIps = [];
 
-    async function scanTop10AbuseIPs(topIps) {
-        if (isScanningAbuse || !topIps || topIps.length === 0) return;
-        isScanningAbuse = true;
-        const btn = document.getElementById('btn-scan-abuseipdb');
-        if (btn) btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Scanning...';
+    const abuseScoreOf = ip => {
+        const scan = scannedAbuseData.get(ip);
+        return scan && typeof scan.abuse_score === 'number' ? scan.abuse_score : null;
+    };
 
-        try {
-            const targets = topIps.slice(0, 10).map(i => ({ ip: i.ip, hits: i.hits }));
-            const resp = await fetch('/api/abuse', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ips: targets, max: 10 })
-            });
-
-            if (resp.ok) {
-                const json = await resp.json();
-                const allResults = [...(json.abusive || []), ...(json.non_abusive || [])];
-                allResults.forEach(r => {
-                    scannedAbuseData.set(r.ip, {
-                        abuse_score: r.abuse_score || 0,
-                        total_reports: r.total_reports || 0,
-                        country_code: r.country_code || '--',
-                        domain: r.domain || 'N/A'
-                    });
-                });
-                renderAbuseTableBody(topIps);
-            }
-        } catch (err) {
-            console.error('AbuseIPDB scan error:', err);
-        } finally {
-            isScanningAbuse = false;
-            const btnAfter = document.getElementById('btn-scan-abuseipdb');
-            if (btnAfter) btnAfter.innerHTML = '<i class="bi bi-check-all"></i> Scanned';
+    /** The line under the card's title, and the button that checks the addresses still without an answer. */
+    function abuseScanNote(message, offerRest) {
+        const note = document.getElementById('abuse-scan-note');
+        if (note) {
+            note.textContent = message || '';
+            note.hidden = !message;
         }
+        const rest = document.getElementById('btn-scan-abuseipdb');
+        if (rest) rest.style.display = offerRest ? 'inline-flex' : 'none';
     }
 
-    function renderAbuseTableBody(topIps) {
+    /** Ask AbuseIPDB about the most active addresses that have no answer yet. */
+    async function scanAbuseIPs() {
+        const shown = abuseTopIps.slice(0, ABUSE_SCAN_LIMIT);
+        const targets = shown.filter(item => abuseScoreOf(item.ip) === null).map(item => ({ ip: item.ip, hits: item.hits }));
+        if (isScanningAbuse || shown.length === 0) return;
+        const overlay = document.getElementById('abuse-overlay');
+        if (overlay) overlay.style.display = 'none';
+        let problem = '';
+        let available = true;
+        if (targets.length) {
+            isScanningAbuse = true;
+            abuseScanNote('Asking AbuseIPDB…', false);
+            try {
+                const resp = await fetch('/api/abuse', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ips: targets, max: ABUSE_SCAN_LIMIT })
+                });
+                if (!resp.ok) {
+                    problem = `AbuseIPDB could not be asked (HTTP ${resp.status}).`;
+                } else {
+                    const json = await resp.json();
+                    let failed = 0;
+                    for (const r of [...(json.abusive || []), ...(json.non_abusive || [])]) {
+                        if (r.error) {
+                            failed++;
+                            scannedAbuseData.set(r.ip, { error: r.error });
+                            continue;
+                        }
+                        scannedAbuseData.set(r.ip, {
+                            abuse_score: r.abuse_score || 0,
+                            total_reports: r.total_reports || 0,
+                            country_code: r.country_code || '--',
+                            domain: r.domain || 'N/A'
+                        });
+                    }
+                    if (json.api_available === false) {
+                        available = false;
+                        problem = 'AbuseIPDB is not set up on this server (no API key), so no address was checked.';
+                    } else if (failed) {
+                        problem = `${failed} of ${targets.length} addresses could not be looked up.`;
+                    }
+                }
+            } catch (err) {
+                console.error('AbuseIPDB scan error:', err);
+                problem = 'AbuseIPDB could not be reached.';
+            } finally {
+                isScanningAbuse = false;
+            }
+        }
+        // The view may have changed while AbuseIPDB was asked.
+        renderAbuseTableBody();
+        abuseScanNote(problem, available && abuseTopIps.slice(0, ABUSE_SCAN_LIMIT).some(item => abuseScoreOf(item.ip) === null));
+    }
+
+    /** After a re-render: show the scores that are already known. */
+    function restoreAbuseScan() {
+        const shown = abuseTopIps.slice(0, ABUSE_SCAN_LIMIT);
+        if (!shown.some(item => abuseScoreOf(item.ip) !== null)) return;
+        const overlay = document.getElementById('abuse-overlay');
+        if (overlay) overlay.style.display = 'none';
+        renderAbuseTableBody();
+        abuseScanNote('', shown.some(item => abuseScoreOf(item.ip) === null));
+    }
+
+    function renderAbuseTableBody() {
         const body = document.getElementById('abuse-table-rows');
         if (!body) return;
-        const ips = (topIps || []).slice(0, 10);
+        const ips = abuseTopIps.slice(0, ABUSE_SCAN_LIMIT);
         if (ips.length === 0) {
             body.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:10px;">No attacking IPs</td></tr>';
             return;
@@ -2248,13 +2300,15 @@ const Dashboard = (() => {
             let domainText = '-';
             let countryTag = '-';
 
-            if (scan) {
+            if (scan && scan.error) {
+                scoreBadge = '<span style="font-size:0.72rem;color:var(--accent-amber);">Lookup failed</span>';
+            } else if (scan) {
                 const s = scan.abuse_score;
                 if (s >= 80) scoreBadge = `<span style="background:rgba(244,63,94,0.15);color:#fb7185;padding:2px 8px;border-radius:4px;font-weight:700;">${s}% Bad</span>`;
                 else if (s >= 25) scoreBadge = `<span style="background:rgba(245,158,11,0.15);color:#fbbf24;padding:2px 8px;border-radius:4px;font-weight:700;">${s}% Susp.</span>`;
                 else scoreBadge = `<span style="background:rgba(16,185,129,0.15);color:#34d399;padding:2px 8px;border-radius:4px;font-weight:700;">${s}% Clean</span>`;
                 domainText = escapeHtml(scan.domain || 'N/A');
-                countryTag = scan.country_code;
+                countryTag = escapeHtml(scan.country_code);
             }
 
             return `
@@ -2266,6 +2320,32 @@ const Dashboard = (() => {
             </tr>
             `;
         }).join('');
+    }
+
+    const REPORT_LOG_LINES = 200;
+
+    /**
+     * What the report is made from: the analysis on the page, with the
+     * AbuseIPDB score of every checked address and that address's requests.
+     */
+    async function reportData() {
+        const data = currentData;
+        const worker = activeWorker;
+        const checked = (data.top_ips || []).filter(item => abuseScoreOf(item.ip) !== null);
+        if (checked.length === 0 || !worker) return data;
+        const filters = currentWorkerFilters();
+        const logs = new Map();
+        await Promise.all(checked.map(async item => {
+            const page = await LogEngine.rows(worker, { pageSize: REPORT_LOG_LINES, order: 'file', filters: { ...filters, ipSearch: item.ip } });
+            const entries = page.rows.map(row => ({ timestamp: row.timestamp, method: row.method, status_code: row.status_code, url: row.url, response_size: row.bytes }));
+            entries.total = page.totalRows;
+            logs.set(item.ip, entries);
+        }));
+        return {
+            ...data,
+            top_ips: data.top_ips.map(item => (abuseScoreOf(item.ip) === null ? item : { ...item, abuse_score: abuseScoreOf(item.ip) })),
+            ip_log_entries: logs,
+        };
     }
 
 

@@ -134,7 +134,7 @@ Not carried over, because nothing on the page or in the report used it:
 
 - The list of full referrer addresses (`referrers`). The page and the report show referring sites.
 - The raw text of each line.
-- The requests grouped by address (`ip_log_entries`). Only the "AbuseIPDB Results" table of the report read it, and that table is never drawn: it needs an `abuse_score` on each address, and the scan on the page keeps its scores elsewhere (`scannedAbuseData`). This was so before the change. The window that lists the requests of one address asks the engine.
+- The requests grouped by address (`ip_log_entries`). Only the "AbuseIPDB Results" table of the report read it, and that table was never drawn (fixed in section 1e, where the report asks the engine for them). The window that lists the requests of one address asks the engine.
 
 Cost: a pasted text stays in memory next to the columns, because sharing and re-reading need it.
 
@@ -164,6 +164,30 @@ What this rule does not catch, on purpose, because the same picture is also what
 **A logged-in WordPress user.** Logging in and out answers with a redirect, `xmlrpc.php` refuses a GET, a hardened site has removed `wlwmanifest.xml`: three "sensitive paths that the server did not serve", which made an administrator a vulnerability scanner. Now a client that was served a dashboard page (`/wp-admin/` or a script in it, with 2xx or 304) is a user of the site, and WordPress's own entry points (`wp-login.php`, `xmlrpc.php`, `wlwmanifest.xml`) are not counted against it. The parts of `/wp-admin/` that answer anyone do not prove a login: `admin-ajax.php`, `admin-post.php`, `install.php`, `setup-config.php`, `load-styles.php`, `load-scripts.php`, `upgrade.php`, `maint/repair.php`, and the stylesheets and scripts. Everything else still counts for such a client: phpMyAdmin and other admin tools, and every path that is an attack on any site.
 
 Tests: `tests/unit/traffic-classifier.test.js` ("a flood spread over many addresses", "a logged-in WordPress user ..."), `tests/unit/engine-result.test.js`, `tests/e2e/samples.spec.ts`.
+
+**Looked at and left: requests to an API that fail, with no page behind them.** Run again with small logs, a browser User-Agent throughout:
+
+| The client asks for | In a log where browsers show assets and referrers | In a log that shows neither |
+|---|---|---|
+| one address 40 times, answered 404 or 401, with a referrer | human | - |
+| one address 40 times, answered 404 or 401, no referrer | suspected ("Crawler-like browsing": no assets, no referrers, all errors) | human |
+| one address 40 times, answered 200, no referrer | human | human |
+| 40 different addresses, answered 404, with a referrer | human | - |
+| 40 different addresses, answered 404, no referrer | suspected ("Path enumeration") | suspected ("Path enumeration") |
+
+A page's own script sends a referrer, and is human in every row. What is flagged looks like a script by everything the log holds, and a script walking paths with a browser's name looks exactly like the last row. Counting those as human would let directory scanners through, so the rules stay.
+
+## 1e. AbuseIPDB card and report (2026-11-27)
+
+| Was | Is |
+|---|---|
+| "Scan Top 20 IPs" asked for 10 addresses and the table shrank to 10 rows | 20 are asked for and shown |
+| An address whose lookup failed was shown as "0% Clean" | "Lookup failed", and a line says how many failed |
+| A server without an API key, or a request that failed, said nothing | A line on the card says so |
+| The scores were gone after any filter change | They are kept; "Check the rest" asks only for addresses without an answer |
+| The report's "AbuseIPDB Results" table was never drawn: nothing passed the scores to the report | The report lists every checked address with its score and its requests (first 200, in the order of the log, under the active filters; 50 in a compact report). The requests come from the engine when the report is opened |
+
+Tests: `tests/e2e/abuse-report.spec.ts` (AbuseIPDB is answered by the test; no real lookup was made, this machine has no API key).
 
 ## 2. How this was checked
 

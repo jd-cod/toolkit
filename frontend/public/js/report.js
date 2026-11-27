@@ -843,7 +843,8 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
         const rows = abusiveIPs.map((r, i) => {
             const entries = logEntries ? (logEntries.get(r.ip) || []) : [];
             const lid = 'logc-' + ipId(r.ip);
-            const cnt = entries.length;
+            // `total` when the list holds only the first requests of the address.
+            const cnt = entries.total || entries.length;
 
             let logBlock = '';
             if (!compact && cnt > 0) {

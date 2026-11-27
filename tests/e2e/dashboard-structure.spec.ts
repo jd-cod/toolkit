@@ -81,14 +81,12 @@ test.describe('Dashboard structure', () => {
     expect(await rows.count()).toBeGreaterThan(0);
   });
 
-  test('mounts the AbuseIPDB Top 10 scan control', async ({ page }) => {
-    // The live control is #btn-center-scan-abuse on a centered overlay.
-    // #btn-scan-abuseipdb is deliberately left in the DOM with display:none
-    // "for backwards compat" (dashboard.js:468) — assert on the real one.
+  test('mounts the AbuseIPDB scan control', async ({ page }) => {
+    // The scan starts from #btn-center-scan-abuse on a centered overlay.
     await expect(page.locator('#btn-center-scan-abuse')).toBeVisible();
 
-    // Guard the assumption above, so a future removal of the overlay button
-    // doesn't silently leave us testing the dead one again.
+    // #btn-scan-abuseipdb ("Check the rest") only appears after a scan that
+    // left addresses without an answer; see abuse-report.spec.ts.
     await expect(page.locator('#btn-scan-abuseipdb')).toBeHidden();
   });
 
