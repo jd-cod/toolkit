@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "samples": "node scripts/generate-samples.mjs",
+    "predev": "npm run samples",
     "dev": "next dev --webpack",
+    "prebuild": "npm run samples",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"

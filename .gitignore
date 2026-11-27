@@ -2,7 +2,6 @@ node_modules/
 .env
 .env.*
 *.log
-!frontend/public/samples/*.log
 !tests/fixtures/nginx-release-golden.log
 .DS_Store
 .next/
@@ -31,6 +30,11 @@ blob-report/
 tests/screenshots/
 screenshots/
 frontend/public/screenshots/
+
+# ── Sample logs (generated) ────────────────────────────
+# frontend/public/samples/*.log are written by `npm run samples` in frontend/
+# (it runs before `dev` and `build`), the same on every run. They are 37 MB
+# together and stay out of the repository through the `*.log` rule above.
 
 # ── GeoIP databases (runtime-generated) ────────────────
 # These are downloaded/refreshed automatically by the MaxMind

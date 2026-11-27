@@ -3,7 +3,8 @@ import os
 from datetime import datetime, timedelta
 
 def generate_multi_vector_logs():
-    output_path = "/home/ubuntu/systoolkit-dev/frontend/public/samples/multi-vector-attack.log"
+    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "multi-vector-attack.log")
+    random.seed(7)  # the same file on every run
     total_lines = 50000
     
     # Base start time: 14 hours span

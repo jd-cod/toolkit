@@ -52,6 +52,10 @@ ARG BACKEND_API_URL=http://127.0.0.1:4000/api
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 ENV BACKEND_API_URL=${BACKEND_API_URL}
 
+# The sample logs are made before the build (npm run samples); the two large
+# ones come from Python generators.
+RUN apk add --no-cache python3
+
 # Build Next.js production bundle
 RUN npm run build
 
