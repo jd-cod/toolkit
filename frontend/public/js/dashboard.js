@@ -32,6 +32,8 @@ const Dashboard = (() => {
     let originalEnrichedEntries = [];
     let originalParseResult = null;
     let originalTimeRange = null;
+    let uploadFilterOptions = null;
+    let uploadTotalRequests = 0;
     let timelineDragEvents = null;
     let currentFilteredEntries = [];
     let activeFilters = {
@@ -649,8 +651,11 @@ const Dashboard = (() => {
             latestPageResult = result.pageResult;
             const mergedParseResult = {
                 parsedLines: new Array(result.summary.matchingCount || 0),
-                skippedLines: [],
-                validLines: result.summary.matchingCount || 0,
+                // The worker counts excluded lines; it does not keep their text.
+                skippedLines: new Array(result.totalLinesSkipped || 0),
+                skipCounts: result.skipCounts || {},
+                forwardedLines: result.forwardedLines || 0,
+                validLines: (result.summary.matchingCount || 0) + (result.totalLinesSkipped || 0) - ((result.skipCounts && result.skipCounts.invalid) || 0),
                 minTimestamp: result.summary.minTimeSec ? result.summary.minTimeSec * 1000 : 0,
                 maxTimestamp: result.summary.maxTimeSec ? result.summary.maxTimeSec * 1000 : 0,
                 logSpanMinutes: result.summary.minTimeSec && result.summary.maxTimeSec
@@ -754,20 +759,25 @@ const Dashboard = (() => {
         };
     }
 
+    // Operators of Tor exit relays, matched as whole names: the letters "tor"
+    // alone are in "Motor", "Storage" and "Operator".
+    const TOR_NETWORK_RE = /\b(?:tor project|torservers|zwiebelfreunde|emerald onion|stiftung erneuerbare freiheit|calyx institute|foundation for applied privacy|nos oignons|tor exit|tor relay)\b|\btor\b/i;
+
+    /**
+     * What the log shows of attacks: forged crawlers, clients that behave like
+     * bots, security scanners, attack paths that were requested, Tor exits.
+     */
     function computeThreatVectors(data) {
         let count = 0;
         if (data.spoofed_bot_ips && data.spoofed_bot_ips.length > 0) count += data.spoofed_bot_ips.length;
+        count += new Set((data.suspected_clients || []).map(c => c.ip)).size;
+        const scanners = (data.bot_groups || []).find(g => g.group_name === 'Security scanners');
+        if (scanners) count += scanners.unique_ips || 1;
         if (data.http_metrics && data.http_metrics.top_paths) {
-            const attackPaths = data.http_metrics.top_paths.filter(p => 
-                p.path.includes('xmlrpc') || p.path.includes('.env') || p.path.includes('.git') || p.path.includes('wp-login') || p.path.includes('admin')
-            );
-            count += attackPaths.length;
+            count += data.http_metrics.top_paths.filter(p => p.attack && p.attack !== 'admin-tool').length;
         }
         if (data.asn_hits) {
-            const torOrBotASNs = data.asn_hits.filter(a => 
-                (a.asn_org || '').toLowerCase().includes('tor') || (a.asn_org || '').toLowerCase().includes('zwiebelfreunde')
-            );
-            count += torOrBotASNs.length;
+            count += data.asn_hits.filter(a => TOR_NETWORK_RE.test(a.asn_org || '')).length;
         }
         return count;
     }
@@ -907,12 +917,12 @@ const Dashboard = (() => {
                 data.top_ips.slice(0, 3).forEach(ipObj => selectedMitigationIPs.add(ipObj.ip));
             }
             if (data.asn_hits) {
-                const tor = data.asn_hits.find(a => (a.asn_org || '').toLowerCase().includes('tor') || (a.asn_org || '').toLowerCase().includes('zwiebel'));
+                const tor = data.asn_hits.find(a => TOR_NETWORK_RE.test(a.asn_org || ''));
                 if (tor) selectedMitigationASNs.add(String(tor.asn));
             }
             if (data.http_metrics && data.http_metrics.top_paths) {
                 data.http_metrics.top_paths.forEach(p => {
-                    if (p.path.includes('xmlrpc') || p.path.includes('.env') || p.path.includes('.git')) {
+                    if (p.attack) {
                         selectedMitigationPaths.add(p.path);
                     }
                 });
@@ -924,7 +934,17 @@ const Dashboard = (() => {
             // overwrites the chart data with a subset.
         }
 
-        const filterOptions = getFilterOptions(originalEnrichedEntries, data);
+        let filterOptions = getFilterOptions(originalEnrichedEntries, data);
+        if (!originalEnrichedEntries.length) {
+            // The upload engine sends a summary of the filtered requests only.
+            // The choices offered stay those of the whole log, as in paste mode.
+            if (!uploadFilterOptions || !options.preserveFilters || !hasActiveFilters()) {
+                uploadFilterOptions = filterOptions;
+                uploadTotalRequests = data?.total_requests || 0;
+            } else {
+                filterOptions = uploadFilterOptions;
+            }
+        }
         const container = document.getElementById('nginx-dashboard');
         setNginxStandaloneView('results');
         container.style.display = 'block';
@@ -947,6 +967,10 @@ const Dashboard = (() => {
         const otherBotsPct = totalRequests ? Math.round(otherBotsCount / totalRequests * 1000) / 10 : 0;
         const errorCount = (data.http_metrics?.status_categories?.['4xx'] || 0) + (data.http_metrics?.status_categories?.['5xx'] || 0);
         const errorPct = totalRequests ? (errorCount / totalRequests * 100).toFixed(1) : '0.0';
+
+        // A filter change rebuilds the page. Keep the caret in the box being typed in.
+        const typingIn = options.preserveFilters && container.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && document.activeElement.type === 'text'
+            ? { id: document.activeElement.id, caret: document.activeElement.selectionStart } : null;
 
         container.innerHTML = `
             <header class="signal-dashboard-heading"><div><p class="signal-eyebrow">Traffic intelligence</p><h1>Traffic log overview</h1><p>The story behind your requests. Traffic, patterns, and what needs a closer look.</p></div></header>
@@ -997,9 +1021,13 @@ const Dashboard = (() => {
                     <span><strong style="color:var(--text-primary);">Parsed:</strong> ${numberWithCommas(parseResult ? parseResult.parsedLines.length : totalRequests)} lines</span>
                     <span style="color:rgba(255,255,255,0.2);">|</span>
                     <span><strong style="color:var(--text-primary);">Skipped:</strong> ${numberWithCommas(skippedLines)} lines</span>
+                    ${parseResult?.forwardedLines > 0 ? `
+                    <span style="color:rgba(255,255,255,0.2);">|</span>
+                    <span id="client-address-note" title="The server is behind a proxy or CDN. The client address was read from the forwarded-address field (X-Forwarded-For), right-most public entry."><i class="bi bi-diagram-3" style="margin-right:4px;"></i>Client address from X-Forwarded-For: <strong style="color:var(--text-secondary);">${numberWithCommas(parseResult.forwardedLines)}</strong> requests</span>
+                    ` : ''}
                     ${parseResult?.logStart ? `
                     <span style="color:rgba(255,255,255,0.2);">|</span>
-                    <span><i class="bi bi-clock" style="margin-right:4px;"></i>Span: <strong style="color:var(--text-secondary);">${escapeHtml(parseResult.logStart)}</strong> → <strong style="color:var(--text-secondary);">${escapeHtml(parseResult.logEnd)}</strong> (${Number(parseResult.logSpanMinutes) || 0}m)</span>
+                    <span title="Times are shown as the server wrote them (the log's own clock), not converted to your time zone."><i class="bi bi-clock" style="margin-right:4px;"></i>Span: <strong style="color:var(--text-secondary);">${escapeHtml(parseResult.logStart)}</strong> → <strong style="color:var(--text-secondary);">${escapeHtml(parseResult.logEnd)}</strong> (${Number(parseResult.logSpanMinutes) || 0}m)</span>
                     ` : ''}
                 </div>
             </div>
@@ -1150,6 +1178,14 @@ const Dashboard = (() => {
         if (currentReadOnly) ['dash-back-btn', 'dash-share-btn', 'dash-download-btn'].forEach(id => { container.querySelector(`#${id}`).hidden = true; });
         ensureAddLogsModal();
         bindEvents(data, parseResult);
+        if (typingIn && typingIn.id) {
+            const box = document.getElementById(typingIn.id);
+            if (box && box !== document.activeElement) {
+                box.focus({ preventScroll: true });
+                const caret = Math.min(typingIn.caret ?? box.value.length, box.value.length);
+                try { box.setSelectionRange(caret, caret); } catch { /* not a text box */ }
+            }
+        }
         // All result sections share one view; initialize every visualization immediately.
         renderRequestRateChart();
         renderCharts(data);
@@ -1266,16 +1302,19 @@ const Dashboard = (() => {
 
     function renderExclusionsHtml(parseResult) {
         const counts = parseResult?.skipCounts || {};
+        // An uploaded file is read once and not kept, so there is nothing to
+        // recalculate from: the options are fixed at the start of the analysis.
+        const fixed = !originalEnrichedEntries.length && latestSummary ? 'disabled title="Set before the analysis: start a new analysis to change this for an uploaded file."' : '';
         return `
             <fieldset class="signal-nginx-options signal-dashboard-exclusions" id="dashboard-exclusions">
                 <legend>Analysis exclusions</legend>
                 <div class="signal-exclusion-toggles">
-                    <label><input type="checkbox" id="dash-skip-403" ${currentSkip403 ? 'checked' : ''}> Ignore 403 responses</label>
-                    <label><input type="checkbox" id="dash-skip-internal" ${currentSkipInternal ? 'checked' : ''}> Ignore internal requests</label>
+                    <label><input type="checkbox" id="dash-skip-403" ${currentSkip403 ? 'checked' : ''} ${fixed}> Ignore 403 responses</label>
+                    <label><input type="checkbox" id="dash-skip-internal" ${currentSkipInternal ? 'checked' : ''} ${fixed}> Ignore internal requests</label>
                 </div>
                 <p class="signal-exclusion-counts" id="exclusion-counts">Skipped: <strong>${numberWithCommas(counts.privateIP || 0)}</strong> private/local IP · <strong>${numberWithCommas(counts.healthCheck || 0)}</strong> health-check path · <strong>${numberWithCommas(counts.forbidden || 0)}</strong> ordinary 403 · <strong>${numberWithCommas(counts.invalid || 0)}</strong> invalid</p>
                 <details class="signal-nginx-option-help"><summary>What is excluded?</summary><p>Internal requests: private, loopback, link-local, CGNAT and IPv6 unique-local IPs (including mapped IPv4), plus exact paths /health, /healthz, /healthcheck, /health-check, /health_check, /readyz, /livez and /_health. Query strings and trailing slashes are ignored. Every User-Agent and response status is covered. Unknown ASN alone is not an exclusion.</p><p>403 filtering retains recognized crawlers for bot analysis. Each skipped line is counted once: private/local IP first, then health-check path, then ordinary 403. Changing an exclusion recalculates the loaded log and resets result filters. The input time span still includes excluded rows.</p></details>
-                <p id="dash-exclusion-status" role="status">${parseResult?.validLines > 0 && !parseResult.parsedLines.length ? 'All valid requests are excluded. Adjust the options above to include them.' : ''}</p>
+                <p id="dash-exclusion-status" role="status">${parseResult?.validLines > 0 && !parseResult.parsedLines.length ? (fixed ? 'All valid requests are excluded. Start a new analysis with the options changed to include them.' : 'All valid requests are excluded. Adjust the options above to include them.') : (fixed ? 'For an uploaded file these options are set before the analysis.' : '')}</p>
             </fieldset>`;
     }
 
@@ -1913,7 +1952,7 @@ const Dashboard = (() => {
 
         entries.forEach(e => {
             if (e.method) methods.add(e.method);
-            if (e.country && e.country !== 'Unknown') countries.set(e.country, (countries.get(e.country) || 0) + 1);
+            if (e.country) countries.set(e.country, (countries.get(e.country) || 0) + 1);
             // e.asn is ALREADY prefixed ('AS15169', see Analyzer.enrichLogEntries),
             // so the label must not add a second 'AS'.
             if (e.asn) {
@@ -2963,7 +3002,7 @@ const Dashboard = (() => {
                         <h5 style="margin:0;font-size:0.88rem;font-weight:700;">
                             <i class="bi bi-table" style="color:var(--accent-primary);margin-right:6px;"></i> Log Explorer
                         </h5>
-                        <span style="font-size:0.74rem;color:var(--text-muted);">(${numberWithCommas(currentFilteredEntries.length)} entries)</span>
+                        <span style="font-size:0.74rem;color:var(--text-muted);">(${numberWithCommas(latestPageResult ? latestPageResult.totalRows : (latestSummary ? latestSummary.matchingCount : currentFilteredEntries.length))} entries)</span>
                     </div>
 
                     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -3091,8 +3130,10 @@ const Dashboard = (() => {
     }
 
     function renderFacetedFilterRibbonHtml(filterOptions) {
-        const totalReqs = originalEnrichedEntries.length;
-        const matchedReqs = currentFilteredEntries.length;
+        // The upload engine keeps no request list on the page; its counts come from the worker.
+        const fromWorker = !originalEnrichedEntries.length && latestSummary;
+        const totalReqs = fromWorker ? uploadTotalRequests : originalEnrichedEntries.length;
+        const matchedReqs = fromWorker ? (latestSummary.matchingCount || 0) : currentFilteredEntries.length;
 
         return `
         <div class="master-filter-box" id="nginx-master-filter-box" style="margin-bottom:20px;padding:12px 16px;">

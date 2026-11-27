@@ -32,6 +32,23 @@ describe('ChunkedLineSplitter', () => {
         assert.deepEqual(splitter.flush(), []);
     });
 
+    test('reads lines that end in a lone CR, and a CRLF cut between two chunks', () => {
+        let splitter = new ChunkedLineSplitter();
+        assert.deepEqual(splitter.feed('line 1\rline 2\rline'), ['line 1', 'line 2']);
+        assert.deepEqual(splitter.feed(' 3\rline 4\r'), ['line 3']);
+        assert.deepEqual(splitter.flush(), ['line 4']);
+
+        splitter = new ChunkedLineSplitter();
+        assert.deepEqual(splitter.feed('line 1\r'), []);
+        assert.deepEqual(splitter.feed('\nline 2\r'), ['line 1']);
+        assert.deepEqual(splitter.feed('\r'), ['line 2']);
+        assert.deepEqual(splitter.feed('\nline 3\r\n'), ['', 'line 3']);
+        assert.deepEqual(splitter.flush(), []);
+
+        splitter = new ChunkedLineSplitter();
+        assert.deepEqual(splitter.feed('a\rb\nc\r\n'), ['a', 'b', 'c']);
+    });
+
     test('handles CRLF (Windows) and LF (Linux) newlines cleanly', () => {
         const splitter = new ChunkedLineSplitter();
         const chunk = 'line 1\r\nline 2\nline 3\r\n';

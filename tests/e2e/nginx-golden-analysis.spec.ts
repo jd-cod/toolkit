@@ -326,7 +326,7 @@ test.describe('Nginx release golden analysis', () => {
     await page.locator('.cross-filter-asn-row[data-asn="15169"]').click();
     await expect(page.locator('#filter-matching-badge strong')).toHaveText('3');
     await page.locator('#filter-clear-btn').click();
-    await page.locator('#filter-path-select').selectOption('/products');
+    await page.locator('#filter-path-select').selectOption('^/products');
     await expect(page.locator('#filter-matching-badge strong')).toHaveText('4');
     await expect(page.locator('.methods-bandwidth-ribbon')).toContainText('7.7 KB Transferred');
     watcher.assertClean();

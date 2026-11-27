@@ -326,9 +326,19 @@ class ColumnarStorage {
         }
 
         let targetCountryId;
+        let unknownCountryIds = null;
         if (filters.country && filters.country !== 'all') {
             targetCountryId = this.countryMap.get(filters.country);
-            if (targetCountryId === undefined) return null;
+            if (targetCountryId === undefined && this.countryNames) {
+                // The dashboard shows country names; rows hold country codes.
+                const code = Object.keys(this.countryNames).find(c => this.countryNames[c] === filters.country);
+                if (code !== undefined) targetCountryId = this.countryMap.get(code);
+            }
+            if (targetCountryId === undefined && filters.country === 'Unknown') {
+                // No location data is stored as '-', '--' or an empty code.
+                unknownCountryIds = new Set(['-', '--', ''].map(c => this.countryMap.get(c)).filter(id => id !== undefined));
+            }
+            if (targetCountryId === undefined && !unknownCountryIds) return null;
         }
 
         let minStatus = 0;
@@ -370,6 +380,7 @@ class ColumnarStorage {
             if (classMask !== 0 && !((classMask >> clientClass[col_client[i]]) & 1)) return false;
             if (groupName !== null && clientGroup[col_client[i]] !== groupName) return false;
             if (targetCountryId !== undefined && col_country[i] !== targetCountryId) return false;
+            if (unknownCountryIds && !unknownCountryIds.has(col_country[i])) return false;
             if (col_status[i] < minStatus || col_status[i] > maxStatus) return false;
             if (targetAsn !== 0 && col_asn[i] !== targetAsn) return false;
             if (col_time[i] < minTime || col_time[i] > maxTime) return false;
@@ -466,6 +477,31 @@ class ColumnarStorage {
             }
         }
 
+        // One line with a wrong year would stretch the timeline over years:
+        // hours far away from where the log's requests are do not count.
+        const hours = Object.keys(timeBuckets).map(Number).sort((x, y) => x - y);
+        if (hours.length > 2 && hours[hours.length - 1] - hours[0] > 2 * 86400) {
+            let timed = 0;
+            for (const h of hours) timed += timeBuckets[h];
+            const at = share => {
+                let seen = 0;
+                for (const h of hours) { seen += timeBuckets[h]; if (seen > timed * share) return h; }
+                return hours[hours.length - 1];
+            };
+            const lo = at(0.005), hi = at(0.995);
+            const margin = Math.max(hi - lo, 86400);
+            let first = null, last = null;
+            for (const h of hours) {
+                if (h < lo - margin || h > hi + margin) { delete timeBuckets[h]; continue; }
+                if (first === null) first = h;
+                last = h;
+            }
+            if (first !== null) {
+                if (minTimeSec < first) minTimeSec = first;
+                if (maxTimeSec > last + 3599) maxTimeSec = last + 3599;
+            }
+        }
+
         // Map IDs back to dictionary strings
         const botCounts = {};
         for (const [id, count] of Object.entries(botHits)) {
@@ -513,6 +549,7 @@ class ColumnarStorage {
             methodCounts,
             asnHits,
             asnOrgMap: this.asnOrgMap || {},
+            countryNames: this.countryNames || {},
             ipGeoMap,
             topIps,
             timeBuckets,

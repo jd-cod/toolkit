@@ -681,9 +681,9 @@ tbody td{border-color:#e2e8f0!important;color:#334155!important}
         <div class="metric-box"><div class="metric-label">Top Paths <span style="font-size:0.7rem;opacity:0.7">(by hit count)</span></div><div class="paths-list">${pathRows}</div></div>
         <div class="metric-box"><div class="metric-label">Response Size</div><div style="font-size:0.85rem">
             <div class="resp-row"><span>Total:</span><span class="resp-val">${n(rs.total)} bytes</span></div>
-            <div class="resp-row"><span>Average:</span><span class="resp-val">${n(Math.round(rs.average))} bytes</span></div>
-            <div class="resp-row"><span>Median:</span><span class="resp-val">${n(rs.median)} bytes</span></div>
-            <div class="resp-row"><span>Range:</span><span class="resp-val">${n(rs.min)} – ${n(rs.max)} bytes</span></div>
+            <div class="resp-row"><span>Average:</span><span class="resp-val">${n(Math.round(rs.average ?? rs.avg ?? 0))} bytes</span></div>
+            ${rs.median == null ? '' : `<div class="resp-row"><span>Median:</span><span class="resp-val">${n(rs.median)} bytes</span></div>
+            <div class="resp-row"><span>Range:</span><span class="resp-val">${n(rs.min)} – ${n(rs.max)} bytes</span></div>`}
         </div></div>
     </div>
 </div>`;

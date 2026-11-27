@@ -256,6 +256,11 @@ const LogParser = (() => {
         return date;
     }
 
+    // The offset is not applied, but an impossible one marks a corrupt time.
+    function validOffset(hours, minutes) {
+        return (hours === undefined || +hours <= 23) && (minutes === undefined || +minutes <= 59);
+    }
+
     /**
      * Read a log timestamp.
      *
@@ -271,14 +276,14 @@ const LogParser = (() => {
         const str = tsStr.trim();
 
         // ISO-8601: 2026-10-01T00:00:00Z, 2026-10-01T05:30:00.123+05:30, 2026-10-01 00:00:00
-        let m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:[.,]\d+)?\s*(?:Z|UTC|GMT|[+-]\d{2}(?::?\d{2})?)?$/i.exec(str);
-        if (m) return wallClock(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+        let m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:[.,]\d+)?\s*(?:Z|UTC|GMT|[+-](\d{2})(?::?(\d{2}))?)?$/i.exec(str);
+        if (m) return validOffset(m[7], m[8]) ? wallClock(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null;
 
         // Common Log Format: 01/Oct/2026:00:00:00 +0000
-        m = /^(\d{1,2})\/([A-Za-z]{3})\/(\d{4}):(\d{2}):(\d{2}):(\d{2})(?:[.,]\d+)?(?:\s*(?:Z|UTC|GMT|[+-]\d{2}:?\d{2}))?$/.exec(str);
+        m = /^(\d{1,2})\/([A-Za-z]{3})\/(\d{4}):(\d{2}):(\d{2}):(\d{2})(?:[.,]\d+)?(?:\s*(?:Z|UTC|GMT|[+-](\d{2}):?(\d{2})))?$/.exec(str);
         if (m) {
             const month = MONTHS[m[2].toLowerCase()];
-            if (month === undefined) return null;
+            if (month === undefined || !validOffset(m[7], m[8])) return null;
             return wallClock(+m[3], month, +m[1], +m[4], +m[5], +m[6]);
         }
 
@@ -383,7 +388,7 @@ const LogParser = (() => {
         const space = req.search(/\s/);
         if (space === -1) return none;
         const method = req.slice(0, space);
-        if (!KNOWN_METHOD_RE.test(method)) return none;
+        const wordMethod = KNOWN_METHOD_RE.test(method);
         let rest = req.slice(space).trim();
         let httpVersion = null;
         const version = /\s+(HTTP\/\d(?:\.\d)?)$/i.exec(rest);
@@ -391,7 +396,10 @@ const LogParser = (() => {
             httpVersion = version[1].toUpperCase();
             rest = rest.slice(0, version.index);
         }
-        return { method: method.toUpperCase(), url: rest || null, httpVersion };
+        // Without a protocol version only a word can be a method; with one,
+        // whatever stood in the method position is reported as it was sent.
+        if (!wordMethod && !httpVersion) return none;
+        return { method: wordMethod ? method.toUpperCase() : method, url: rest || null, httpVersion };
     }
 
     function isLikelyUserAgent(str) {
@@ -426,7 +434,7 @@ const LogParser = (() => {
         if (method && method !== 'GET' && method !== 'HEAD') return false;
         if (statusCode >= 400) return false;
         const paths = requestPaths();
-        const path = (paths ? paths.normalizePath(url) : url.split(/[?#]/)[0].replace(/\/+$/, '')).toLowerCase();
+        const path = paths ? paths.normalizePath(url) : url.split(/[?#]/)[0].replace(/\/+$/, '');
         if (HEALTH_CHECK_PATHS.has(path)) return true;
         return /^\/(?:healthz|livez|readyz)\/[a-z0-9_-]+$/.test(path);
     }

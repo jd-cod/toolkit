@@ -21,6 +21,8 @@ test('request line: a URL with a space stays whole, non-HTTP bytes are not a met
     assert.deepEqual([r.method, r.url], [null, null]);
     r = LogParser.parseLine(line('GET /old'), ALL);
     assert.deepEqual([r.method, r.url, r.httpVersion], ['GET', '/old', null]);
+    r = LogParser.parseLine(line('<b> /invalid HTTP/1.1'), ALL);
+    assert.deepEqual([r.method, r.url], ['<b>', '/invalid'], 'a full request line reports its method as sent');
 });
 
 test('escaped quotes do not break the line', () => {
@@ -101,6 +103,8 @@ test('timestamps keep the clock the server wrote', () => {
     assert.equal(iso('Sat, 10 Oct 2026 13:55:36 GMT'), '2026-10-10T13:55:36');
     assert.equal(iso('29/Feb/2026:12:00:00 +0000'), null);
     assert.equal(iso('10/Oct/2026:13:55:60 +0000'), null);
+    assert.equal(iso('10/Oct/2026:13:55:36 +0060'), null, 'an impossible offset marks a corrupt time');
+    assert.equal(iso('2026-10-10T13:55:36+05:75'), null);
 });
 
 test('one stray date does not stretch the log span', () => {
@@ -125,7 +129,8 @@ test('health checks: only a normal GET or HEAD to a health endpoint is left out'
     const on = { skip403: false, skipInternal: true };
     const kind = (req, x) => { const r = LogParser.parseLine(line(req, x), on); return r.valid ? 'kept' : r.reasonType; };
     assert.equal(kind('GET /health HTTP/1.1'), 'healthCheck');
-    assert.equal(kind('HEAD /Healthz/ready HTTP/1.1'), 'healthCheck');
+    assert.equal(kind('HEAD /healthz/ready HTTP/1.1'), 'healthCheck');
+    assert.equal(kind('GET /HealthCheck HTTP/1.1'), 'kept', 'paths are case-sensitive');
     assert.equal(kind('GET /livez?verbose HTTP/1.1'), 'healthCheck');
     assert.equal(kind('POST /health HTTP/1.1', { status: 500, ua: 'sqlmap/1.7' }), 'kept');
     assert.equal(kind('GET /health HTTP/1.1', { status: 503 }), 'kept');

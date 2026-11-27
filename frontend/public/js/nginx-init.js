@@ -598,8 +598,11 @@ window.initNginxPage = function () {
 
             const parseResult = {
                 parsedLines: new Array(result.summary.matchingCount || 0),
-                skippedLines: [],
-                validLines: result.summary.matchingCount || 0,
+                // The worker counts excluded lines; it does not keep their text.
+                skippedLines: new Array(result.totalLinesSkipped || 0),
+                skipCounts: result.skipCounts || {},
+                forwardedLines: result.forwardedLines || 0,
+                validLines: (result.summary.matchingCount || 0) + (result.totalLinesSkipped || 0) - ((result.skipCounts && result.skipCounts.invalid) || 0),
                 minTimestamp: result.summary.minTimeSec ? result.summary.minTimeSec * 1000 : 0,
                 maxTimestamp: result.summary.maxTimeSec ? result.summary.maxTimeSec * 1000 : 0,
                 logSpanMinutes: result.summary.minTimeSec && result.summary.maxTimeSec

@@ -73,7 +73,9 @@ test('invalid dates stay untimed and an offset-less legacy date is interpreted i
   watcher.assertClean();
 });
 
-test('ISO-8601 timestamps and bracketed ISO dates parse to accurate UTC timestamps', async ({ page, console: watcher }) => {
+// Every notation keeps the clock the server wrote, so `05:30:00+05:30` reads
+// 05:30:00 like `[.. 05:30:00 +0530]` does (see timeline-accuracy.spec.ts).
+test('ISO-8601 timestamps and bracketed ISO dates keep the clock the server wrote', async ({ page, console: watcher }) => {
   await page.goto('/nginx', { waitUntil: 'domcontentloaded' });
   await waitForEngineReady(page);
   const isoLines = [
@@ -84,7 +86,7 @@ test('ISO-8601 timestamps and bracketed ISO dates parse to accurate UTC timestam
   const result = await page.evaluate(lines => (window as any).LogParser.parseIPs(lines.join('\n')).logEntries.map((e: any) => e.timestamp?.toISOString() || null), isoLines);
   expect(result).toEqual([
     '2026-10-01T00:00:00.000Z',
-    '2026-10-01T00:00:00.000Z',
+    '2026-10-01T05:30:00.000Z',
     '2026-10-01T00:00:00.000Z',
   ]);
   watcher.assertClean();

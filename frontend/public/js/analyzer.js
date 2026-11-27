@@ -152,8 +152,9 @@ const Analyzer = (() => {
         return {
             total_requests: totalRequests,
             unique_ips: ipCounter.size,
-            unique_countries: countryIPs.size,
-            unique_asns: asnIPs.size,
+            // "Unknown" is not a country and AS0 is not a network.
+            unique_countries: [...countryIPs.keys()].filter(c => c && c !== 'Unknown').length,
+            unique_asns: [...asnIPs.keys()].filter(a => Number(a) > 0).length,
             country_hits: countryHits,
             asn_hits: asnHits,
             top_ips: topIPs,
@@ -172,7 +173,9 @@ const Analyzer = (() => {
             spoofed_bot_attackers: traffic.spoofed_bot_attackers,
             spoofed_bot_ips: traffic.spoofed_bot_ips,
             suspected_clients: traffic.suspected_clients,
-            ua_field_missing: uaFieldMissing(userAgents),
+            ua_field_missing: (logEntries && logEntries.length && logEntries[0].ua_field_missing !== undefined)
+                ? logEntries[0].ua_field_missing
+                : uaFieldMissing(userAgents),
             ip_log_entries: ipLogEntries, // Map<ip, logEntry[]> for access log viewer
         };
     }
@@ -394,6 +397,21 @@ const Analyzer = (() => {
 
         if (validEntries.length === 0) return emptyRequestRate();
 
+        // A stray date (one line with a wrong year) must not set the scale.
+        let strayTimestamps = 0;
+        const parser = typeof LogParser !== 'undefined' ? LogParser : (typeof globalThis !== 'undefined' ? globalThis.LogParser : null);
+        if (parser && parser.timeBounds && maxTs - minTs > 2 * 86400000) {
+            const bounds = parser.timeBounds(validEntries.map(e => e._ts));
+            if (bounds && bounds.outliers > 0) {
+                strayTimestamps = bounds.outliers;
+                minTs = bounds.min;
+                maxTs = bounds.max;
+                let kept = 0;
+                for (const e of validEntries) if (e._ts >= minTs && e._ts <= maxTs) validEntries[kept++] = e;
+                validEntries.length = kept;
+            }
+        }
+
         const durationSeconds = Math.max(1, Math.round((maxTs - minTs) / 1000));
         const spanCrossesDays = (new Date(minTs).toISOString().slice(0, 10) !== new Date(maxTs).toISOString().slice(0, 10));
 
@@ -525,6 +543,7 @@ const Analyzer = (() => {
             bucket_label: bucketLabel,
             total_buckets: totalBuckets,
             total_requests: validEntries.length,
+            stray_timestamps: strayTimestamps,
             duration_seconds: durationSeconds,
             start_time: formatBucketTime(minTs, bucketSeconds, spanCrossesDays),
             end_time: formatBucketTime(maxTs, bucketSeconds, spanCrossesDays),
@@ -631,6 +650,8 @@ const Analyzer = (() => {
             entry.bot_verified = client.verified;
             entry.bot_status = TrafficClassifier.STATUS_BY_CLASS[client.cls];
             entry.bot_reason = client.reason;
+            // Decided on the whole log, so it stays true for a filtered part.
+            entry.ua_field_missing = session.uaFieldMissing;
         }
     }
 
@@ -665,13 +686,16 @@ const Analyzer = (() => {
 
         // Country Hits
         const countryHits = Object.entries(summary.countryCounts || {})
-            .map(([country, count]) => ({
-                country,
-                country_code: country,
-                count,
-                hits: count,
-                percentage: totalRequests ? ((count / totalRequests) * 100).toFixed(1) : '0.0'
-            }))
+            .map(([code, count]) => {
+                const known = code && code !== '-' && code !== '--';
+                return {
+                    country: known ? ((summary.countryNames && summary.countryNames[code]) || code) : 'Unknown',
+                    country_code: known ? code : '--',
+                    count,
+                    hits: count,
+                    percentage: totalRequests ? ((count / totalRequests) * 100).toFixed(1) : '0.0'
+                };
+            })
             .sort((a, b) => b.hits - a.hits);
 
         // ASN Hits
@@ -798,8 +822,8 @@ const Analyzer = (() => {
         return {
             total_requests: totalRequests,
             unique_ips: uniqueIps,
-            unique_countries: countryHits.length,
-            unique_asns: asnHits.length,
+            unique_countries: countryHits.filter(c => c.country !== 'Unknown').length,
+            unique_asns: asnHits.filter(a => Number(a.asn) > 0).length,
             country_hits: countryHits,
             asn_hits: asnHits,
             top_ips: topIps,
@@ -822,9 +846,13 @@ const Analyzer = (() => {
             ip_log_entries: new Map(),
             http_metrics: {
                 total_bandwidth_bytes: summary.totalBytes || 0,
+                // The upload engine keeps no per-request list, so there is no
+                // median, minimum or maximum.
                 response_size: {
                     total: summary.totalBytes || 0,
+                    average: totalRequests ? Math.round((summary.totalBytes || 0) / totalRequests) : 0,
                     avg: totalRequests ? Math.round((summary.totalBytes || 0) / totalRequests) : 0,
+                    median: null, min: null, max: null,
                 },
                 avg_response_size: totalRequests ? Math.round((summary.totalBytes || 0) / totalRequests) : 0,
                 status_categories: statusCategories,

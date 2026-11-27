@@ -228,6 +228,20 @@ see `PARSER_AND_IDENTIFICATION_REVIEW.md` (48 findings, each with a reproduction
 Severity: C critical, H high, M medium, L low. "Yesterday" means reproduced on 2026-11-26 with the script
 named, not re-run today.
 
+Status on 2026-11-27, after the fixes described in `PARSER_AND_IDENTIFICATION_REVIEW.md` section 1a:
+
+| # | Now |
+| --- | --- |
+| 1 | Closed the safe way: the two exclusion options are switched off after an upload, with a note. Re-reading the file with new options is not built |
+| 2 | Fixed: method, path, address prefix and CIDR filters work on uploads |
+| 3 | Fixed: "Matching N / M", the entry count and the Skipped counts are right on uploads |
+| 4 | Partly: uploads have paths and sections. Still no referrers, and the timeline has one-hour buckets without a status split |
+| 5 | Fixed in both engines: the box keeps focus and caret |
+| 6 | Fixed: a row click is an exact match; card, dropdown and filter count the same thing |
+| 7, 8, 10, 12, 13 | Open |
+| 9 | Fixed: "Unknown" can be chosen in both engines, IPv6 is matched in any notation, `/33` matches nothing |
+| 11 | Fixed (PARSE-07, PARSE-04). PARSE-08: every notation now keeps the server's clock |
+
 ### Functional
 
 | # | Sev | Issue | Fix |

@@ -31,6 +31,56 @@ The ten that matter most:
 | F2 | A status the parser does not know (499, 444, 520) in the sample | Every row of the file gets status 0 |
 | P1 | Time zone offsets are ignored in one notation and applied in the other | The same instant is stored 8 hours apart |
 
+## 1a. Status after the fixes (2026-11-27)
+
+The findings below were fixed on this branch in four commits after the review. 40 are fixed, 5 are partly fixed and 3 are open. Sections 3.1 to 3.6 describe the behaviour **before** the fixes; this table says what is true now. Outputs of the same probe scripts after the fixes are in `review2/out-after/`.
+
+| # | Now | Note |
+|---|---|---|
+| F1, F2, F3, F5, F6, F8 | Fixed | Format chosen by majority over 200 lines; any status 100-599; mixed files read in any order; per-file detection in upload |
+| F4 | Fixed | Nothing is guessed from one line. Two lines glued together still parse as one request |
+| F7 | Fixed | Added AWS ALB and classic ELB, IIS W3C, Caddy, Traefik, Cloudflare Logpush, Docker wrapper, syslog prefix. HAProxy is still not read |
+| P1 | Changed | Both notations now keep the clock the server wrote (see decisions below) |
+| P2 | Fixed | Fractions, epoch numbers, one-digit day, any letter case, `+02`, RFC 1123. Non-English month names are still not read |
+| P3, P4, P5, P7 | Fixed | |
+| P6 | Partly | 999 becomes "unknown". Unknown statuses are still listed outside the 2xx-5xx categories |
+| P8 | Partly | Lone CR line endings work for pasted text and for uploads. UTF-16 files are unchanged |
+| C1 | Fixed | Client read from `X-Forwarded-For` behind a private proxy or a CDN; the page says how many requests |
+| C2, C3, C5, C6 | Fixed | Host names in place of addresses are still rejected |
+| C4 | Partly | Benchmark, multicast, reserved and site-local ranges are internal. The three documentation ranges stay public: the repository's tests and samples use them as client addresses |
+| B1 | Fixed | "Ignore 403" keeps blocked attack paths and login attempts |
+| B2, B3, B4, B5, B6, B7, B9, B11, B13 | Fixed | |
+| B8 | Fixed | Library names inside a browser User-Agent are ignored. Monitor and scanner names still match anywhere |
+| B10 | Partly | An out-of-date browser version is one weak signal; a malformed User-Agent is not a browser. An old version alone is still human |
+| B12 | Open | The one-minute window still does not slide |
+| U1, U2, U3, U4, U5, U7 | Fixed | |
+| U6 | Fixed | Upload has paths and sections. Referrers and the status split per path are still paste-only |
+| A1, A3, A4 | Fixed | |
+| A5 | Partly | A tooltip on the time span says which clock is shown |
+| A2, A6 | Open | Peak rate by bucket size; referrers not grouped by site |
+
+Decisions taken while fixing, each easy to reverse:
+
+1. **Time zone (P1).** An existing end-to-end test requires that `[07:23:05 -0700]` is shown as 07:23:05. So the rule is "show the log's own clock", and ISO timestamps were changed to follow it instead of being converted to UTC.
+2. **Which forwarded address is the client (C1).** The right-most public entry of `X-Forwarded-For`. The left-most is easier to read but can be written by the client, which would let anyone appear as a verified Googlebot.
+3. **When forwarded addresses are trusted (C1).** Always when the connecting address is private. Otherwise only when at least nine in ten lines carry one and they vary more than the connecting addresses do. `clientIp: 'remote' | 'forwarded'` overrides this in the parser options; there is no control for it on the page yet.
+4. **"Ignore 403" (B1).** The option stays on by default and still hides ordinary refusals, but never a request that looks like an attack or a login attempt.
+5. **Apps (B9).** Native apps and media players are judged by behaviour like browsers, so their users count as human unless the app probes, floods or guesses passwords. `okhttp` stays a script library.
+6. **Address filter.** A full address matches that address only; the start of one (`185.220.`) matches whole leading groups; CIDR works for IPv4 and IPv6. Text inside an address (`.3.4`) no longer matches.
+7. **Countries and networks (A3).** The two counters at the top no longer count "Unknown" as a country or AS0 as a network. The tables still list them.
+
+Upload gaps from section 3.7, now closed: path, method, address and CIDR filters work; "Matching N / M" and the entry count are right; the Skipped counts are shown; the choices in the dropdowns stay those of the whole log while a filter is on; a filter box keeps the focus while typing (both engines). The two exclusion options are switched off after an upload, with a note, because the file is not kept and there is nothing to recalculate from; they are set before the analysis. Still open for uploads: the timeline has one-hour buckets without a status split, and there are no referrers.
+
+Existing tests whose expectations were changed, because they described the old behaviour:
+
+| Test | Change |
+|---|---|
+| `tests/e2e/nginx-parser-contract.spec.ts`, ISO-8601 test | `2026-10-01T05:30:00+05:30` now reads 05:30:00 (decision 1); it read 00:00:00 UTC |
+| `tests/e2e/cross-filter-rows.spec.ts`, two tests | Path rows carry `data-path="=/products"`, dropdown values are `^/products` |
+| `tests/e2e/nginx-golden-analysis.spec.ts` and `tests/fixtures/nginx-release-golden.json` | `top_paths` lists whole paths (it listed segments: `/api` 4, `/login` 1, `/42` 1); `unique_countries` 4 to 3 and `unique_asns` 7 to 6 (decision 7); dropdown value `^/products`. **Not run**: the log this test reads, `tests/fixtures/nginx-release-golden.log`, is not in the repository. The new values were derived from the entries listed in the manifest |
+
+Three things the end-to-end tests caught in the first version of the fixes, now corrected: health-check paths are case-sensitive again (`/HealthCheck` is a normal page); a request line with a protocol version reports whatever stood in the method position (`<b>`), as text; an impossible time zone offset (`+0060`) marks the time as unreadable.
+
 ## 2. How this was checked
 
 - The browser scripts were loaded into Node and driven through both engines (paste and upload) with small logs whose correct answer is known in advance.
@@ -246,7 +296,7 @@ Paste: `average`, `median`, `min`, `max`. Upload: `avg` only (p6 item 4). The do
 
 ### 3.7 Upload engine gaps already in `TRAFFIC_ANALYZER_REVIEW.md`
 
-Still open and not repeated here: exclusion toggles empty the dashboard, method, path, partial-address and CIDR filters are ignored, "Matching 0 / 0", "Skipped: 0", hour-only timeline.
+At the time of the review (see section 1a for what is fixed): exclusion toggles empty the dashboard, method, path, partial-address and CIDR filters are ignored, "Matching 0 / 0", "Skipped: 0", hour-only timeline.
 
 ### 3.8 Carried over, not run again
 

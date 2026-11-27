@@ -36,12 +36,21 @@ class ChunkedLineSplitter {
             if (line.endsWith('\r')) {
                 line = line.slice(0, -1);
             }
-            lines.push(line);
+            if (line.indexOf('\r') === -1) lines.push(line);
+            else for (const part of line.split('\r')) lines.push(part);
             start = idx + 1;
             idx = text.indexOf('\n', start);
         }
 
-        this.remainder = text.slice(start);
+        // A file whose lines end in a lone CR has no LF to split on. The last
+        // CR stays in the remainder: it may be the first half of a CRLF.
+        let rest = text.slice(start);
+        const lastCR = rest.length > 1 ? rest.lastIndexOf('\r', rest.length - 2) : -1;
+        if (lastCR !== -1) {
+            for (const part of rest.slice(0, lastCR).split('\r')) lines.push(part);
+            rest = rest.slice(lastCR + 1);
+        }
+        this.remainder = rest;
         return lines;
     }
 
@@ -61,7 +70,8 @@ class ChunkedLineSplitter {
         if (text.endsWith('\r')) {
             text = text.slice(0, -1);
         }
-        return text.length > 0 ? [text] : [];
+        if (text.length === 0) return [];
+        return text.indexOf('\r') === -1 ? [text] : text.split('\r');
     }
 
     /**
@@ -145,6 +155,7 @@ function streamChunksToWorker(stream, worker, options = {}, onProgress = null) {
                             const countryIds = new Uint16Array(ipCount);
                             const asns = new Uint32Array(ipCount);
                             const countryDict = ['-'];
+                            const countryNames = {};
                             const countryMap = new Map([['-', 0]]);
                             const asnOrgMap = {};
 
@@ -158,6 +169,7 @@ function streamChunksToWorker(stream, worker, options = {}, onProgress = null) {
                                 if (cId === undefined) {
                                     cId = countryDict.length;
                                     countryDict.push(cCode);
+                                    if (c.country && c.country !== 'Unknown') countryNames[cCode] = c.country;
                                     countryMap.set(cCode, cId);
                                 }
                                 countryIds[id] = cId;
@@ -194,6 +206,7 @@ function streamChunksToWorker(stream, worker, options = {}, onProgress = null) {
                                         countryIds,
                                         asns,
                                         countryDict,
+                                        countryNames,
                                         asnOrgMap
                                     }, [countryIds.buffer, asns.buffer]);
                                 } catch {
@@ -202,6 +215,7 @@ function streamChunksToWorker(stream, worker, options = {}, onProgress = null) {
                                         countryIds,
                                         asns,
                                         countryDict,
+                                        countryNames,
                                         asnOrgMap
                                     });
                                 }
@@ -304,6 +318,7 @@ function appendStreamToWorker(stream, worker, options = {}, onProgress = null) {
                             const countryIds = new Uint16Array(ipCount);
                             const asns = new Uint32Array(ipCount);
                             const countryDict = ['-'];
+                            const countryNames = {};
                             const countryMap = new Map([['-', 0]]);
                             const asnOrgMap = {};
 
@@ -317,6 +332,7 @@ function appendStreamToWorker(stream, worker, options = {}, onProgress = null) {
                                 if (cId === undefined) {
                                     cId = countryDict.length;
                                     countryDict.push(cCode);
+                                    if (c.country && c.country !== 'Unknown') countryNames[cCode] = c.country;
                                     countryMap.set(cCode, cId);
                                 }
                                 countryIds[id] = cId;
@@ -345,6 +361,7 @@ function appendStreamToWorker(stream, worker, options = {}, onProgress = null) {
                                         countryIds,
                                         asns,
                                         countryDict,
+                                        countryNames,
                                         asnOrgMap,
                                         startIpIndex: data.startIpIndex || 0,
                                         startRowIndex: data.startRowIndex || 0
@@ -355,6 +372,7 @@ function appendStreamToWorker(stream, worker, options = {}, onProgress = null) {
                                         countryIds,
                                         asns,
                                         countryDict,
+                                        countryNames,
                                         asnOrgMap,
                                         startIpIndex: data.startIpIndex || 0,
                                         startRowIndex: data.startRowIndex || 0

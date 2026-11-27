@@ -88,7 +88,7 @@ test.describe('Cross-filter table rows', () => {
     expect(before).toBe(180);
 
     // "/products" appears 3x per 10-line block => 60 of 180.
-    await page.locator('.cross-filter-path-row[data-path="/products"]').click();
+    await page.locator('.cross-filter-path-row[data-path="=/products"]').click();
 
     await expect
       .poll(async () => Number((await totalRequests(page)).replace(/,/g, '')), {
@@ -133,7 +133,8 @@ test.describe('Cross-filter table rows', () => {
 
     // Was permanently just ['all'] because getFilterOptions() read e.path,
     // a field the parser never sets.
-    expect(opts.map((o) => o.value)).toContain('/products');
+    // Options are site sections; `^` selects everything under one.
+    expect(opts.map((o) => o.value)).toContain('^/products');
 
     const counts = opts.slice(1).map((o) => Number(o.label.match(/\(([\d,]+)\)\s*$/)?.[1].replace(/,/g, '')));
     expect(counts).toEqual([...counts].sort((a, b) => b - a));

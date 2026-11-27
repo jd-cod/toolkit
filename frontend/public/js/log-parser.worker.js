@@ -271,6 +271,7 @@ function createWorkerHandler(postMessageFn) {
                     });
                 }
             } else if (action === 'enrich_geo') {
+                if (data.countryNames) columnarStorage.countryNames = Object.assign(columnarStorage.countryNames || {}, data.countryNames);
                 if (data.countryIds && data.asns) {
                     columnarStorage.enrichGeoCompact(data.countryIds, data.asns, data.countryDict, data.asnOrgMap);
                 } else {
@@ -288,6 +289,7 @@ function createWorkerHandler(postMessageFn) {
                     ...ingestStats()
                 });
             } else if (action === 'enrich_geo_incremental') {
+                if (data.countryNames) columnarStorage.countryNames = Object.assign(columnarStorage.countryNames || {}, data.countryNames);
                 if (data.countryIds && data.asns) {
                     columnarStorage.enrichGeoCompactIncremental(
                         data.countryIds,
